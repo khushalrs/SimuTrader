@@ -1,0 +1,112 @@
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# =========================
+# Env files / secrets
+# =========================
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.test.example
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+pip-wheel-metadata/
+.venv/
+venv/
+ENV/
+env/
+*.log
+
+# Alembic
+alembic.ini
+apps/api/alembic/versions/*.pyc
+
+# =========================
+# Node / Next.js
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+out/
+dist/
+.vercel/
+.next-cache/
+
+# =========================
+# Docker
+# =========================
+*.pid
+docker-data/
+**/.docker/
+
+# =========================
+# Data (keep repo light)
+# =========================
+data/raw/
+data/processed/
+data/cache/
+data/exports/
+*.csv
+*.parquet
+*.feather
+*.arrow
+*.jsonl
+*.pkl
+*.joblib
+*.npz
+*.h5
+*.hdf5
+
+# DuckDB / DB files
+*.duckdb
+*.sqlite
+*.db
+*.wal
+*.journal
+
+# Model artifacts (if you later add ML)
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.bin
+
+# =========================
+# Frontend build artifacts
+# =========================
+apps/web/.next/
+apps/web/out/
+apps/web/dist/
+
+# =========================
+# Backend runtime artifacts
+# =========================
+apps/api/.pytest_cache/
+apps/api/.mypy_cache/
+apps/api/.ruff_cache/
