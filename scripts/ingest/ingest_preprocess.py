@@ -21,6 +21,7 @@ What this does
     processed/assets.parquet
 
 - Writes simple calendars (weekday-based):
+    processed/trading_calendars.parquet
     processed/calendar_days.parquet
 
 - Creates a DuckDB file with views over the Parquet lake:
@@ -54,6 +55,8 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import json
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -377,6 +380,9 @@ def load_bse_yahoo_csv(path: Path, strip_bo_suffix: bool = True) -> Tuple[pd.Dat
 
 
 _CCY_CODE_RE = re.compile(r"\(([A-Z]{3})\)")
+_SS_NS = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
+_SS_HEADER_ROW_INDEX = 2
+_SS_DATE_COL_INDEX = 0
 
 
 def _extract_ccy_code(col_name: str) -> Optional[str]:
@@ -403,6 +409,61 @@ def _read_excel_any_engine(path: Path) -> pd.DataFrame:
             return pd.read_excel(path, header=None, engine="openpyxl")
 
 
+def _read_spreadsheetml_table(path: Path, worksheet_name: str | None = None) -> pd.DataFrame:
+    """Read Excel 2003 XML Spreadsheet (SpreadsheetML) into a DataFrame."""
+    xml_text = Path(path).read_text(encoding="utf-8-sig", errors="ignore")
+    root = ET.fromstring(xml_text)
+
+    worksheets = root.findall(".//ss:Worksheet", _SS_NS)
+    if not worksheets:
+        raise ValueError("No <Worksheet> found. Not a SpreadsheetML file?")
+
+    ws = None
+    if worksheet_name:
+        for w in worksheets:
+            name = w.get(f"{{{_SS_NS['ss']}}}Name")
+            if name == worksheet_name:
+                ws = w
+                break
+        if ws is None:
+            raise ValueError(f"Worksheet '{worksheet_name}' not found.")
+    else:
+        ws = worksheets[0]
+
+    table = ws.find(".//ss:Table", _SS_NS)
+    if table is None:
+        raise ValueError("No <Table> found in worksheet.")
+
+    rows = table.findall("ss:Row", _SS_NS)
+    data = []
+    max_len = 0
+
+    for r in rows:
+        row = []
+        col_idx = 1
+        for cell in r.findall("ss:Cell", _SS_NS):
+            idx = cell.get(f"{{{_SS_NS['ss']}}}Index")
+            if idx is not None:
+                idx = int(idx)
+                while col_idx < idx:
+                    row.append(None)
+                    col_idx += 1
+
+            d = cell.find("ss:Data", _SS_NS)
+            if d is not None:
+                text = "".join(d.itertext()).strip()
+                row.append(text if text else None)
+            else:
+                row.append(None)
+            col_idx += 1
+
+        max_len = max(max_len, len(row))
+        data.append(row)
+
+    data = [r + [None] * (max_len - len(r)) for r in data]
+    return pd.DataFrame(data)
+
+
 def _make_unique_columns(cols: List) -> List[str]:
     seen: Dict[str, int] = {}
     out: List[str] = []
@@ -421,83 +482,155 @@ def _make_unique_columns(cols: List) -> List[str]:
 
 
 def load_fx_xls(path: Path) -> Tuple[pd.DataFrame, List[Dict]]:
-    raw = _read_excel_any_engine(path)
+    try:
+        raw = _read_excel_any_engine(path)
 
-    # Find header row: first column equals 'Date'
-    first_col = raw.iloc[:, 0].astype(str).str.strip().str.lower()
-    header_rows = raw.index[first_col.eq("date")].tolist()
-    if not header_rows:
-        raise ValueError("Could not find a header row with first column 'Date'.")
-    header_idx = header_rows[0]
+        # Find header row: first column equals 'Date'
+        first_col = raw.iloc[:, 0].astype(str).str.strip().str.lower()
+        header_rows = raw.index[first_col.eq("date")].tolist()
+        if not header_rows:
+            raise ValueError("Could not find a header row with first column 'Date'.")
+        header_idx = header_rows[0]
 
-    header = _make_unique_columns(raw.iloc[header_idx].tolist())
-    data = raw.iloc[header_idx + 1 :].copy()
-    data.columns = header
+        header = _make_unique_columns(raw.iloc[header_idx].tolist())
+        data = raw.iloc[header_idx + 1 :].copy()
+        data.columns = header
 
-    # Normalize date
-    data = data.rename(columns={header[0]: "Date"})
-    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
-    data = data.dropna(subset=["Date"]).dropna(axis=1, how="all")
+        # Normalize date
+        data = data.rename(columns={header[0]: "Date"})
+        data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+        data = data.dropna(subset=["Date"]).dropna(axis=1, how="all")
 
-    long_rows: List[pd.DataFrame] = []
-    assets: List[Dict] = []
+        long_rows: List[pd.DataFrame] = []
+        assets: List[Dict] = []
 
-    for col in data.columns:
-        if col == "Date":
-            continue
-        ccy = _extract_ccy_code(col)
-        if not ccy or ccy == "USD":
-            continue
+        for col in data.columns:
+            if col == "Date":
+                continue
+            ccy = _extract_ccy_code(col)
+            if not ccy or ccy == "USD":
+                continue
 
-        s = pd.to_numeric(data[col], errors="coerce")
-        if s.notna().sum() == 0:
-            continue
+            s = pd.to_numeric(data[col], errors="coerce")
+            if s.notna().sum() == 0:
+                continue
 
-        symbol = f"USD{ccy}"  # e.g. USDINR
+            symbol = f"USD{ccy}"  # e.g. USDINR
 
-        sub = pd.DataFrame(
-            {
-                "date": data["Date"],
-                "open": s,
-                "high": s,
-                "low": s,
-                "close": s,
-                "volume": np.nan,
-            }
-        )
+            sub = pd.DataFrame(
+                {
+                    "date": data["Date"],
+                    "open": s,
+                    "high": s,
+                    "low": s,
+                    "close": s,
+                    "volume": np.nan,
+                }
+            )
 
-        norm = _normalize_ohlcv(
-            sub,
-            symbol=symbol,
-            asset_class="FX",
-            currency=ccy,  # quote currency
-            exchange="FX",
-            data_source="fx_xls_snapshot",
-            base_ccy="USD",
-            quote_ccy=ccy,
-        )
+            norm = _normalize_ohlcv(
+                sub,
+                symbol=symbol,
+                asset_class="FX",
+                currency=ccy,  # quote currency
+                exchange="FX",
+                data_source="fx_xls_snapshot",
+                base_ccy="USD",
+                quote_ccy=ccy,
+            )
 
-        if norm.empty:
-            continue
+            if norm.empty:
+                continue
 
-        long_rows.append(norm)
-        assets.append(
-            {
-                "symbol": symbol,
-                "name": f"USD/{ccy}",
-                "asset_class": "FX",
-                "currency": ccy,
-                "exchange": "FX",
-                "data_source": "fx_xls_snapshot",
-                "meta": {"raw_column": str(col), "file": str(path)},
-            }
-        )
+            long_rows.append(norm)
+            assets.append(
+                {
+                    "symbol": symbol,
+                    "name": f"USD/{ccy}",
+                    "asset_class": "FX",
+                    "currency": ccy,
+                    "exchange": "FX",
+                    "data_source": "fx_xls_snapshot",
+                    "meta": {"raw_column": str(col), "file": str(path)},
+                }
+            )
 
-    if not long_rows:
-        raise ValueError("No FX columns produced data. Check header parsing / column names.")
+        if not long_rows:
+            raise ValueError("No FX columns produced data. Check header parsing / column names.")
 
-    fx_all = pd.concat(long_rows, ignore_index=True)
-    return fx_all, assets
+        fx_all = pd.concat(long_rows, ignore_index=True)
+        return fx_all, assets
+    except Exception:
+        # Fallback for SpreadsheetML (.xls saved as XML)
+        wide = _read_spreadsheetml_table(path, worksheet_name="EXCHANGE_RATE_REPORT")
+
+        header = wide.iloc[_SS_HEADER_ROW_INDEX, _SS_DATE_COL_INDEX:].tolist()
+        data = wide.iloc[_SS_HEADER_ROW_INDEX + 1 :, _SS_DATE_COL_INDEX:].copy()
+        data.columns = header
+
+        date_series = data.iloc[:, 0]
+        data = data.rename(columns={data.columns[0]: "Date"})
+        data["Date"] = pd.to_datetime(date_series, errors="coerce")
+        data = data.dropna(subset=["Date"]).dropna(axis=1, how="all")
+
+        long_rows = []
+        assets = []
+
+        for col in data.columns:
+            if col == "Date":
+                continue
+            ccy = _extract_ccy_code(col)
+            if not ccy or ccy == "USD":
+                continue
+
+            s = pd.to_numeric(data[col], errors="coerce")
+            if s.notna().sum() == 0:
+                continue
+
+            symbol = f"USD{ccy}"
+            sub = pd.DataFrame(
+                {
+                    "date": data["Date"],
+                    "open": s,
+                    "high": s,
+                    "low": s,
+                    "close": s,
+                    "volume": np.nan,
+                }
+            )
+
+            norm = _normalize_ohlcv(
+                sub,
+                symbol=symbol,
+                asset_class="FX",
+                currency=ccy,
+                exchange="FX",
+                data_source="fx_spreadsheetml",
+                base_ccy="USD",
+                quote_ccy=ccy,
+            )
+
+            if norm.empty:
+                continue
+
+            long_rows.append(norm)
+            assets.append(
+                {
+                    "symbol": symbol,
+                    "name": f"USD/{ccy}",
+                    "asset_class": "FX",
+                    "currency": ccy,
+                    "exchange": "FX",
+                    "data_source": "fx_spreadsheetml",
+                    "meta": {"raw_column": str(col), "file": str(path)},
+                }
+            )
+
+        if not long_rows:
+            raise ValueError("No FX columns parsed. Check headers contain currency codes like '(INR)'.")
+
+        fx_all = pd.concat(long_rows, ignore_index=True)
+        return fx_all, assets
 
 
 # -----------------------------
@@ -505,20 +638,34 @@ def load_fx_xls(path: Path) -> Tuple[pd.DataFrame, List[Dict]]:
 # -----------------------------
 
 
-def build_weekday_calendars(min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.DataFrame:
+def build_weekday_calendars(min_date: pd.Timestamp, max_date: pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
+    import hashlib
+
     dates = pd.date_range(min_date.date(), max_date.date(), freq="D")
     cal = pd.DataFrame({"date": dates.date})
     cal["weekday"] = dates.weekday
     cal["is_weekday"] = cal["weekday"].between(0, 4)
 
-    out = []
-    for cal_name in ["GLOBAL", "US", "IN", "FX"]:
+    calendars = []
+    days = []
+    tz_map = {"US": "America/New_York", "IN": "Asia/Kolkata", "FX": "America/New_York"}
+    for cal_name in ["US", "IN", "FX"]:
+        calendar_id = hashlib.md5(cal_name.encode()).hexdigest()
+        calendars.append(
+            {
+                "calendar_id": calendar_id,
+                "name": cal_name,
+                "timezone": tz_map.get(cal_name),
+                # Store as JSON string to avoid pyarrow object dtype issues.
+                "meta": json.dumps({}),
+            }
+        )
         tmp = cal.copy()
-        tmp["calendar"] = cal_name
+        tmp["calendar_id"] = calendar_id
         tmp["is_trading_day"] = tmp["is_weekday"]
-        out.append(tmp[["calendar", "date", "is_trading_day"]])
+        days.append(tmp[["calendar_id", "date", "is_trading_day"]])
 
-    return pd.concat(out, ignore_index=True)
+    return pd.DataFrame(calendars), pd.concat(days, ignore_index=True)
 
 
 def build_duckdb(processed_root: Path) -> None:
@@ -559,13 +706,23 @@ def build_duckdb(processed_root: Path) -> None:
             """
         )
 
-    calendar_path = processed_root / "calendar_days.parquet"
-    if calendar_path.exists():
+    trading_calendars_path = processed_root / "trading_calendars.parquet"
+    if trading_calendars_path.exists():
+        con.execute(
+            f"""
+            CREATE OR REPLACE VIEW trading_calendars AS
+            SELECT *
+            FROM read_parquet('{_q(str(trading_calendars_path))}');
+            """
+        )
+
+    calendar_days_path = processed_root / "calendar_days.parquet"
+    if calendar_days_path.exists():
         con.execute(
             f"""
             CREATE OR REPLACE VIEW calendar_days AS
             SELECT *
-            FROM read_parquet('{_q(str(calendar_path))}');
+            FROM read_parquet('{_q(str(calendar_days_path))}');
             """
         )
 
@@ -658,15 +815,19 @@ def ingest_snapshot(cfg: IngestConfig) -> None:
 
     # Calendars
     if min_seen is not None and max_seen is not None:
-        cal = build_weekday_calendars(min_seen, max_seen)
-        cal_out = cfg.processed_root / "calendar_days.parquet"
+        trading_cal_df, calendar_days_df = build_weekday_calendars(min_seen, max_seen)
+        trading_out = cfg.processed_root / "trading_calendars.parquet"
+        days_out = cfg.processed_root / "calendar_days.parquet"
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
 
-            pq.write_table(pa.Table.from_pandas(cal, preserve_index=False), cal_out)
-        except Exception:
-            cal.to_csv(cfg.processed_root / "calendar_days.csv", index=False)
+            pq.write_table(pa.Table.from_pandas(trading_cal_df, preserve_index=False), trading_out)
+            pq.write_table(pa.Table.from_pandas(calendar_days_df, preserve_index=False), days_out)
+        except Exception as e:
+            print(f"[WARN] Calendar parquet write failed, falling back to CSV: {e}")
+            trading_cal_df.to_csv(cfg.processed_root / "trading_calendars.csv", index=False)
+            calendar_days_df.to_csv(cfg.processed_root / "calendar_days.csv", index=False)
 
     # DuckDB
     build_duckdb(cfg.processed_root)

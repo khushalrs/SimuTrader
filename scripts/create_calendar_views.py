@@ -14,11 +14,28 @@ except ImportError as exc:
 def main() -> int:
     duckdb_path = os.getenv("DUCKDB_PATH", "./data/processed/simutrader.duckdb")
     sql_path = Path(__file__).resolve().parent / "duckdb" / "002_calendar_views.sql"
+    base_root = Path(os.getenv("PARQUET_DIR", "./data/processed"))
 
     if not sql_path.exists():
         raise SystemExit(f"Missing SQL file: {sql_path}")
 
     con = duckdb.connect(duckdb_path)
+    trading_cal_path = base_root / "trading_calendars.parquet"
+    calendar_days_path = base_root / "calendar_days.parquet"
+    if trading_cal_path.exists():
+        con.execute(
+            f"""
+            CREATE OR REPLACE VIEW trading_calendars AS
+            SELECT * FROM read_parquet('{str(trading_cal_path).replace("'", "''")}')
+            """
+        )
+    if calendar_days_path.exists():
+        con.execute(
+            f"""
+            CREATE OR REPLACE VIEW calendar_days AS
+            SELECT * FROM read_parquet('{str(calendar_days_path).replace("'", "''")}')
+            """
+        )
     con.execute(sql_path.read_text())
     con.close()
     return 0
