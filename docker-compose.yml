@@ -32,6 +32,19 @@ services:
       - postgres
       - redis
 
+  worker:
+    build:
+      context: ./apps/api
+    env_file:
+      - ./apps/api/.env.example
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=INFO"]
+    volumes:
+      - ./apps/api/app:/app/app
+      - ./data:/app/data
+    depends_on:
+      - postgres
+      - redis
+
   web:
     build:
       context: ./apps/web

@@ -12,9 +12,10 @@ except ImportError as exc:
 
 
 def main() -> int:
-    duckdb_path = os.getenv("DUCKDB_PATH", "./data/processed/simutrader.duckdb")
     sql_path = Path(__file__).resolve().parent / "duckdb" / "002_calendar_views.sql"
-    base_root = Path(os.getenv("PARQUET_DIR", "./data/processed"))
+    data_root = Path(os.getenv("DATA_DIR", "./data"))
+    base_root = Path(os.getenv("PARQUET_DIR", data_root / "processed"))
+    duckdb_path = os.getenv("DUCKDB_PATH", str(base_root / "simutrader.duckdb"))
 
     if not sql_path.exists():
         raise SystemExit(f"Missing SQL file: {sql_path}")

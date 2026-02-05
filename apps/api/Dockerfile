@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY pyproject.toml /app/pyproject.toml
 
-RUN pip install --no-cache-dir fastapi uvicorn[standard] sqlalchemy alembic psycopg[binary]
+RUN pip install --no-cache-dir fastapi uvicorn[standard] sqlalchemy alembic psycopg[binary] duckdb celery redis
 
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini

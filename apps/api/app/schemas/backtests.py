@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 
@@ -29,3 +29,38 @@ class BacktestOut(BaseModel):
     config_snapshot: Dict[str, Any]
     data_snapshot_id: str
     seed: int
+
+
+class RunDailyEquityOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: UUID
+    date: date
+    equity_base: float
+    cash_base: float
+    gross_exposure_base: float
+    net_exposure_base: float
+    drawdown: float
+    fees_cum_base: float
+    taxes_cum_base: float
+    borrow_fees_cum_base: float
+    margin_interest_cum_base: float
+
+
+class RunMetricOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: UUID
+    cagr: Optional[float] = None
+    volatility: Optional[float] = None
+    sharpe: Optional[float] = None
+    sortino: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    turnover: Optional[float] = None
+    gross_return: Optional[float] = None
+    net_return: Optional[float] = None
+    fee_drag: Optional[float] = None
+    tax_drag: Optional[float] = None
+    borrow_drag: Optional[float] = None
+    margin_interest_drag: Optional[float] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
