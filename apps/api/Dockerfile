@@ -4,8 +4,10 @@ WORKDIR /app
 
 COPY pyproject.toml /app/pyproject.toml
 
-RUN pip install --no-cache-dir fastapi uvicorn[standard]
+RUN pip install --no-cache-dir fastapi uvicorn[standard] sqlalchemy alembic psycopg[binary]
 
+COPY alembic /app/alembic
+COPY alembic.ini /app/alembic.ini
 COPY app /app/app
 
 EXPOSE 8000

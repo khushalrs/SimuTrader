@@ -41,5 +41,6 @@ services:
       - "${WEB_PORT}:3000"
     volumes:
       - ./apps/web:/app
+      - /app/node_modules
     depends_on:
       - api

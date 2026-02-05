@@ -3,6 +3,13 @@ name = "simutrader-api"
 version = "0.1.0"
 description = "SimuTrader FastAPI backend"
 requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.13",
+    "fastapi>=0.110",
+    "psycopg[binary]>=3.1",
+    "sqlalchemy>=2.0",
+    "uvicorn[standard]>=0.24",
+]
 
 [tool.ruff]
 line-length = 100
