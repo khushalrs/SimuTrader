@@ -17,7 +17,7 @@ def execute_run(db: Session, run: BacktestRun) -> BacktestRun:
 
     try:
         run_buy_and_hold(db, run, run.config_snapshot)
-        run.status = "COMPLETED"
+        run.status = "SUCCEEDED"
         run.error = None
     except Exception as exc:
         run.status = "FAILED"

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import date
+from math import sqrt
 from typing import Any, Dict, Iterable, Tuple
 
 from sqlalchemy.orm import Session
 
 from app.data.duckdb import get_duckdb_conn
-from app.models.backtests import BacktestRun, RunDailyEquity
+from app.models.backtests import BacktestRun, RunDailyEquity, RunMetric
 from app.services import calendar_policy
 
 
@@ -79,6 +80,74 @@ def _fetch_calendar_with_prices(
     ).fetchall()
 
 
+def _compute_metrics(equity_series: list[float]) -> dict[str, float | None]:
+    if len(equity_series) < 2:
+        return {
+            "cagr": None,
+            "volatility": None,
+            "sharpe": None,
+            "max_drawdown": None,
+            "gross_return": None,
+            "net_return": None,
+            "fee_drag": 0.0,
+            "tax_drag": 0.0,
+            "borrow_drag": 0.0,
+            "margin_interest_drag": 0.0,
+        }
+
+    initial = equity_series[0]
+    final = equity_series[-1]
+
+    daily_returns: list[float] = []
+    for prev, curr in zip(equity_series[:-1], equity_series[1:]):
+        if prev != 0:
+            daily_returns.append(curr / prev - 1.0)
+
+    if daily_returns:
+        mean_ret = sum(daily_returns) / len(daily_returns)
+        if len(daily_returns) > 1:
+            variance = sum((r - mean_ret) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+        else:
+            variance = 0.0
+        std_ret = sqrt(variance)
+        volatility = std_ret * sqrt(252.0) if std_ret else 0.0
+        sharpe = (mean_ret * 252.0) / volatility if volatility else None
+        if initial > 0 and final > 0:
+            cagr = (final / initial) ** (252.0 / len(daily_returns)) - 1.0
+        else:
+            cagr = None
+    else:
+        mean_ret = 0.0
+        volatility = None
+        sharpe = None
+        cagr = None
+
+    peak = equity_series[0]
+    max_drawdown = 0.0
+    for equity in equity_series:
+        if equity > peak:
+            peak = equity
+        if peak:
+            drawdown = equity / peak - 1.0
+            if drawdown < max_drawdown:
+                max_drawdown = drawdown
+
+    gross_return = final / initial - 1.0 if initial else None
+
+    return {
+        "cagr": cagr,
+        "volatility": volatility,
+        "sharpe": sharpe,
+        "max_drawdown": max_drawdown,
+        "gross_return": gross_return,
+        "net_return": gross_return,
+        "fee_drag": 0.0,
+        "tax_drag": 0.0,
+        "borrow_drag": 0.0,
+        "margin_interest_drag": 0.0,
+    }
+
+
 def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> int:
     symbol, asset_class, calendars_map, start_date, end_date, initial_cash = _extract_config(
         config_snapshot
@@ -106,6 +175,7 @@ def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, A
     last_price = None
     peak_equity = initial_cash
     records: list[RunDailyEquity] = []
+    equity_series: list[float] = []
 
     for dt, is_us, is_in, is_fx, close in rows:
         flags = {"is_us_trading": is_us, "is_in_trading": is_in, "is_fx_trading": is_fx}
@@ -128,6 +198,7 @@ def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, A
             peak_equity = equity
         drawdown = (equity / peak_equity - 1.0) if peak_equity else 0.0
 
+        equity_series.append(equity)
         records.append(
             RunDailyEquity(
                 run_id=run.run_id,
@@ -145,4 +216,25 @@ def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, A
         )
 
     db.bulk_save_objects(records)
+
+    metrics = _compute_metrics(equity_series)
+    db.query(RunMetric).filter(RunMetric.run_id == run.run_id).delete(synchronize_session=False)
+    db.add(
+        RunMetric(
+            run_id=run.run_id,
+            cagr=metrics["cagr"],
+            volatility=metrics["volatility"],
+            sharpe=metrics["sharpe"],
+            sortino=None,
+            max_drawdown=metrics["max_drawdown"],
+            turnover=None,
+            gross_return=metrics["gross_return"],
+            net_return=metrics["net_return"],
+            fee_drag=metrics["fee_drag"],
+            tax_drag=metrics["tax_drag"],
+            borrow_drag=metrics["borrow_drag"],
+            margin_interest_drag=metrics["margin_interest_drag"],
+            meta={},
+        )
+    )
     return len(records)
