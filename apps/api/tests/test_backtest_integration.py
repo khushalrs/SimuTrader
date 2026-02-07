@@ -6,7 +6,15 @@ from uuid import uuid4
 import duckdb
 
 from app.backtest.executor import execute_run
-from app.models.backtests import BacktestRun, RunDailyEquity, RunMetric
+from app.models.backtests import (
+    BacktestRun,
+    RunDailyEquity,
+    RunFill,
+    RunFinancing,
+    RunMetric,
+    RunOrder,
+    RunPosition,
+)
 
 
 class _FakeQuery:
@@ -22,6 +30,14 @@ class _FakeQuery:
             self._session.equity_rows = []
         elif self._model is RunMetric:
             self._session.metrics_rows = []
+        elif self._model is RunOrder:
+            self._session.order_rows = []
+        elif self._model is RunFill:
+            self._session.fill_rows = []
+        elif self._model is RunPosition:
+            self._session.position_rows = []
+        elif self._model is RunFinancing:
+            self._session.financing_rows = []
         return 0
 
 
@@ -29,12 +45,28 @@ class _FakeSession:
     def __init__(self):
         self.equity_rows: list[RunDailyEquity] = []
         self.metrics_rows: list[RunMetric] = []
+        self.order_rows: list[RunOrder] = []
+        self.fill_rows: list[RunFill] = []
+        self.position_rows: list[RunPosition] = []
+        self.financing_rows: list[RunFinancing] = []
 
     def query(self, model):
         return _FakeQuery(self, model)
 
     def bulk_save_objects(self, records):
-        self.equity_rows.extend(records)
+        if not records:
+            return
+        first = records[0]
+        if isinstance(first, RunDailyEquity):
+            self.equity_rows.extend(records)
+        elif isinstance(first, RunOrder):
+            self.order_rows.extend(records)
+        elif isinstance(first, RunFill):
+            self.fill_rows.extend(records)
+        elif isinstance(first, RunPosition):
+            self.position_rows.extend(records)
+        elif isinstance(first, RunFinancing):
+            self.financing_rows.extend(records)
 
     def add(self, obj):
         if isinstance(obj, RunMetric):
@@ -198,6 +230,12 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert db.equity_rows, "Expected equity rows to be persisted"
     assert db.equity_rows[0].equity_base != db.equity_rows[-1].equity_base
     assert db.metrics_rows, "Expected metrics row to be persisted"
+    assert db.order_rows, "Expected order rows to be persisted"
+    assert db.fill_rows, "Expected fill rows to be persisted"
+    assert db.position_rows, "Expected position rows to be persisted"
+    assert db.financing_rows, "Expected financing rows to be persisted"
+    assert len(db.order_rows) == len(symbols)
+    assert len(db.fill_rows) == len(symbols)
     assert db.metrics_rows[0].gross_return is not None
 
 
@@ -272,6 +310,11 @@ def test_buy_and_hold_missing_bars_carry_forward(tmp_path, monkeypatch):
 
     execute_run(db, run)
 
-    expected_days = (end - start).days + 1
+    con = duckdb.connect(str(duckdb_path))
+    expected_days = con.execute(
+        "select count(*) from global_trading_days where date between ? and ?",
+        [start, end],
+    ).fetchone()[0]
+    con.close()
     assert run.status == "SUCCEEDED"
     assert len(db.equity_rows) == expected_days
