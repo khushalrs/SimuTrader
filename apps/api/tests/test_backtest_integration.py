@@ -47,7 +47,7 @@ class _FakeSession:
         return None
 
 
-def _seed_duckdb(path: str, symbol: str, start: date, end: date) -> None:
+def _seed_duckdb(path: str, symbols: list[str], start: date, end: date) -> None:
     con = duckdb.connect(path)
     con.execute(
         """
@@ -71,27 +71,27 @@ def _seed_duckdb(path: str, symbol: str, start: date, end: date) -> None:
     cal_rows = []
     price_rows = []
     current = start
-    price = 100.0
     while current <= end:
         is_weekday = current.weekday() < 5
         cal_rows.append(("us", current.isoformat(), is_weekday))
         if is_weekday:
-            price_rows.append(
-                (
-                    current.isoformat(),
-                    symbol,
-                    "US_EQUITY",
-                    "USD",
-                    price,
-                    price,
-                    price,
-                    price,
-                    1000.0,
-                    "NYSE",
-                    "seed",
+            for idx, symbol in enumerate(symbols):
+                price = 100.0 + idx * 10.0 + (current - start).days * (1.0 + idx * 0.1)
+                price_rows.append(
+                    (
+                        current.isoformat(),
+                        symbol,
+                        "US_EQUITY",
+                        "USD",
+                        price,
+                        price,
+                        price,
+                        price,
+                        1000.0,
+                        "NYSE",
+                        "seed",
+                    )
                 )
-            )
-            price += 1.0
         current += timedelta(days=1)
 
     con.executemany("INSERT INTO calendar_days VALUES (?, ?, ?)", cal_rows)
@@ -159,9 +159,9 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "simutrader.duckdb"
     start = date(2024, 1, 2)
     end = date(2024, 3, 1)
-    symbol = "TEST"
+    symbols = ["TESTA", "TESTB"]
 
-    _seed_duckdb(str(duckdb_path), symbol, start, end)
+    _seed_duckdb(str(duckdb_path), symbols, start, end)
     monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
 
     db = _FakeSession()
@@ -169,8 +169,12 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
         run_id=uuid4(),
         status="QUEUED",
         config_snapshot={
-            "symbol": symbol,
-            "asset_class": "US_EQUITY",
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY", "amount": 4000.0},
+                    {"symbol": symbols[1], "asset_class": "US_EQUITY", "amount": 6000.0},
+                ]
+            },
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
             "initial_cash": 10000.0,

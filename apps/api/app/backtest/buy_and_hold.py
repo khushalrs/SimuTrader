@@ -1,4 +1,4 @@
-"""Minimal buy-and-hold backtest engine (single symbol)."""
+"""Minimal buy-and-hold backtest engine (multi-symbol)."""
 
 from __future__ import annotations
 
@@ -21,20 +21,46 @@ def _parse_date(value: Any, field_name: str) -> date:
     return date.fromisoformat(str(value))
 
 
-def _extract_config(config: Dict[str, Any]) -> Tuple[str, str, Dict[str, str] | None, date, date, float]:
-    symbol = config.get("symbol")
-    asset_class = config.get("asset_class")
-
+def _extract_config(
+    config: Dict[str, Any],
+) -> Tuple[list[dict[str, Any]], Dict[str, str] | None, date, date, float]:
     universe = config.get("universe") or {}
-    instruments = universe.get("instruments") or []
-    if not symbol and instruments:
-        symbol = instruments[0].get("symbol")
-        asset_class = asset_class or instruments[0].get("asset_class")
+    instruments = list(universe.get("instruments") or [])
 
-    if not symbol:
-        raise ValueError("config_snapshot missing symbol (expected top-level or universe.instruments)")
-    if not asset_class:
-        raise ValueError("config_snapshot missing asset_class (expected top-level or instrument.asset_class)")
+    if not instruments:
+        symbol = config.get("symbol")
+        asset_class = config.get("asset_class")
+        amount = config.get("amount")
+        if symbol or asset_class or amount is not None:
+            instruments = [{"symbol": symbol, "asset_class": asset_class, "amount": amount}]
+
+    if not instruments:
+        raise ValueError(
+            "config_snapshot missing instruments (expected universe.instruments or top-level symbol)"
+        )
+
+    parsed: list[dict[str, Any]] = []
+    seen_symbols: set[str] = set()
+    for idx, inst in enumerate(instruments, start=1):
+        symbol = inst.get("symbol")
+        asset_class = inst.get("asset_class")
+        amount = inst.get("amount")
+
+        if not symbol:
+            raise ValueError(f"instrument #{idx} missing symbol")
+        if not asset_class:
+            raise ValueError(f"instrument #{idx} missing asset_class")
+        if symbol in seen_symbols:
+            raise ValueError(f"duplicate symbol '{symbol}' in instruments")
+        if amount is None:
+            raise ValueError(f"instrument '{symbol}' missing amount")
+
+        amount_val = float(amount)
+        if amount_val <= 0:
+            raise ValueError(f"instrument '{symbol}' amount must be > 0")
+
+        parsed.append({"symbol": symbol, "asset_class": asset_class, "amount": amount_val})
+        seen_symbols.add(symbol)
 
     calendars_map = universe.get("calendars")
     backtest_cfg = config.get("backtest") or {}
@@ -45,7 +71,13 @@ def _extract_config(config: Dict[str, Any]) -> Tuple[str, str, Dict[str, str] | 
     if end_date < start_date:
         raise ValueError("end_date must be >= start_date")
 
-    return symbol, asset_class, calendars_map, start_date, end_date, initial_cash
+    total_amount = sum(inst["amount"] for inst in parsed)
+    if total_amount > initial_cash:
+        raise ValueError(
+            f"total amount {total_amount:.2f} exceeds initial_cash {initial_cash:.2f}"
+        )
+
+    return parsed, calendars_map, start_date, end_date, initial_cash
 
 
 def _ensure_calendar_views(con) -> None:
@@ -59,24 +91,28 @@ def _ensure_calendar_views(con) -> None:
 
 
 def _fetch_calendar_with_prices(
-    con, symbol: str, start_date: date, end_date: date
+    con, symbols: list[str], start_date: date, end_date: date
 ) -> Iterable[tuple]:
+    if not symbols:
+        raise ValueError("At least one symbol is required")
+    placeholders = ",".join(["?"] * len(symbols))
     return con.execute(
-        """
+        f"""
         SELECT
             g.date,
             g.is_us_trading,
             g.is_in_trading,
             g.is_fx_trading,
+            p.symbol,
             p.close
         FROM global_calendar g
         LEFT JOIN prices p
             ON p.date = g.date
-           AND p.symbol = ?
+           AND p.symbol IN ({placeholders})
         WHERE g.date BETWEEN ? AND ?
-        ORDER BY g.date
+        ORDER BY g.date, p.symbol
         """,
-        [symbol, start_date, end_date],
+        [*symbols, start_date, end_date],
     ).fetchall()
 
 
@@ -149,51 +185,58 @@ def _compute_metrics(equity_series: list[float]) -> dict[str, float | None]:
 
 
 def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> int:
-    symbol, asset_class, calendars_map, start_date, end_date, initial_cash = _extract_config(
+    instruments, calendars_map, start_date, end_date, initial_cash = _extract_config(
         config_snapshot
     )
+    symbols = [inst["symbol"] for inst in instruments]
 
     con = get_duckdb_conn()
     try:
         _ensure_calendar_views(con)
-        rows = _fetch_calendar_with_prices(con, symbol, start_date, end_date)
+        rows = _fetch_calendar_with_prices(con, symbols, start_date, end_date)
     finally:
         con.close()
 
     if not rows:
         raise ValueError(f"No calendar rows between {start_date} and {end_date}")
 
-    cal_name = calendar_policy.calendar_for_asset_class(asset_class, calendars_map)
+    symbol_calendars = {
+        inst["symbol"]: calendar_policy.calendar_for_asset_class(
+            inst["asset_class"], calendars_map
+        )
+        for inst in instruments
+    }
     calendar_policy.strict_missing_bar = False
 
     db.query(RunDailyEquity).filter(RunDailyEquity.run_id == run.run_id).delete(
         synchronize_session=False
     )
 
-    position_qty = 0.0
     cash = initial_cash
-    last_price = None
+    position_qty: dict[str, float] = {s: 0.0 for s in symbols}
+    last_price: dict[str, float | None] = {s: None for s in symbols}
+    has_bought: dict[str, bool] = {s: False for s in symbols}
+    amount_alloc: dict[str, float] = {inst["symbol"]: inst["amount"] for inst in instruments}
+
     peak_equity = initial_cash
     records: list[RunDailyEquity] = []
     equity_series: list[float] = []
 
-    for dt, is_us, is_in, is_fx, close in rows:
-        flags = {"is_us_trading": is_us, "is_in_trading": is_in, "is_fx_trading": is_fx}
-        market_open = calendar_policy.is_market_open(flags, cal_name)
+    current_date = None
+    flags = None
 
-        if market_open and close is not None:
-            if position_qty == 0.0:
-                position_qty = cash / float(close)
-                cash -= position_qty * float(close)
-            last_price = float(close)
+    def finalize_day(day):
+        nonlocal peak_equity
+        if day is None:
+            return
 
-        if last_price is None:
-            position_value = 0.0
-            equity = cash
-        else:
-            position_value = position_qty * last_price
-            equity = cash + position_value
+        total_position_value = 0.0
+        for sym in symbols:
+            price = last_price[sym]
+            if price is not None:
+                total_position_value += position_qty[sym] * price
 
+        equity = cash + total_position_value
         if equity > peak_equity:
             peak_equity = equity
         drawdown = (equity / peak_equity - 1.0) if peak_equity else 0.0
@@ -202,11 +245,11 @@ def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, A
         records.append(
             RunDailyEquity(
                 run_id=run.run_id,
-                date=dt,
+                date=day,
                 equity_base=equity,
                 cash_base=cash,
-                gross_exposure_base=abs(position_value),
-                net_exposure_base=position_value,
+                gross_exposure_base=abs(total_position_value),
+                net_exposure_base=total_position_value,
                 drawdown=drawdown,
                 fees_cum_base=0.0,
                 taxes_cum_base=0.0,
@@ -214,6 +257,35 @@ def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, A
                 margin_interest_cum_base=0.0,
             )
         )
+
+    for dt, is_us, is_in, is_fx, symbol, close in rows:
+        if current_date is None:
+            current_date = dt
+        if dt != current_date:
+            finalize_day(current_date)
+            current_date = dt
+
+        if symbol is None:
+            continue
+
+        flags = {"is_us_trading": is_us, "is_in_trading": is_in, "is_fx_trading": is_fx}
+        cal_name = symbol_calendars[symbol]
+        market_open = calendar_policy.is_market_open(flags, cal_name)
+
+        if market_open and close is not None:
+            price = float(close)
+            if not has_bought[symbol]:
+                amount = amount_alloc[symbol]
+                if amount > cash:
+                    raise ValueError(
+                        f"insufficient cash for {symbol}: need {amount:.2f}, have {cash:.2f}"
+                    )
+                position_qty[symbol] = amount / price
+                cash -= amount
+                has_bought[symbol] = True
+            last_price[symbol] = price
+
+    finalize_day(current_date)
 
     db.bulk_save_objects(records)
 
