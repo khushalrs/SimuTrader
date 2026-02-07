@@ -31,8 +31,16 @@ def _extract_config(
         symbol = config.get("symbol")
         asset_class = config.get("asset_class")
         amount = config.get("amount")
-        if symbol or asset_class or amount is not None:
-            instruments = [{"symbol": symbol, "asset_class": asset_class, "amount": amount}]
+        weight = config.get("weight")
+        if symbol or asset_class or amount is not None or weight is not None:
+            instruments = [
+                {
+                    "symbol": symbol,
+                    "asset_class": asset_class,
+                    "amount": amount,
+                    "weight": weight,
+                }
+            ]
 
     if not instruments:
         raise ValueError(
@@ -41,10 +49,13 @@ def _extract_config(
 
     parsed: list[dict[str, Any]] = []
     seen_symbols: set[str] = set()
+    has_amount = False
+    has_weight = False
     for idx, inst in enumerate(instruments, start=1):
         symbol = inst.get("symbol")
         asset_class = inst.get("asset_class")
         amount = inst.get("amount")
+        weight = inst.get("weight")
 
         if not symbol:
             raise ValueError(f"instrument #{idx} missing symbol")
@@ -52,15 +63,36 @@ def _extract_config(
             raise ValueError(f"instrument #{idx} missing asset_class")
         if symbol in seen_symbols:
             raise ValueError(f"duplicate symbol '{symbol}' in instruments")
-        if amount is None:
-            raise ValueError(f"instrument '{symbol}' missing amount")
+        if amount is not None and weight is not None:
+            raise ValueError(f"instrument '{symbol}' cannot specify both amount and weight")
 
-        amount_val = float(amount)
-        if amount_val <= 0:
-            raise ValueError(f"instrument '{symbol}' amount must be > 0")
-
-        parsed.append({"symbol": symbol, "asset_class": asset_class, "amount": amount_val})
+        if amount is not None:
+            amount_val = float(amount)
+            if amount_val <= 0:
+                raise ValueError(f"instrument '{symbol}' amount must be > 0")
+            parsed.append({"symbol": symbol, "asset_class": asset_class, "amount": amount_val})
+            has_amount = True
+        else:
+            if weight is not None:
+                weight_val = float(weight)
+                if weight_val <= 0:
+                    raise ValueError(f"instrument '{symbol}' weight must be > 0")
+                parsed.append({"symbol": symbol, "asset_class": asset_class, "weight": weight_val})
+                has_weight = True
+            else:
+                parsed.append({"symbol": symbol, "asset_class": asset_class})
         seen_symbols.add(symbol)
+
+    if has_amount and has_weight:
+        raise ValueError("cannot mix amount and weight across instruments")
+    if has_amount:
+        missing = [inst["symbol"] for inst in parsed if "amount" not in inst]
+        if missing:
+            raise ValueError(f"amount required for all instruments (missing: {missing})")
+    if has_weight:
+        missing = [inst["symbol"] for inst in parsed if "weight" not in inst]
+        if missing:
+            raise ValueError(f"weight required for all instruments (missing: {missing})")
 
     calendars_map = universe.get("calendars")
     backtest_cfg = config.get("backtest") or {}
@@ -71,11 +103,26 @@ def _extract_config(
     if end_date < start_date:
         raise ValueError("end_date must be >= start_date")
 
-    total_amount = sum(inst["amount"] for inst in parsed)
-    if total_amount > initial_cash:
-        raise ValueError(
-            f"total amount {total_amount:.2f} exceeds initial_cash {initial_cash:.2f}"
-        )
+    if has_amount:
+        total_amount = sum(inst["amount"] for inst in parsed)
+        if total_amount > initial_cash:
+            raise ValueError(
+                f"total amount {total_amount:.2f} exceeds initial_cash {initial_cash:.2f}"
+            )
+    else:
+        if has_weight:
+            weight_sum = sum(inst["weight"] for inst in parsed)
+            if weight_sum <= 0:
+                raise ValueError("weight sum must be > 0")
+            for inst in parsed:
+                inst["weight"] = inst["weight"] / weight_sum
+        else:
+            equal_weight = 1.0 / len(parsed)
+            for inst in parsed:
+                inst["weight"] = equal_weight
+
+        for inst in parsed:
+            inst["amount"] = inst["weight"] * initial_cash
 
     return parsed, calendars_map, start_date, end_date, initial_cash
 

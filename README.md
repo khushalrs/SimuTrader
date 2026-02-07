@@ -1,19 +1,28 @@
 # SimuTrader
 
-SimuTrader is a web app for running daily backtests over US stocks, Indian stocks, and FX using snapshot datasets. It supports long/short with margin, configurable financing costs, and a tax regime toggle (US vs India) that is parameter-driven. Results are presented in a clean dashboard with cost/tax decomposition and run comparisons.
+SimuTrader is a web app for running daily backtests over US stocks, Indian stocks, and FX using snapshot datasets. The current implementation focuses on a multi-symbol Buy & Hold baseline with a FastAPI backend, DuckDB for reading Parquet OHLCV, and Postgres for run metadata + results.
 
-## MVP To-Do
+## Current State (What Works Today)
+
+- Buy & Hold backtests for a basket of symbols with either explicit amounts or equal-weight default.
+- Executes at the first available close in the date range and then holds.
+- Missing bars carry forward the last known price.
+- Persists daily equity series and basic metrics.
+- API endpoints for runs and assets (see API section).
+- Docker Compose for API, worker, Postgres, Redis, and web container.
+
+## MVP To-Do (Remaining)
 
 - ~~Repo + Docker Compose skeleton (frontend, api, postgres, redis)~~
-- Data ingestion script v1: download/load snapshots -> normalize -> write Parquet partitions + insert `assets` metadata
-- Trading calendar alignment: generate US/India calendars (weekday + deterministic holidays)
+- ~~Data ingestion script v1: normalize snapshot data -> Parquet partitions + DuckDB views~~
+- ~~Trading calendar alignment: deterministic weekday calendars + DuckDB calendar views~~
 - Config validation: JSON Schema validation for strategy configs + server-side checks
-- Backtest engine v1 (long-only): daily loop, orders, fills, portfolio accounting
+- Backtest engine v1: add fills, positions, and cash flow persistence
 - Add transaction costs: commission + slippage models
 - Add shorting support: negative qty, borrow fee daily, cover events
 - Add margin support: leverage constraints, borrowed cash tracking, margin interest
 - Add taxes v1: FIFO lots + holding period buckets; US/India toggle parameters; generate `run_tax_events`
-- Persist outputs: write `run_daily_equity`, `run_fills`, `run_metrics` to Postgres
+- Persist outputs: write `run_positions`, `run_fills`, `run_cash_flows` to Postgres
 - Frontend MVP: strategy builder + run list + run detail dashboard (charts + ledger + cost decomposition)
 - Compare runs UI: side-by-side metrics + equity/drawdown overlays
 - Stretch: notable strategy presets gallery + seeded demo runs
@@ -35,26 +44,61 @@ SimuTrader is a web app for running daily backtests over US stocks, Indian stock
 - Postgres for assets, strategies, backtest runs, metrics, daily equity, trades, taxes, and financing
 - Base currency reporting with FX conversion (e.g., USDINR)
 
-## API (MVP)
+## API (Current)
 
-- `POST /strategies`, `GET /strategies`, `GET /strategies/{id}`
-- `POST /backtests`, `GET /backtests`, `GET /backtests/{run_id}`
-- `GET /backtests/{run_id}/equity`, `/trades`, `/taxes`
-- `GET /backtests/{run_id}/compare?run_ids=...`
-- `GET /assets`, `GET /assets/{symbol}`
+- `GET /health`
+- `GET /assets`
+- `POST /backtests`, `GET /backtests/{run_id}`
+- `GET /runs/{run_id}`
+- `GET /runs/{run_id}/equity`
+- `GET /runs/{run_id}/metrics`
+
+## Backtest Config (Buy & Hold)
+
+Amount-based allocation:
+```json
+{
+  "universe": {
+    "instruments": [
+      { "symbol": "AAPL", "asset_class": "US_EQUITY", "amount": 4000 },
+      { "symbol": "MSFT", "asset_class": "US_EQUITY", "amount": 6000 }
+    ]
+  },
+  "start_date": "2024-01-02",
+  "end_date": "2024-03-01",
+  "initial_cash": 10000
+}
+```
+
+Equal-weight default (no amounts or weights):
+```json
+{
+  "universe": {
+    "instruments": [
+      { "symbol": "AAPL", "asset_class": "US_EQUITY" },
+      { "symbol": "MSFT", "asset_class": "US_EQUITY" }
+    ]
+  },
+  "start_date": "2024-01-02",
+  "end_date": "2024-03-01",
+  "initial_cash": 10000
+}
+```
 
 ## Local Dev
 
 1) Copy env templates as needed.
 2) Run `make up`.
 3) API health: `http://localhost:8000/health`.
+4) Prepare data (once per dataset):
+   - Run `scripts/ingest/ingest_preprocess.py`
+   - Run `scripts/create_calendar_views.py`
+   - Run `scripts/seed_postgres_metadata.py`
 
 ## Required Next Steps
 
-- Implement data ingestion scripts in `scripts/ingest/` to produce normalized Parquet and seed `assets`.
-- Define Postgres schema and migrations in `apps/api/alembic/`.
-- Build core backtest engine + cost/tax logic in `apps/api/app/backtest/`.
-- Implement API routers in `apps/api/app/api/`.
+- Add holdings/fills/cashflow persistence in the backtest engine.
+- Add strategy registry + validation (Pydantic).
 - Build UI in `apps/web/app/` for strategy builder, run list, and dashboards.
 
 ## Quality Bar
