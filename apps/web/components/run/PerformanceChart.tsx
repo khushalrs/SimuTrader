@@ -11,7 +11,7 @@ import {
 } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
-const data = [
+const DEFAULT_DATA = [
     { date: "Jan 01", value: 100 },
     { date: "Jan 08", value: 102 },
     { date: "Jan 15", value: 105 },
@@ -24,7 +24,13 @@ const data = [
     { date: "Mar 05", value: 118 },
 ]
 
-export function PerformanceChart() {
+interface PerformanceChartProps {
+    data?: { date: string; value: number }[]
+}
+
+export function PerformanceChart({ data }: PerformanceChartProps) {
+    const chartData = data && data.length > 0 ? data : DEFAULT_DATA
+
     return (
         <Card className="col-span-3">
             <CardHeader>
@@ -36,7 +42,7 @@ export function PerformanceChart() {
             <CardContent className="pl-2">
                 <div className="h-[350px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={data}>
+                        <AreaChart data={chartData}>
                             <defs>
                                 <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
                                     <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
