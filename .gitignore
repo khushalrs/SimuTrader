@@ -6,6 +6,7 @@ Thumbs.db
 .idea/
 .vscode/
 project_description.md
+ui_guide.md
 *.diff
 *.swp
 *.swo
