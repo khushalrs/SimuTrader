@@ -45,6 +45,9 @@ class RunDailyEquityOut(BaseModel):
     taxes_cum_base: float
     borrow_fees_cum_base: float
     margin_interest_cum_base: float
+    equity_by_currency: Dict[str, float] = Field(default_factory=dict)
+    cash_by_currency: Dict[str, float] = Field(default_factory=dict)
+    fees_cum_by_currency: Dict[str, float] = Field(default_factory=dict)
 
 
 class RunMetricOut(BaseModel):

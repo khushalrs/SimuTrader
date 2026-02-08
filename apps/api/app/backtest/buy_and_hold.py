@@ -21,7 +21,18 @@ def _parse_date(value: Any, field_name: str) -> date:
 
 def _extract_config(
     config: Dict[str, Any],
-) -> Tuple[list[dict[str, Any]], Dict[str, str] | None, date, date, float]:
+) -> Tuple[
+    list[dict[str, Any]],
+    Dict[str, str] | None,
+    date,
+    date,
+    float,
+    Dict[str, float] | None,
+    str,
+    Dict[str, Any],
+    Dict[str, Any],
+    str,
+]:
     universe = config.get("universe") or {}
     instruments = list(universe.get("instruments") or [])
 
@@ -97,6 +108,14 @@ def _extract_config(
     start_date = _parse_date(backtest_cfg.get("start_date") or config.get("start_date"), "start_date")
     end_date = _parse_date(backtest_cfg.get("end_date") or config.get("end_date"), "end_date")
     initial_cash = float(backtest_cfg.get("initial_cash") or config.get("initial_cash") or 10000.0)
+    initial_cash_by_currency = backtest_cfg.get("initial_cash_by_currency") or config.get(
+        "initial_cash_by_currency"
+    )
+    data_policy = config.get("data_policy") or {}
+    missing_bar_policy = str(data_policy.get("missing_bar") or "FAIL").upper()
+    commission_cfg = config.get("commission") or {}
+    slippage_cfg = config.get("slippage") or {}
+    fill_price_policy = str(config.get("fill_price_policy") or "CLOSE").upper()
 
     if end_date < start_date:
         raise ValueError("end_date must be >= start_date")
@@ -122,13 +141,42 @@ def _extract_config(
         for inst in parsed:
             inst["amount"] = inst["weight"] * initial_cash
 
-    return parsed, calendars_map, start_date, end_date, initial_cash
+    if has_amount:
+        allocation_mode = "AMOUNT"
+    elif has_weight:
+        allocation_mode = "WEIGHT"
+    else:
+        allocation_mode = "EQUAL_WEIGHT"
+
+    return (
+        parsed,
+        calendars_map,
+        start_date,
+        end_date,
+        initial_cash,
+        initial_cash_by_currency,
+        missing_bar_policy,
+        commission_cfg,
+        slippage_cfg,
+        fill_price_policy,
+        allocation_mode,
+    )
 
 
 def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> int:
-    instruments, calendars_map, start_date, end_date, initial_cash = _extract_config(
-        config_snapshot
-    )
+    (
+        instruments,
+        calendars_map,
+        start_date,
+        end_date,
+        initial_cash,
+        initial_cash_by_currency,
+        missing_bar_policy,
+        commission_cfg,
+        slippage_cfg,
+        fill_price_policy,
+        allocation_mode,
+    ) = _extract_config(config_snapshot)
     amount_alloc: dict[str, float] = {inst["symbol"]: inst["amount"] for inst in instruments}
 
     def target_allocations(ctx):
@@ -146,6 +194,12 @@ def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, A
         start_date=start_date,
         end_date=end_date,
         initial_cash=initial_cash,
+        initial_cash_by_currency=initial_cash_by_currency,
         target_allocations_fn=target_allocations,
         include_financing=True,
+        commission_cfg=commission_cfg,
+        slippage_cfg=slippage_cfg,
+        fill_price_policy=fill_price_policy,
+        allocation_mode=allocation_mode,
+        missing_bar_policy=missing_bar_policy,
     )

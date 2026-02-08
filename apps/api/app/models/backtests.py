@@ -73,6 +73,9 @@ class RunDailyEquity(Base):
     taxes_cum_base = Column(Float, nullable=False)
     borrow_fees_cum_base = Column(Float, nullable=False)
     margin_interest_cum_base = Column(Float, nullable=False)
+    equity_by_currency = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    cash_by_currency = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    fees_cum_by_currency = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
 
     __table_args__ = (
         Index("run_daily_equity_date_idx", "date"),

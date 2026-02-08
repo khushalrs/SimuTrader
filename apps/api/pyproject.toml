@@ -8,6 +8,7 @@ dependencies = [
     "celery>=5.3",
     "duckdb>=1.0",
     "fastapi>=0.110",
+    "jsonschema>=4.21",
     "redis>=5.0",
     "psycopg[binary]>=3.1",
     "sqlalchemy>=2.0",

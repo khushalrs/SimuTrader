@@ -8,17 +8,25 @@ from app.backtest import execute_run
 from app.db import get_db
 from app.models.backtests import BacktestRun
 from app.schemas.backtests import BacktestCreate, BacktestOut
+from app.services.config_validation import validate_and_resolve_config
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
 
 
 @router.post("", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
 def create_backtest(payload: BacktestCreate, db: Session = Depends(get_db)) -> BacktestOut:
+    try:
+        resolved_config = validate_and_resolve_config(payload.config_snapshot)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
     run = BacktestRun(
         strategy_id=payload.strategy_id,
         name=payload.name,
         status="QUEUED",
-        config_snapshot=payload.config_snapshot,
+        config_snapshot=resolved_config,
         data_snapshot_id=payload.data_snapshot_id,
         seed=payload.seed,
     )

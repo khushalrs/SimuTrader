@@ -6,6 +6,7 @@ from uuid import uuid4
 import duckdb
 
 from app.backtest.executor import execute_run
+import pytest
 from app.models.backtests import (
     BacktestRun,
     RunDailyEquity,
@@ -236,6 +237,51 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert db.financing_rows, "Expected financing rows to be persisted"
     assert len(db.order_rows) == len(symbols)
     assert len(db.fill_rows) == len(symbols)
+
+
+def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    symbols = ["FEE"]
+
+    _seed_duckdb(str(duckdb_path), symbols, start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY", "amount": 1000.0},
+                ]
+            },
+            "backtest": {
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "initial_cash": 1010.0,
+            },
+            "commission": {"model": "BPS", "bps": 10, "min_fee_native": 0.0},
+            "slippage": {"model": "BPS", "bps": 50},
+            "fill_price_policy": "CLOSE",
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.fill_rows, "Expected fill rows to be persisted"
+    fill = db.fill_rows[0]
+    assert fill.price_native == pytest.approx(100.5, rel=1e-6)
+    assert fill.slippage_native == pytest.approx(5.0, rel=1e-6)
+    assert fill.commission_native == pytest.approx(1.005, rel=1e-6)
+    assert db.equity_rows, "Expected equity rows to be persisted"
+    fees = db.equity_rows[-1].fees_cum_by_currency.get("USD")
+    assert fees == pytest.approx(6.005, rel=1e-6)
     assert db.metrics_rows[0].gross_return is not None
 
 
@@ -300,6 +346,7 @@ def test_buy_and_hold_missing_bars_carry_forward(tmp_path, monkeypatch):
                     {"symbol": symbols[1], "asset_class": "US_EQUITY", "amount": 5000.0},
                 ]
             },
+            "data_policy": {"missing_bar": "FORWARD_FILL"},
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
             "initial_cash": 10000.0,
@@ -318,3 +365,42 @@ def test_buy_and_hold_missing_bars_carry_forward(tmp_path, monkeypatch):
     con.close()
     assert run.status == "SUCCEEDED"
     assert len(db.equity_rows) == expected_days
+
+
+def test_buy_and_hold_missing_bars_fail_by_default(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 20)
+    symbols = ["EPSILON", "ZETA"]
+
+    missing = {
+        "ZETA": {
+            date(2024, 1, 8),
+        }
+    }
+    _seed_duckdb(str(duckdb_path), symbols, start, end, missing=missing)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY", "amount": 5000.0},
+                    {"symbol": symbols[1], "asset_class": "US_EQUITY", "amount": 5000.0},
+                ]
+            },
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "initial_cash": 10000.0,
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "FAILED"
+    assert run.error and "Missing bar" in run.error

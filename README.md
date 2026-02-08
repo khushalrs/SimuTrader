@@ -6,7 +6,7 @@ SimuTrader is a web app for running daily backtests over US stocks, Indian stock
 
 - Buy & Hold backtests for a basket of symbols with either explicit amounts or equal-weight default.
 - Executes at the first available close in the date range and then holds.
-- Missing bars carry forward the last known price.
+- Missing bars on open-market days default to **FAIL**; optional **FORWARD_FILL** policy is available.
 - Persists daily equity series and basic metrics.
 - API endpoints for runs and assets (see API section).
 - Docker Compose for API, worker, Postgres, Redis, and web container.
@@ -42,7 +42,7 @@ SimuTrader is a web app for running daily backtests over US stocks, Indian stock
 
 - Parquet OHLCV partitions for price data (asset_class/symbol/year)
 - Postgres for assets, strategies, backtest runs, metrics, daily equity, trades, taxes, and financing
-- Base currency reporting with FX conversion (e.g., USDINR)
+- No FX conversion; multi-currency runs report `equity_by_currency` without a single total.
 
 ## API (Current)
 
