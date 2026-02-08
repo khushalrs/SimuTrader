@@ -166,7 +166,11 @@ def _parse_slippage(config: Dict[str, Any] | None) -> SlippageSpec:
     return SlippageSpec(model=model, bps=bps)
 
 
-def _compute_metrics(equity_series: list[float]) -> dict[str, float | None]:
+def _compute_metrics(
+    equity_series: list[float],
+    fees_cum_series: list[float] | None = None,
+    initial_cash: float | None = None,
+) -> dict[str, float | None]:
     if len(equity_series) < 2:
         return {
             "cagr": None,
@@ -181,8 +185,9 @@ def _compute_metrics(equity_series: list[float]) -> dict[str, float | None]:
             "margin_interest_drag": 0.0,
         }
 
-    initial = equity_series[0]
+    initial = initial_cash if initial_cash is not None else equity_series[0]
     final = equity_series[-1]
+    net_return = final / initial - 1.0 if initial else None
 
     daily_returns: list[float] = []
     for prev, curr in zip(equity_series[:-1], equity_series[1:]):
@@ -217,7 +222,14 @@ def _compute_metrics(equity_series: list[float]) -> dict[str, float | None]:
             if drawdown < max_drawdown:
                 max_drawdown = drawdown
 
-    gross_return = final / initial - 1.0 if initial else None
+    gross_return = net_return
+    fee_drag = None
+    if fees_cum_series and len(fees_cum_series) == len(equity_series):
+        gross_final = final + fees_cum_series[-1]
+        if initial:
+            gross_return = gross_final / initial - 1.0
+        if gross_return is not None and net_return is not None:
+            fee_drag = gross_return - net_return
 
     return {
         "cagr": cagr,
@@ -225,8 +237,8 @@ def _compute_metrics(equity_series: list[float]) -> dict[str, float | None]:
         "sharpe": sharpe,
         "max_drawdown": max_drawdown,
         "gross_return": gross_return,
-        "net_return": gross_return,
-        "fee_drag": 0.0,
+        "net_return": net_return,
+        "fee_drag": fee_drag,
         "tax_drag": 0.0,
         "borrow_drag": 0.0,
         "margin_interest_drag": 0.0,
@@ -359,9 +371,8 @@ def run_engine(
     position_rows: list[RunPosition] = []
     financing_rows: list[RunFinancing] = []
     fees_cum_by_currency: Dict[str, float] = {currency: 0.0 for currency in currencies}
-    equity_series_by_currency: Dict[str, list[float]] = {
-        currency: [] for currency in currencies
-    }
+    equity_series_by_currency: Dict[str, list[float]] = {currency: [] for currency in currencies}
+    fees_cum_series_by_currency: Dict[str, list[float]] = {currency: [] for currency in currencies}
     peak_equity_by_currency: Dict[str, float] = {
         currency: cash_by_currency[currency] for currency in currencies
     }
@@ -552,6 +563,7 @@ def run_engine(
 
         for currency in currencies:
             equity_series_by_currency[currency].append(equity_by_currency[currency])
+            fees_cum_series_by_currency[currency].append(fees_cum_by_currency[currency])
             if equity_by_currency[currency] > peak_equity_by_currency[currency]:
                 peak_equity_by_currency[currency] = equity_by_currency[currency]
 
@@ -624,7 +636,13 @@ def run_engine(
 
     if multi_currency:
         per_currency = {
-            currency: _compute_metrics(series)
+            currency: _compute_metrics(
+                series,
+                fees_cum_series_by_currency[currency],
+                initial_cash=initial_cash_by_currency.get(currency)
+                if initial_cash_by_currency
+                else None,
+            )
             for currency, series in equity_series_by_currency.items()
         }
         metrics = {
@@ -641,7 +659,11 @@ def run_engine(
         }
         metrics_meta = {"per_currency": per_currency, "currencies": currencies}
     else:
-        metrics = _compute_metrics(equity_series_by_currency[currencies[0]])
+        metrics = _compute_metrics(
+            equity_series_by_currency[currencies[0]],
+            fees_cum_series_by_currency[currencies[0]],
+            initial_cash=initial_cash,
+        )
         metrics_meta = {}
 
     db.add(

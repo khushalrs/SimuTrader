@@ -282,7 +282,11 @@ def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):
     assert db.equity_rows, "Expected equity rows to be persisted"
     fees = db.equity_rows[-1].fees_cum_by_currency.get("USD")
     assert fees == pytest.approx(6.005, rel=1e-6)
-    assert db.metrics_rows[0].gross_return is not None
+    metric = db.metrics_rows[0]
+    assert metric.gross_return is not None
+    assert metric.net_return is not None
+    assert metric.fee_drag is not None
+    assert metric.gross_return > metric.net_return
 
 
 def test_buy_and_hold_equal_weight_default(tmp_path, monkeypatch):
@@ -404,3 +408,201 @@ def test_buy_and_hold_missing_bars_fail_by_default(tmp_path, monkeypatch):
 
     assert run.status == "FAILED"
     assert run.error and "Missing bar" in run.error
+
+
+def test_fixed_weight_rebalance_daily(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 10)
+    symbols = ["OMEGA", "SIGMA"]
+
+    _seed_duckdb(str(duckdb_path), symbols, start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "strategy": "FIXED_WEIGHT_REBALANCE",
+            "strategy_params": {
+                "target_weights": {symbols[0]: 0.6, symbols[1]: 0.4},
+                "rebalance_frequency": "DAILY",
+                "drift_threshold": 0.0,
+            },
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY"},
+                    {"symbol": symbols[1], "asset_class": "US_EQUITY"},
+                ]
+            },
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "initial_cash": 10000.0,
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.order_rows, "Expected orders for rebalance"
+    assert db.position_rows, "Expected positions to be persisted"
+
+    last_date = max(row.date for row in db.position_rows)
+    positions = [row for row in db.position_rows if row.date == last_date]
+    equity_row = next(row for row in db.equity_rows if row.date == last_date)
+    weights = {
+        row.symbol: row.market_value_base / equity_row.equity_base for row in positions
+    }
+    assert weights[symbols[0]] == pytest.approx(0.6, rel=1e-3)
+    assert weights[symbols[1]] == pytest.approx(0.4, rel=1e-3)
+
+
+def test_dca_weekly_contributions_daily_buys(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 10)
+    symbols = ["DCA1", "DCA2"]
+
+    _seed_duckdb(str(duckdb_path), symbols, start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "strategy": "DCA",
+            "strategy_params": {"buy_frequency": "DAILY", "weighting": "EQUAL"},
+            "backtest": {
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "initial_cash": 100.0,
+                "contributions": {"enabled": True, "amount": 1000.0, "frequency": "WEEKLY"},
+            },
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY"},
+                    {"symbol": symbols[1], "asset_class": "US_EQUITY"},
+                ]
+            },
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.order_rows, "Expected DCA buy orders"
+    expected_buys = 2 * len(symbols)
+    assert len(db.order_rows) == expected_buys
+    assert all(order.side == "BUY" for order in db.order_rows)
+
+
+def test_momentum_monthly_top_k(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 31)
+    symbols = ["MOMO1", "MOMO2"]
+
+    _seed_duckdb(str(duckdb_path), symbols, start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "strategy": "MOMENTUM",
+            "strategy_params": {
+                "lookback_days": 3,
+                "skip_days": 1,
+                "top_k": 1,
+                "rebalance_frequency": "WEEKLY",
+                "weighting": "EQUAL",
+            },
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY"},
+                    {"symbol": symbols[1], "asset_class": "US_EQUITY"},
+                ]
+            },
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "initial_cash": 10000.0,
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.order_rows, "Expected momentum rebalance orders"
+
+    last_date = max(row.date for row in db.position_rows)
+    positions = [row for row in db.position_rows if row.date == last_date]
+    equity_row = next(row for row in db.equity_rows if row.date == last_date)
+    weights = {
+        row.symbol: row.market_value_base / equity_row.equity_base for row in positions
+    }
+
+    assert weights[symbols[1]] == pytest.approx(1.0, rel=1e-3)
+    assert weights.get(symbols[0], 0.0) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_mean_reversion_entry_and_hold(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 31)
+    symbols = ["MEAN1"]
+
+    _seed_duckdb(str(duckdb_path), symbols, start, end)
+    con = duckdb.connect(str(duckdb_path))
+    # Inject a sharp dip to create negative z-scores for entry.
+    con.execute(
+        """
+        UPDATE prices
+        SET close = close * 0.8,
+            open = open * 0.8,
+            high = high * 0.8,
+            low = low * 0.8
+        WHERE symbol = ? AND date IN (?, ?)
+        """,
+        [symbols[0], date(2024, 1, 10).isoformat(), date(2024, 1, 11).isoformat()],
+    )
+    con.close()
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "strategy": "MEAN_REVERSION",
+            "strategy_params": {
+                "lookback_days": 5,
+                "entry_threshold": 0.5,
+                "hold_days": 3,
+                "rebalance_frequency": "DAILY",
+            },
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY"},
+                ]
+            },
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "initial_cash": 10000.0,
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.position_rows, "Expected positions to be persisted"
