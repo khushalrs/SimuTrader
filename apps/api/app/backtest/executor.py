@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -12,6 +13,8 @@ from app.backtest.fixed_weight_rebalance import run_fixed_weight_rebalance
 from app.backtest.mean_reversion import run_mean_reversion
 from app.backtest.momentum import run_momentum
 from app.models.backtests import BacktestRun
+
+logger = logging.getLogger(__name__)
 
 
 def execute_run(db: Session, run: BacktestRun) -> BacktestRun:
@@ -43,8 +46,9 @@ def execute_run(db: Session, run: BacktestRun) -> BacktestRun:
         run.status = "SUCCEEDED"
         run.error = None
     except Exception as exc:
+        logger.exception("Backtest run failed", extra={"run_id": str(run.run_id)})
         run.status = "FAILED"
-        run.error = str(exc)
+        run.error = "E_BACKTEST_FAILED"
     finally:
         run.finished_at = datetime.now(timezone.utc)
         db.commit()

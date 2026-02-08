@@ -4,15 +4,15 @@ version = "0.1.0"
 description = "SimuTrader FastAPI backend"
 requires-python = ">=3.11"
 dependencies = [
-    "alembic>=1.13",
-    "celery>=5.3",
-    "duckdb>=1.0",
-    "fastapi>=0.110",
-    "jsonschema>=4.21",
-    "redis>=5.0",
-    "psycopg[binary]>=3.1",
-    "sqlalchemy>=2.0",
-    "uvicorn[standard]>=0.24",
+    "alembic==1.13.0",
+    "celery==5.3.0",
+    "duckdb==1.0.0",
+    "fastapi==0.110.0",
+    "jsonschema==4.21.0",
+    "redis==5.0.0",
+    "psycopg[binary]==3.1.0",
+    "sqlalchemy==2.0.0",
+    "uvicorn[standard]==0.24.0",
 ]
 
 [tool.ruff]

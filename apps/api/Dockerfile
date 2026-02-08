@@ -3,8 +3,9 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY pyproject.toml /app/pyproject.toml
+COPY requirements.txt /app/requirements.txt
 
-RUN pip install --no-cache-dir fastapi uvicorn[standard] sqlalchemy alembic psycopg[binary] duckdb celery redis jsonschema
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
