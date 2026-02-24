@@ -8,6 +8,11 @@ import { getRun } from "@/lib/api"
 export default async function RunDashboardPage({ params }: { params: { runId: string } }) {
     const runData = await getRun(params.runId);
 
+    const equityData = runData?.equity || [];
+    const latestPoint = equityData.length > 0 ? equityData[equityData.length - 1] : null;
+    const inspectorDate = latestPoint ? latestPoint.date : undefined;
+    const inspectorEquity = latestPoint ? latestPoint.value : undefined;
+
     if (!runData) {
         // Fallback UI or 404
         return (
@@ -51,7 +56,7 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
                 </div>
 
                 <div className="hidden lg:block lg:col-span-1 h-full">
-                    <InspectorPanel />
+                    <InspectorPanel date={inspectorDate} equity={inspectorEquity} />
                 </div>
             </div>
         </main>

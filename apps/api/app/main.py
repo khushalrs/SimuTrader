@@ -8,7 +8,7 @@ from app.api import api_router
 app = FastAPI(title="SimuTrader API")
 app.include_router(api_router)
 
-origins_env = os.getenv("CORS_ORIGINS", "")
+origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 origins = [origin.strip() for origin in origins_env.split(",") if origin.strip()]
 if origins:
     app.add_middleware(

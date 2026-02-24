@@ -61,8 +61,19 @@ export function PerformanceChart({ data }: PerformanceChartProps) {
                                 fontSize={12}
                                 tickLine={false}
                                 axisLine={false}
-                                tickFormatter={(value) => `$${value}`}
-                                domain={['dataMin - 5', 'dataMax + 5']}
+                                tickFormatter={(value) => {
+                                    if (Math.abs(value) >= 1000000) {
+                                        return `$${(value / 1000000).toFixed(2)}M`;
+                                    }
+                                    return new Intl.NumberFormat('en-US', {
+                                        style: 'currency',
+                                        currency: 'USD',
+                                        minimumFractionDigits: 0,
+                                        maximumFractionDigits: 0
+                                    }).format(value);
+                                }}
+                                domain={['auto', 'auto']}
+                                width={80}
                             />
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                             <Tooltip

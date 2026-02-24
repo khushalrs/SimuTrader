@@ -57,46 +57,6 @@ interface RunDailyEquityOut {
     equity_base: number
 }
 
-// Mock data for demo/fallback purposes
-const MOCK_RUNS: Record<string, RunData> = {
-    "mock-buy-hold-us": {
-        id: "buy-hold-us",
-        title: "Buy & Hold — US Mega Cap (Demo)",
-        date: "Ran on Mar 10, 2024 at 09:00",
-        tags: ["Passive", "US Equity", "Quarterly Rebalance"],
-        metrics: [
-            { label: "Total Return", value: "+12.4%", change: "Benchmark", trend: "up" },
-            { label: "Sharpe Ratio", value: "0.85", change: "Market aligned", trend: "neutral" },
-            { label: "Max Drawdown", value: "-18.2%", change: "Standard", trend: "down" },
-            { label: "Win Rate", value: "N/A", trend: "neutral" },
-        ],
-    },
-    "mock-equal-weight-in": {
-        id: "equal-weight-in",
-        title: "Equal Weight — India Top 10 (Demo)",
-        date: "Ran on Mar 11, 2024 at 10:30",
-        tags: ["Smart Beta", "India Equity", "Monthly Rebalance"],
-        metrics: [
-            { label: "Total Return", value: "+22.1%", change: "+5.4% vs NIFTY", trend: "up" },
-            { label: "Sharpe Ratio", value: "1.12", change: "Top 20%", trend: "up" },
-            { label: "Max Drawdown", value: "-15.5%", change: "Moderate", trend: "neutral" },
-            { label: "Win Rate", value: "62%", trend: "up" },
-        ],
-    },
-    "mock-momentum": {
-        id: "momentum",
-        title: "Momentum — Top K Monthly (Demo)",
-        date: "Ran on Mar 10, 2024 at 14:30",
-        tags: ["Momentum", "US Equity", "Monthly Rebalance"],
-        metrics: [
-            { label: "Total Return", value: "+18.5%", change: "+2.3% vs SPY", trend: "up" },
-            { label: "Sharpe Ratio", value: "1.45", change: "Top 5%", trend: "up" },
-            { label: "Max Drawdown", value: "-12.4%", change: "Within limits", trend: "neutral" },
-            { label: "Win Rate", value: "58%", trend: "up" },
-        ],
-    },
-}
-
 function formatPercent(value?: number | null): string {
     if (value === undefined || value === null) {
         return "N/A"
@@ -180,9 +140,6 @@ function mapEquity(equity: RunDailyEquityOut[] | null): RunEquityPoint[] | undef
 }
 
 export async function getRun(runId: string): Promise<RunData | null> {
-    if (runId.startsWith("mock-")) {
-        return MOCK_RUNS[runId] || MOCK_RUNS["mock-momentum"]
-    }
 
     try {
         const [runRes, metricsRes, equityRes] = await Promise.all([
