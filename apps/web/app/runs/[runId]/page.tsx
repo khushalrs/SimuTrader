@@ -3,6 +3,9 @@ import { KPIGrid } from "@/components/run/KPIGrid"
 import { PerformanceChart } from "@/components/run/PerformanceChart"
 import { InspectorPanel } from "@/components/run/InspectorPanel"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { RiskTab } from "@/components/run/RiskTab"
+import { CostsTab } from "@/components/run/CostsTab"
+import { PortfolioTab } from "@/components/run/PortfolioTab"
 import { getRun } from "@/lib/api"
 
 export default async function RunDashboardPage({ params }: { params: { runId: string } }) {
@@ -43,14 +46,23 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
                         <div className="flex items-center justify-between mb-4">
                             <TabsList>
                                 <TabsTrigger value="performance">Performance</TabsTrigger>
-                                <TabsTrigger value="risk" disabled>Risk</TabsTrigger>
-                                <TabsTrigger value="costs" disabled>Costs</TabsTrigger>
-                                <TabsTrigger value="portfolio" disabled>Portfolio</TabsTrigger>
+                                <TabsTrigger value="risk">Risk</TabsTrigger>
+                                <TabsTrigger value="costs">Costs</TabsTrigger>
+                                <TabsTrigger value="portfolio">Portfolio</TabsTrigger>
                             </TabsList>
                         </div>
 
                         <TabsContent value="performance" className="mt-0 h-[450px]">
                             <PerformanceChart data={runData.equity} />
+                        </TabsContent>
+                        <TabsContent value="risk" className="mt-0 h-[450px]">
+                            <RiskTab equity={runData.equity} />
+                        </TabsContent>
+                        <TabsContent value="costs" className="mt-0 h-[450px]">
+                            <CostsTab data={runData} />
+                        </TabsContent>
+                        <TabsContent value="portfolio" className="mt-0 h-[450px]">
+                            <PortfolioTab equity={runData.equity} />
                         </TabsContent>
                     </Tabs>
                 </div>

@@ -15,6 +15,13 @@ export interface RunMetric {
 export interface RunEquityPoint {
     date: string
     value: number
+    gross_exposure_base?: number
+    net_exposure_base?: number
+    drawdown?: number
+    fees_cum_base?: number
+    taxes_cum_base?: number
+    borrow_fees_cum_base?: number
+    margin_interest_cum_base?: number
 }
 
 export interface RunData {
@@ -24,6 +31,12 @@ export interface RunData {
     tags: string[]
     metrics: RunMetric[]
     equity?: RunEquityPoint[]
+    costs?: {
+        fee_drag?: number | null
+        tax_drag?: number | null
+        borrow_drag?: number | null
+        margin_interest_drag?: number | null
+    }
 }
 
 interface BacktestOut {
@@ -55,6 +68,13 @@ interface RunMetricOut {
 interface RunDailyEquityOut {
     date: string
     equity_base: number
+    gross_exposure_base: number
+    net_exposure_base: number
+    drawdown: number
+    fees_cum_base: number
+    taxes_cum_base: number
+    borrow_fees_cum_base: number
+    margin_interest_cum_base: number
 }
 
 function formatPercent(value?: number | null): string {
@@ -136,6 +156,13 @@ function mapEquity(equity: RunDailyEquityOut[] | null): RunEquityPoint[] | undef
     return equity.map((row) => ({
         date: row.date,
         value: row.equity_base,
+        gross_exposure_base: row.gross_exposure_base,
+        net_exposure_base: row.net_exposure_base,
+        drawdown: row.drawdown,
+        fees_cum_base: row.fees_cum_base,
+        taxes_cum_base: row.taxes_cum_base,
+        borrow_fees_cum_base: row.borrow_fees_cum_base,
+        margin_interest_cum_base: row.margin_interest_cum_base,
     }))
 }
 
@@ -173,6 +200,12 @@ export async function getRun(runId: string): Promise<RunData | null> {
             tags,
             metrics: mapMetrics(metrics),
             equity: mapEquity(equity),
+            costs: metrics ? {
+                fee_drag: metrics.fee_drag,
+                tax_drag: metrics.tax_drag,
+                borrow_drag: metrics.borrow_drag,
+                margin_interest_drag: metrics.margin_interest_drag,
+            } : undefined
         }
     } catch (error) {
         console.error("Error fetching run:", error)
