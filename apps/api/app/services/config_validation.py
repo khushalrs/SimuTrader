@@ -199,6 +199,17 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         backtest["contributions"] = config["contributions"]
     config["backtest"] = backtest
 
+    # Backward compatibility: older clients used z_score_threshold for mean reversion entry.
+    strategy_name = str(config.get("strategy") or "").upper()
+    strategy_params = config.get("strategy_params")
+    if (
+        strategy_name == "MEAN_REVERSION"
+        and isinstance(strategy_params, dict)
+        and "entry_threshold" not in strategy_params
+        and "z_score_threshold" in strategy_params
+    ):
+        strategy_params["entry_threshold"] = strategy_params["z_score_threshold"]
+
     for key in (
         "symbol",
         "asset_class",
@@ -388,7 +399,7 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
             raise ValueError("Invalid config: top_k must be > 0")
         if instruments and top_k_val > len(instruments):
             raise ValueError(
-                "Invalid config: top_k cannot exceed number of instruments"
+                "Invalid config: top_k cannot exceed number of instruments in universe"
             )
 
         rebalance_frequency = params.get("rebalance_frequency", "MONTHLY")
@@ -417,7 +428,10 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
 
         entry_threshold = params.get("entry_threshold")
         if entry_threshold is None:
-            raise ValueError("Invalid config: strategy_params.entry_threshold is required")
+            raise ValueError(
+                "Invalid config: strategy_params.entry_threshold is required for MEAN_REVERSION "
+                "(legacy strategy_params.z_score_threshold is also accepted)"
+            )
         try:
             entry_val = float(entry_threshold)
         except (TypeError, ValueError) as exc:
@@ -431,7 +445,8 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
         hold_days = params.get("hold_days")
         if exit_threshold is None and hold_days is None:
             raise ValueError(
-                "Invalid config: strategy_params.exit_threshold or hold_days is required"
+                "Invalid config: strategy_params.exit_threshold or strategy_params.hold_days is required "
+                "for MEAN_REVERSION"
             )
         if exit_threshold is not None:
             try:

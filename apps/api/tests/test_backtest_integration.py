@@ -237,6 +237,12 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert db.financing_rows, "Expected financing rows to be persisted"
     assert len(db.order_rows) == len(symbols)
     assert len(db.fill_rows) == len(symbols)
+    metric_meta = db.metrics_rows[0].meta
+    assert metric_meta["requested_start_date"] == start.isoformat()
+    assert metric_meta["requested_end_date"] == end.isoformat()
+    assert metric_meta["effective_start_date"] == start.isoformat()
+    assert metric_meta["effective_end_date"] == end.isoformat()
+    assert metric_meta["date_shift_warnings"] == []
 
 
 def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):
@@ -321,7 +327,8 @@ def test_buy_and_hold_equal_weight_default(tmp_path, monkeypatch):
 
     assert run.status == "SUCCEEDED"
     assert db.equity_rows, "Expected equity rows to be persisted"
-    assert db.equity_rows[-1].cash_base == 0.0
+    # Strategies now keep a 1% cash buffer (99% deployment).
+    assert db.equity_rows[-1].cash_base == pytest.approx(100.0, rel=1e-6)
 
 
 def test_buy_and_hold_missing_bars_carry_forward(tmp_path, monkeypatch):
@@ -410,6 +417,90 @@ def test_buy_and_hold_missing_bars_fail_by_default(tmp_path, monkeypatch):
     assert run.error and "Missing bar" in run.error
 
 
+def test_buy_and_hold_weekend_boundary_records_effective_dates(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    calendar_start = date(2024, 1, 1)
+    calendar_end = date(2024, 1, 31)
+    symbols = ["SHIFT1"]
+    start = date(2024, 1, 6)  # Saturday
+    end = date(2024, 1, 12)   # Friday
+
+    _seed_duckdb(str(duckdb_path), symbols, calendar_start, calendar_end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY", "amount": 10000.0},
+                ]
+            },
+            "backtest": {
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "initial_cash": 10000.0,
+            },
+            "data_policy": {"missing_bar": "FORWARD_FILL"},
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.metrics_rows, "Expected metrics row to be persisted"
+    meta = db.metrics_rows[0].meta
+    assert meta["requested_start_date"] == start.isoformat()
+    assert meta["requested_end_date"] == end.isoformat()
+    assert meta["effective_start_date"] == date(2024, 1, 8).isoformat()
+    assert meta["effective_end_date"] == end.isoformat()
+    warnings = meta["date_shift_warnings"]
+    assert warnings
+    assert "Start date shifted" in warnings[0]
+
+
+def test_buy_and_hold_no_trading_days_in_range_returns_explicit_error(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    calendar_start = date(2024, 1, 1)
+    calendar_end = date(2024, 1, 31)
+    symbols = ["WEEKEND_ONLY"]
+    start = date(2024, 1, 6)  # Saturday
+    end = date(2024, 1, 7)    # Sunday
+
+    _seed_duckdb(str(duckdb_path), symbols, calendar_start, calendar_end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY", "amount": 10000.0},
+                ]
+            },
+            "backtest": {
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "initial_cash": 10000.0,
+            },
+            "data_policy": {"missing_bar": "FORWARD_FILL"},
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "FAILED"
+    assert run.error and run.error.startswith("E_NO_TRADING_DAYS_IN_RANGE:")
+
+
 def test_fixed_weight_rebalance_daily(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "simutrader.duckdb"
     start = date(2024, 1, 2)
@@ -456,8 +547,9 @@ def test_fixed_weight_rebalance_daily(tmp_path, monkeypatch):
     weights = {
         row.symbol: row.market_value_base / equity_row.equity_base for row in positions
     }
-    assert weights[symbols[0]] == pytest.approx(0.6, rel=1e-3)
-    assert weights[symbols[1]] == pytest.approx(0.4, rel=1e-3)
+    # Rebalance targets are applied with a 1% cash reserve.
+    assert weights[symbols[0]] == pytest.approx(0.6 * 0.99, rel=1e-3)
+    assert weights[symbols[1]] == pytest.approx(0.4 * 0.99, rel=1e-3)
 
 
 def test_dca_weekly_contributions_daily_buys(tmp_path, monkeypatch):
@@ -497,7 +589,13 @@ def test_dca_weekly_contributions_daily_buys(tmp_path, monkeypatch):
 
     assert run.status == "SUCCEEDED"
     assert db.order_rows, "Expected DCA buy orders"
-    expected_buys = 2 * len(symbols)
+    con = duckdb.connect(str(duckdb_path))
+    trading_days = con.execute(
+        "select count(*) from global_trading_days where date between ? and ?",
+        [start, end],
+    ).fetchone()[0]
+    con.close()
+    expected_buys = trading_days * len(symbols)
     assert len(db.order_rows) == expected_buys
     assert all(order.side == "BUY" for order in db.order_rows)
 
@@ -550,7 +648,8 @@ def test_momentum_monthly_top_k(tmp_path, monkeypatch):
         row.symbol: row.market_value_base / equity_row.equity_base for row in positions
     }
 
-    assert weights[symbols[1]] == pytest.approx(1.0, rel=1e-3)
+    # Momentum allocations now deploy 99% of equity into winners.
+    assert weights[symbols[1]] == pytest.approx(0.99, rel=1e-3)
     assert weights.get(symbols[0], 0.0) == pytest.approx(0.0, abs=1e-6)
 
 

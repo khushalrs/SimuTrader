@@ -48,7 +48,8 @@ def execute_run(db: Session, run: BacktestRun) -> BacktestRun:
     except Exception as exc:
         logger.exception("Backtest run failed", extra={"run_id": str(run.run_id)})
         run.status = "FAILED"
-        run.error = f"E_BACKTEST_FAILED: {str(exc)}"
+        message = str(exc)
+        run.error = message if message.startswith("E_") else f"E_BACKTEST_FAILED: {message}"
     finally:
         run.finished_at = datetime.now(timezone.utc)
         db.commit()
