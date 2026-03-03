@@ -252,7 +252,7 @@ def run_dca(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> i
             if price is None:
                 continue
             current_value = ctx.state.positions[symbol].qty * price
-            allocations[symbol] = current_value + (available_cash * weight)
+            allocations[symbol] = current_value + (available_cash * 0.99 * weight)
 
         if allocations:
             last_buy = ctx.date

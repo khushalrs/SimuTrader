@@ -243,7 +243,7 @@ def run_fixed_weight_rebalance(
             if max_drift < drift_threshold:
                 return None
 
-        return {symbol: total_value * weight for symbol, weight in target_weights.items()}
+        return {symbol: total_value * 0.99 * weight for symbol, weight in target_weights.items()}
 
     return run_engine(
         db=db,

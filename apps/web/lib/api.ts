@@ -212,3 +212,78 @@ export async function getRun(runId: string): Promise<RunData | null> {
         return null
     }
 }
+
+export function buildValidConfig(config: any) {
+    const instruments = config.universe.instruments.map((i: any) => ({
+        symbol: i.symbol,
+        asset_class: i.asset_class
+    }));
+
+    const backtestObj: any = {
+        start_date: config.backtest.start_date,
+        end_date: config.backtest.end_date,
+        initial_cash: parseFloat(config.backtest.initial_cash),
+    };
+
+    if (config.backtest.contributions?.enabled) {
+        backtestObj.contributions = {
+            enabled: true,
+            amount: parseFloat(config.backtest.contributions.amount > 0 ? config.backtest.contributions.amount : 100),
+            frequency: config.backtest.contributions.frequency
+        };
+    } else {
+        backtestObj.contributions = { enabled: false };
+    }
+
+    return {
+        version: 1,
+        strategy: config.strategy.type,
+        strategy_params: config.strategy.params,
+        base_currency: config.universe.base_currency,
+        commission: {
+            model: "BPS",
+            bps: parseFloat(config.execution.commission.bps),
+            min_fee_native: parseFloat(config.execution.commission.min_fee || 0)
+        },
+        slippage: {
+            model: "BPS",
+            bps: parseFloat(config.execution.slippage.bps)
+        },
+        fill_price_policy: config.execution.fill_price || "CLOSE",
+        universe: {
+            instruments,
+            calendars: config.universe.calendars
+        },
+        backtest: backtestObj,
+        data_policy: {
+            missing_bar: "FORWARD_FILL"
+        }
+    };
+}
+
+export async function createRun(config: any): Promise<string> {
+    const validConfig = buildValidConfig(config);
+
+    const payload = {
+        name: config.name || "Custom Strategy Run",
+        config_snapshot: validConfig,
+        data_snapshot_id: "default_snapshot_2026",
+        seed: 42
+    };
+
+    const res = await fetch(`${API_BASE_URL}/backtests`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Failed to create run: ${err}`);
+    }
+
+    const data = await res.json();
+    return data.run_id;
+}

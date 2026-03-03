@@ -253,7 +253,7 @@ def run_mean_reversion(db: Session, run: BacktestRun, config_snapshot: Dict[str,
         weight = 1.0 / len(active)
         allocations: Dict[str, float] = {}
         for symbol in symbols:
-            allocations[symbol] = total_value * weight if symbol in active else 0.0
+            allocations[symbol] = total_value * 0.99 * weight if symbol in active else 0.0
 
         last_rebalance = ctx.date
         return allocations

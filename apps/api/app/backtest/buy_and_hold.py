@@ -139,7 +139,7 @@ def _extract_config(
                 inst["weight"] = equal_weight
 
         for inst in parsed:
-            inst["amount"] = inst["weight"] * initial_cash
+            inst["amount"] = inst["weight"] * initial_cash * 0.99
 
     if has_amount:
         allocation_mode = "AMOUNT"
