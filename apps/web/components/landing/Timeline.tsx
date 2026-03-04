@@ -64,7 +64,7 @@ export function Timeline() {
                         <Link href="/playground">Go to Playground</Link>
                     </Button>
                     <Button size="lg" variant="outline" asChild>
-                        <Link href="/build">Build Strategy</Link>
+                        <Link href="/build_page">Build Strategy</Link>
                     </Button>
                 </div>
             </div>
