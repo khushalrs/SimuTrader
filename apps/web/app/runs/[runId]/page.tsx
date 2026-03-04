@@ -36,6 +36,10 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
                 title={runData.title}
                 date={runData.date}
                 tags={runData.tags}
+                requestedStart={runData.requested_start_date}
+                requestedEnd={runData.requested_end_date}
+                effectiveStart={runData.effective_start_date}
+                effectiveEnd={runData.effective_end_date}
             />
 
             <KPIGrid metrics={runData.metrics} />

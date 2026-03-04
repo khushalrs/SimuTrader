@@ -37,6 +37,11 @@ export interface RunData {
         borrow_drag?: number | null
         margin_interest_drag?: number | null
     }
+    config_snapshot?: any
+    requested_start_date?: string
+    requested_end_date?: string
+    effective_start_date?: string
+    effective_end_date?: string
 }
 
 interface BacktestOut {
@@ -48,6 +53,7 @@ interface BacktestOut {
     finished_at?: string | null
     data_snapshot_id: string
     seed: number
+    config_snapshot?: any
 }
 
 interface RunMetricOut {
@@ -193,6 +199,18 @@ export async function getRun(runId: string): Promise<RunData | null> {
             `Seed: ${run.seed}`,
         ].filter(Boolean)
 
+        const configSnapshot = run.config_snapshot || {};
+        const requested_start_date = configSnapshot.backtest?.start_date;
+        const requested_end_date = configSnapshot.backtest?.end_date;
+
+        let effective_start_date: string | undefined = undefined;
+        let effective_end_date: string | undefined = undefined;
+
+        if (equity && equity.length > 0) {
+            effective_start_date = equity[0].date;
+            effective_end_date = equity[equity.length - 1].date;
+        }
+
         return {
             id: run.run_id,
             title,
@@ -205,7 +223,12 @@ export async function getRun(runId: string): Promise<RunData | null> {
                 tax_drag: metrics.tax_drag,
                 borrow_drag: metrics.borrow_drag,
                 margin_interest_drag: metrics.margin_interest_drag,
-            } : undefined
+            } : undefined,
+            config_snapshot: run.config_snapshot,
+            requested_start_date,
+            requested_end_date,
+            effective_start_date,
+            effective_end_date,
         }
     } catch (error) {
         console.error("Error fetching run:", error)
@@ -235,10 +258,17 @@ export function buildValidConfig(config: any) {
         backtestObj.contributions = { enabled: false };
     }
 
+    const cleanParams: any = {};
+    for (const [key, value] of Object.entries(config.strategy.params || {})) {
+        if (value !== "" && value !== undefined && value !== null && !Number.isNaN(value)) {
+            cleanParams[key] = value;
+        }
+    }
+
     return {
         version: 1,
         strategy: config.strategy.type,
-        strategy_params: config.strategy.params,
+        strategy_params: cleanParams,
         base_currency: config.universe.base_currency,
         commission: {
             model: "BPS",
