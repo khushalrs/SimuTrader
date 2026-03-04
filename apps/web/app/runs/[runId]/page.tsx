@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { RiskTab } from "@/components/run/RiskTab"
 import { CostsTab } from "@/components/run/CostsTab"
 import { PortfolioTab } from "@/components/run/PortfolioTab"
+import { ConfigTab } from "@/components/run/ConfigTab"
 import { getRun } from "@/lib/api"
 
 export default async function RunDashboardPage({ params }: { params: { runId: string } }) {
@@ -44,7 +45,7 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
 
             <KPIGrid metrics={runData.metrics} />
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-[500px]">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 min-h-[500px] pb-10">
                 <div className="lg:col-span-3 space-y-4">
                     <Tabs defaultValue="performance" className="w-full">
                         <div className="flex items-center justify-between mb-4">
@@ -53,26 +54,30 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
                                 <TabsTrigger value="risk">Risk</TabsTrigger>
                                 <TabsTrigger value="costs">Costs</TabsTrigger>
                                 <TabsTrigger value="portfolio">Portfolio</TabsTrigger>
+                                <TabsTrigger value="configuration">Configuration</TabsTrigger>
                             </TabsList>
                         </div>
 
-                        <TabsContent value="performance" className="mt-0 h-[450px]">
-                            <PerformanceChart data={runData.equity} />
+                        <TabsContent value="performance" className="mt-0 min-h-[450px]">
+                            <PerformanceChart data={runData.equity} baseCurrency={runData.baseCurrency} />
                         </TabsContent>
-                        <TabsContent value="risk" className="mt-0 h-[450px]">
+                        <TabsContent value="risk" className="mt-0 min-h-[450px]">
                             <RiskTab equity={runData.equity} />
                         </TabsContent>
-                        <TabsContent value="costs" className="mt-0 h-[450px]">
+                        <TabsContent value="costs" className="mt-0 min-h-[450px]">
                             <CostsTab data={runData} />
                         </TabsContent>
-                        <TabsContent value="portfolio" className="mt-0 h-[450px]">
-                            <PortfolioTab equity={runData.equity} />
+                        <TabsContent value="portfolio" className="mt-0 min-h-[450px]">
+                            <PortfolioTab equity={runData.equity} baseCurrency={runData.baseCurrency} />
+                        </TabsContent>
+                        <TabsContent value="configuration" className="mt-0 min-h-[450px]">
+                            <ConfigTab data={runData} />
                         </TabsContent>
                     </Tabs>
                 </div>
 
                 <div className="hidden lg:block lg:col-span-1 h-full">
-                    <InspectorPanel date={inspectorDate} equity={inspectorEquity} />
+                    <InspectorPanel date={inspectorDate} equity={inspectorEquity} baseCurrency={runData.baseCurrency} />
                 </div>
             </div>
         </main>

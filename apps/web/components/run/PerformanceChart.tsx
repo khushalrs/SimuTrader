@@ -10,6 +10,7 @@ import {
     CartesianGrid
 } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { formatCurrency } from "@/lib/utils"
 
 const DEFAULT_DATA = [
     { date: "Jan 01", value: 100 },
@@ -26,9 +27,10 @@ const DEFAULT_DATA = [
 
 interface PerformanceChartProps {
     data?: { date: string; value: number }[]
+    baseCurrency?: string
 }
 
-export function PerformanceChart({ data }: PerformanceChartProps) {
+export function PerformanceChart({ data, baseCurrency }: PerformanceChartProps) {
     const chartData = data && data.length > 0 ? data : DEFAULT_DATA
 
     return (
@@ -63,14 +65,9 @@ export function PerformanceChart({ data }: PerformanceChartProps) {
                                 axisLine={false}
                                 tickFormatter={(value) => {
                                     if (Math.abs(value) >= 1000000) {
-                                        return `$${(value / 1000000).toFixed(2)}M`;
+                                        return formatCurrency(value / 1000000, baseCurrency, true) + 'M';
                                     }
-                                    return new Intl.NumberFormat('en-US', {
-                                        style: 'currency',
-                                        currency: 'USD',
-                                        minimumFractionDigits: 0,
-                                        maximumFractionDigits: 0
-                                    }).format(value);
+                                    return formatCurrency(value, baseCurrency, true);
                                 }}
                                 domain={['auto', 'auto']}
                                 width={80}

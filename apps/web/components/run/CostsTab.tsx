@@ -11,6 +11,7 @@ import {
 } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { RunData } from "@/lib/api"
+import { formatCurrency } from "@/lib/utils"
 
 interface CostsTabProps {
     data: RunData
@@ -95,7 +96,7 @@ export function CostsTab({ data }: CostsTabProps) {
                                     fontSize={12}
                                     tickLine={false}
                                     axisLine={false}
-                                    tickFormatter={(value) => `$${value}`}
+                                    tickFormatter={(value) => formatCurrency(value, data.baseCurrency, true)}
                                     width={60}
                                 />
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />

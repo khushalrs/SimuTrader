@@ -1,11 +1,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { formatCurrency } from "@/lib/utils"
 
 interface InspectorPanelProps {
     date?: string;
     equity?: number;
+    baseCurrency?: string;
 }
 
-export function InspectorPanel({ date, equity }: InspectorPanelProps) {
+export function InspectorPanel({ date, equity, baseCurrency }: InspectorPanelProps) {
     return (
         <Card className="col-span-1 h-full border-l-4 border-l-primary/20">
             <CardHeader>
@@ -21,7 +23,7 @@ export function InspectorPanel({ date, equity }: InspectorPanelProps) {
                     <div className="space-y-1">
                         <span className="text-xs text-muted-foreground">Equity</span>
                         <div className="text-2xl font-bold">
-                            {equity !== undefined ? `$${equity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "N/A"}
+                            {equity !== undefined ? formatCurrency(equity, baseCurrency) : "N/A"}
                         </div>
                     </div>
 

@@ -11,12 +11,14 @@ import {
 } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { RunEquityPoint } from "@/lib/api"
+import { formatCurrency } from "@/lib/utils"
 
 interface PortfolioTabProps {
     equity?: RunEquityPoint[]
+    baseCurrency?: string
 }
 
-export function PortfolioTab({ equity }: PortfolioTabProps) {
+export function PortfolioTab({ equity, baseCurrency }: PortfolioTabProps) {
     if (!equity || equity.length === 0) {
         return <div className="p-4 text-center text-muted-foreground">No data available for portfolio analysis</div>
     }
@@ -62,9 +64,9 @@ export function PortfolioTab({ equity }: PortfolioTabProps) {
                                     axisLine={false}
                                     tickFormatter={(value) => {
                                         if (Math.abs(value) >= 1000000) {
-                                            return `$${(value / 1000000).toFixed(1)}M`;
+                                            return formatCurrency(value / 1000000, baseCurrency, true) + 'M';
                                         }
-                                        return `$${value > 1000 ? (value / 1000).toFixed(0) + 'k' : value}`;
+                                        return formatCurrency(value, baseCurrency, true);
                                     }}
                                     width={60}
                                 />

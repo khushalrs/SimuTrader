@@ -42,6 +42,7 @@ export interface RunData {
     requested_end_date?: string
     effective_start_date?: string
     effective_end_date?: string
+    baseCurrency?: string
 }
 
 interface BacktestOut {
@@ -229,6 +230,7 @@ export async function getRun(runId: string): Promise<RunData | null> {
             requested_end_date,
             effective_start_date,
             effective_end_date,
+            baseCurrency: configSnapshot.base_currency || "USD",
         }
     } catch (error) {
         console.error("Error fetching run:", error)
