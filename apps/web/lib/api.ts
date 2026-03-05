@@ -43,12 +43,15 @@ export interface RunData {
     effective_start_date?: string
     effective_end_date?: string
     baseCurrency?: string
+    status?: string
+    error?: string | null
 }
 
 interface BacktestOut {
     run_id: string
     name?: string | null
     status: string
+    error?: string | null
     created_at: string
     started_at?: string | null
     finished_at?: string | null
@@ -82,6 +85,27 @@ interface RunDailyEquityOut {
     taxes_cum_base: number
     borrow_fees_cum_base: number
     margin_interest_cum_base: number
+}
+
+export interface RunPositionOut {
+    date: string
+    symbol: string
+    qty: number
+    avg_cost_native: number
+    market_value_base: number
+    unrealized_pnl_base: number
+    weight?: number | null
+}
+
+export interface RunFillOut {
+    date: string
+    symbol: string
+    side?: string | null
+    qty: number
+    price: number
+    notional: number
+    commission: number
+    slippage: number
 }
 
 function formatPercent(value?: number | null): string {
@@ -231,6 +255,8 @@ export async function getRun(runId: string): Promise<RunData | null> {
             effective_start_date,
             effective_end_date,
             baseCurrency: configSnapshot.base_currency || "USD",
+            status: run.status,
+            error: run.error,
         }
     } catch (error) {
         console.error("Error fetching run:", error)
@@ -319,3 +345,68 @@ export async function createRun(config: any): Promise<string> {
     const data = await res.json();
     return data.run_id;
 }
+
+export async function createRunFromSnapshot(validConfig: any): Promise<string> {
+    const payload = {
+        name: "Retried Strategy Run",
+        config_snapshot: validConfig,
+        data_snapshot_id: "default_snapshot_2026",
+        seed: 42
+    };
+
+    const res = await fetch(`${API_BASE_URL}/backtests`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Failed to create retried run: ${err}`);
+    }
+
+    const data = await res.json();
+    return data.run_id;
+}
+
+export async function getRunPositions(runId: string, date?: string): Promise<RunPositionOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/runs/${runId}/positions`)
+        if (date) {
+            url.searchParams.append("date", date)
+        }
+        const res = await fetch(url.toString(), { cache: "no-store" })
+        if (!res.ok) {
+            console.error(`Failed to fetch positions: ${res.status} ${res.statusText}`)
+            return []
+        }
+        return await res.json()
+    } catch (e) {
+        console.error("Error fetching positions:", e)
+        return []
+    }
+}
+
+export async function getRunFills(runId: string, start?: string, end?: string): Promise<RunFillOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/runs/${runId}/fills`)
+        if (start) {
+            url.searchParams.append("start", start)
+        }
+        if (end) {
+            url.searchParams.append("end", end)
+        }
+        const res = await fetch(url.toString(), { cache: "no-store" })
+        if (!res.ok) {
+            console.error(`Failed to fetch fills: ${res.status} ${res.statusText}`)
+            return []
+        }
+        return await res.json()
+    } catch (e) {
+        console.error("Error fetching fills:", e)
+        return []
+    }
+}
+
