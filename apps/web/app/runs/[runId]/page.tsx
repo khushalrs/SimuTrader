@@ -8,6 +8,9 @@ import { CostsTab } from "@/components/run/CostsTab"
 import { PortfolioTab } from "@/components/run/PortfolioTab"
 import { ConfigTab } from "@/components/run/ConfigTab"
 import { getRun } from "@/lib/api"
+import { RunPoller } from "@/components/run/RunPoller"
+import { RunRetryButton } from "@/components/run/RunRetryButton"
+import { AlertCircle } from "lucide-react"
 
 export default async function RunDashboardPage({ params }: { params: { runId: string } }) {
     const runData = await getRun(params.runId);
@@ -32,6 +35,21 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
 
     return (
         <main className="container py-8 space-y-8">
+            <RunPoller status={runData.status} />
+
+            {runData.status === "FAILED" && (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-lg border border-destructive/20 bg-destructive/10 p-4 text-destructive">
+                    <div className="flex items-start sm:items-center gap-3">
+                        <AlertCircle className="h-5 w-5 shrink-0 mt-0.5 sm:mt-0" />
+                        <div>
+                            <h3 className="font-semibold">Run Failed</h3>
+                            <p className="text-sm opacity-90">{runData.error || "An unknown error occurred during the backtest execution."}</p>
+                        </div>
+                    </div>
+                    <RunRetryButton config={runData.config_snapshot} />
+                </div>
+            )}
+
             <RunHeader
                 runId={runData.id}
                 title={runData.title}
@@ -41,6 +59,8 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
                 requestedEnd={runData.requested_end_date}
                 effectiveStart={runData.effective_start_date}
                 effectiveEnd={runData.effective_end_date}
+                configSnapshot={runData.config_snapshot}
+                equity={runData.equity}
             />
 
             <KPIGrid metrics={runData.metrics} />
@@ -65,10 +85,10 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
                             <RiskTab equity={runData.equity} />
                         </TabsContent>
                         <TabsContent value="costs" className="mt-0 min-h-[450px]">
-                            <CostsTab data={runData} />
+                            <CostsTab data={runData} status={runData.status} />
                         </TabsContent>
                         <TabsContent value="portfolio" className="mt-0 min-h-[450px]">
-                            <PortfolioTab equity={runData.equity} baseCurrency={runData.baseCurrency} />
+                            <PortfolioTab runId={runData.id} equity={runData.equity} baseCurrency={runData.baseCurrency} status={runData.status} />
                         </TabsContent>
                         <TabsContent value="configuration" className="mt-0 min-h-[450px]">
                             <ConfigTab data={runData} />
@@ -77,7 +97,7 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
                 </div>
 
                 <div className="hidden lg:block lg:col-span-1 h-full">
-                    <InspectorPanel date={inspectorDate} equity={inspectorEquity} baseCurrency={runData.baseCurrency} />
+                    <InspectorPanel runId={runData.id} date={inspectorDate} equity={inspectorEquity} baseCurrency={runData.baseCurrency} status={runData.status} />
                 </div>
             </div>
         </main>

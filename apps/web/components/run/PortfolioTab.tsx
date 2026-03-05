@@ -10,15 +10,29 @@ import {
     YAxis
 } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { RunEquityPoint } from "@/lib/api"
+import { RunEquityPoint, RunPositionOut, getRunPositions } from "@/lib/api"
 import { formatCurrency } from "@/lib/utils"
+import { useEffect, useState } from "react"
 
 interface PortfolioTabProps {
+    runId: string
+    status?: string
     equity?: RunEquityPoint[]
     baseCurrency?: string
 }
 
-export function PortfolioTab({ equity, baseCurrency }: PortfolioTabProps) {
+export function PortfolioTab({ runId, status, equity, baseCurrency }: PortfolioTabProps) {
+    const [positions, setPositions] = useState<RunPositionOut[]>([])
+    const [isLoading, setIsLoading] = useState(true)
+
+    useEffect(() => {
+        setIsLoading(true)
+        getRunPositions(runId)
+            .then(data => setPositions(data))
+            .catch(err => console.error(err))
+            .finally(() => setIsLoading(false))
+    }, [runId, status])
+
     if (!equity || equity.length === 0) {
         return <div className="p-4 text-center text-muted-foreground">No data available for portfolio analysis</div>
     }
@@ -112,17 +126,43 @@ export function PortfolioTab({ equity, baseCurrency }: PortfolioTabProps) {
                                 <tr>
                                     <th className="px-4 py-3 font-medium">Symbol</th>
                                     <th className="px-4 py-3 font-medium text-right">Weight</th>
-                                    <th className="px-4 py-3 font-medium text-right">Shares</th>
+                                    <th className="px-4 py-3 font-medium text-right">Qty</th>
                                     <th className="px-4 py-3 font-medium text-right">Value (Base)</th>
+                                    <th className="px-4 py-3 font-medium text-right">Unr. PnL (Base)</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr>
-                                    <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">
-                                        Positions endpoint not yet implemented in backend.<br />
-                                        Holdings snapshot will appear here.
-                                    </td>
-                                </tr>
+                                {isLoading ? (
+                                    <tr>
+                                        <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
+                                            Loading positions...
+                                        </td>
+                                    </tr>
+                                ) : positions.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
+                                            No open positions for this run/date.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    positions.map((pos) => (
+                                        <tr key={pos.symbol} className="border-b transition-colors hover:bg-muted/50">
+                                            <td className="px-4 py-3 font-medium">{pos.symbol}</td>
+                                            <td className="px-4 py-3 text-right">
+                                                {pos.weight !== undefined && pos.weight !== null
+                                                    ? `${(pos.weight * 100).toFixed(2)}%`
+                                                    : "N/A"}
+                                            </td>
+                                            <td className="px-4 py-3 text-right">{pos.qty.toLocaleString()}</td>
+                                            <td className="px-4 py-3 text-right">
+                                                {formatCurrency(pos.market_value_base, baseCurrency)}
+                                            </td>
+                                            <td className={`px-4 py-3 text-right ${pos.unrealized_pnl_base > 0 ? "text-green-500" : pos.unrealized_pnl_base < 0 ? "text-red-500" : ""}`}>
+                                                {formatCurrency(pos.unrealized_pnl_base, baseCurrency)}
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
                             </tbody>
                         </table>
                     </div>

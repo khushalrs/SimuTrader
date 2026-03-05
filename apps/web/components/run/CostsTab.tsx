@@ -10,14 +10,27 @@ import {
     YAxis
 } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { RunData } from "@/lib/api"
+import { RunData, RunFillOut, getRunFills } from "@/lib/api"
 import { formatCurrency } from "@/lib/utils"
+import { useEffect, useState } from "react"
 
 interface CostsTabProps {
     data: RunData
+    status?: string
 }
 
-export function CostsTab({ data }: CostsTabProps) {
+export function CostsTab({ data, status }: CostsTabProps) {
+    const [fills, setFills] = useState<RunFillOut[]>([]);
+    const [isLoadingFills, setIsLoadingFills] = useState(true);
+
+    useEffect(() => {
+        setIsLoadingFills(true);
+        getRunFills(data.id)
+            .then(res => setFills(res))
+            .catch(err => console.error(err))
+            .finally(() => setIsLoadingFills(false));
+    }, [data.id, status]);
+
     const equity = data.equity || [];
 
     if (equity.length === 0) {
@@ -31,6 +44,9 @@ export function CostsTab({ data }: CostsTabProps) {
         if (val === undefined || val === null) return "0.00%";
         return `${(val * 100).toFixed(2)}%`;
     }
+
+    const totalCommission = fills.reduce((sum, f) => sum + f.commission, 0);
+    const totalSlippage = fills.reduce((sum, f) => sum + f.slippage, 0);
 
     return (
         <div className="space-y-4">
@@ -139,6 +155,71 @@ export function CostsTab({ data }: CostsTabProps) {
                                 />
                             </AreaChart>
                         </ResponsiveContainer>
+                    </div>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>Trades</CardTitle>
+                    <CardDescription>
+                        Fills executed during this backtest.
+                        {!isLoadingFills && fills.length > 0 && (
+                            <span className="block mt-1 font-medium">
+                                Totals - Commission: {formatCurrency(totalCommission, data.baseCurrency)} | Slippage: {formatCurrency(totalSlippage, data.baseCurrency)}
+                            </span>
+                        )}
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <div className="rounded-md border max-h-[400px] overflow-auto">
+                        <table className="w-full text-sm text-left relative">
+                            <thead className="bg-muted text-muted-foreground border-b border-border sticky top-0">
+                                <tr>
+                                    <th className="px-4 py-3 font-medium">Date</th>
+                                    <th className="px-4 py-3 font-medium">Symbol</th>
+                                    <th className="px-4 py-3 font-medium">Side</th>
+                                    <th className="px-4 py-3 font-medium text-right">Qty</th>
+                                    <th className="px-4 py-3 font-medium text-right">Price</th>
+                                    <th className="px-4 py-3 font-medium text-right">Commission</th>
+                                    <th className="px-4 py-3 font-medium text-right">Slippage</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {isLoadingFills ? (
+                                    <tr>
+                                        <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                                            Loading trades...
+                                        </td>
+                                    </tr>
+                                ) : fills.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                                            No trades executed during this run.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    fills.map((fill, i) => (
+                                        <tr key={i} className="border-b transition-colors hover:bg-muted/50 whitespace-nowrap">
+                                            <td className="px-4 py-3">{new Date(fill.date).toLocaleString()}</td>
+                                            <td className="px-4 py-3 font-medium">{fill.symbol}</td>
+                                            <td className="px-4 py-3">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${fill.side?.toUpperCase() === "BUY" ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" :
+                                                    fill.side?.toUpperCase() === "SELL" ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" :
+                                                        "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400"
+                                                    }`}>
+                                                    {fill.side || "N/A"}
+                                                </span>
+                                            </td>
+                                            <td className="px-4 py-3 text-right">{fill.qty.toLocaleString()}</td>
+                                            <td className="px-4 py-3 text-right">{formatCurrency(fill.price, data.baseCurrency)}</td>
+                                            <td className="px-4 py-3 text-right">{formatCurrency(fill.commission, data.baseCurrency)}</td>
+                                            <td className="px-4 py-3 text-right">{formatCurrency(fill.slippage, data.baseCurrency)}</td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
                     </div>
                 </CardContent>
             </Card>
