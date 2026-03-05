@@ -226,7 +226,7 @@ def run_momentum(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any])
         weight = 1.0 / len(winners)
         allocations: Dict[str, float] = {}
         for symbol in symbols:
-            allocations[symbol] = total_value * weight if symbol in winners else 0.0
+            allocations[symbol] = total_value * 0.99 * weight if symbol in winners else 0.0
 
         last_rebalance = ctx.date
         return allocations

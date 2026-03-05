@@ -306,7 +306,26 @@ def run_engine(
         con.close()
 
     if not rows:
-        raise ValueError(f"No calendar rows between {start_date} and {end_date}")
+        raise ValueError(
+            "E_NO_TRADING_DAYS_IN_RANGE: No trading days found between "
+            f"{start_date} and {end_date} for the selected calendars."
+        )
+
+    requested_start_date = start_date
+    requested_end_date = end_date
+    effective_start_date = rows[0][0]
+    effective_end_date = rows[-1][0]
+    date_shift_warnings: list[str] = []
+    if effective_start_date != requested_start_date:
+        date_shift_warnings.append(
+            f"Start date shifted from {requested_start_date} to {effective_start_date} "
+            "to align with the trading calendar."
+        )
+    if effective_end_date != requested_end_date:
+        date_shift_warnings.append(
+            f"End date shifted from {requested_end_date} to {effective_end_date} "
+            "to align with the trading calendar."
+        )
 
     symbol_calendars = {
         inst["symbol"]: calendar_policy.calendar_for_asset_class(
@@ -665,6 +684,16 @@ def run_engine(
             initial_cash=initial_cash,
         )
         metrics_meta = {}
+
+    metrics_meta.update(
+        {
+            "requested_start_date": requested_start_date.isoformat(),
+            "requested_end_date": requested_end_date.isoformat(),
+            "effective_start_date": effective_start_date.isoformat(),
+            "effective_end_date": effective_end_date.isoformat(),
+            "date_shift_warnings": date_shift_warnings,
+        }
+    )
 
     db.add(
         RunMetric(

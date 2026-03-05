@@ -67,3 +67,34 @@ class RunMetricOut(BaseModel):
     borrow_drag: Optional[float] = None
     margin_interest_drag: Optional[float] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunPositionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    date: date
+    symbol: str
+    qty: float
+    avg_cost_native: float
+    market_value_base: float
+    unrealized_pnl_base: float
+    weight: Optional[float] = None
+
+
+class RunFillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    date: date
+    symbol: str
+    side: Optional[str] = None
+    qty: float
+    price: float
+    notional: float
+    commission: float
+    slippage: float
+
+
+class RunCostsSummaryOut(BaseModel):
+    commissions: float
+    slippage: float
+    total_costs: float
