@@ -19,7 +19,7 @@ export function InspectorPanel({ runId, status, date, equity, baseCurrency }: In
 
     useEffect(() => {
         setIsLoading(true)
-        getRunPositions(runId)
+        getRunPositions(runId, date)
             .then(data => {
                 // sort by market_value_base descending, take top 5
                 const sorted = [...data].sort((a, b) => b.market_value_base - a.market_value_base).slice(0, 5)
@@ -27,7 +27,7 @@ export function InspectorPanel({ runId, status, date, equity, baseCurrency }: In
             })
             .catch(err => console.error(err))
             .finally(() => setIsLoading(false))
-    }, [runId, status])
+    }, [runId, status, date])
 
     return (
         <Card className="col-span-1 h-full border-l-4 border-l-primary/20">

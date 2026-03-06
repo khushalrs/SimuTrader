@@ -41,20 +41,33 @@ export function RiskTab({ equity }: RiskTabProps) {
 
     // Create 20 bins for the distribution
     const numBins = 20;
-    const binSize = (maxReturn - minReturn) / numBins;
-    const bins = Array.from({ length: numBins }, (_, i) => ({
-        binStart: minReturn + i * binSize,
-        binEnd: minReturn + (i + 1) * binSize,
-        count: 0,
-        label: `${((minReturn + (i + 0.5) * binSize) * 100).toFixed(1)}%`
-    }));
+    let bins: { binStart: number; binEnd: number; count: number; label: string }[] = [];
 
-    returns.forEach(ret => {
-        let binIndex = Math.floor((ret - minReturn) / binSize);
-        if (binIndex >= numBins) binIndex = numBins - 1;
-        if (binIndex < 0) binIndex = 0;
-        bins[binIndex].count += 1;
-    });
+    if (returns.length > 0) {
+        if (maxReturn === minReturn) {
+            bins = [{
+                binStart: minReturn - 0.01,
+                binEnd: minReturn + 0.01,
+                count: returns.length,
+                label: `${(minReturn * 100).toFixed(1)}%`
+            }];
+        } else {
+            const binSize = (maxReturn - minReturn) / numBins;
+            bins = Array.from({ length: numBins }, (_, i) => ({
+                binStart: minReturn + i * binSize,
+                binEnd: minReturn + (i + 1) * binSize,
+                count: 0,
+                label: `${((minReturn + (i + 0.5) * binSize) * 100).toFixed(1)}%`
+            }));
+
+            returns.forEach(ret => {
+                let binIndex = Math.floor((ret - minReturn) / binSize);
+                if (binIndex >= numBins) binIndex = numBins - 1;
+                if (binIndex < 0) binIndex = 0;
+                bins[binIndex].count += 1;
+            });
+        }
+    }
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -126,31 +139,37 @@ export function RiskTab({ equity }: RiskTabProps) {
                 </CardHeader>
                 <CardContent className="pl-0">
                     <div className="h-[250px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={bins} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                                <XAxis
-                                    dataKey="label"
-                                    stroke="#888888"
-                                    fontSize={12}
-                                    tickLine={false}
-                                    axisLine={false}
-                                />
-                                <YAxis
-                                    stroke="#888888"
-                                    fontSize={12}
-                                    tickLine={false}
-                                    axisLine={false}
-                                    width={40}
-                                />
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                                <Tooltip
-                                    contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))' }}
-                                    itemStyle={{ color: 'hsl(var(--foreground))' }}
-                                    formatter={(value: any) => [value, 'Days']}
-                                />
-                                <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
+                        {returns.length === 0 ? (
+                            <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+                                Not enough data to compute returns distribution
+                            </div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={bins} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                                    <XAxis
+                                        dataKey="label"
+                                        stroke="#888888"
+                                        fontSize={12}
+                                        tickLine={false}
+                                        axisLine={false}
+                                    />
+                                    <YAxis
+                                        stroke="#888888"
+                                        fontSize={12}
+                                        tickLine={false}
+                                        axisLine={false}
+                                        width={40}
+                                    />
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                                    <Tooltip
+                                        contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))' }}
+                                        itemStyle={{ color: 'hsl(var(--foreground))' }}
+                                        formatter={(value: any) => [value, 'Days']}
+                                    />
+                                    <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        )}
                     </div>
                 </CardContent>
             </Card>

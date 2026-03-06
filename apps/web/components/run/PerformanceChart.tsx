@@ -28,9 +28,10 @@ const DEFAULT_DATA = [
 interface PerformanceChartProps {
     data?: { date: string; value: number }[]
     baseCurrency?: string
+    onHover?: (point: { date: string; value: number } | null) => void
 }
 
-export function PerformanceChart({ data, baseCurrency }: PerformanceChartProps) {
+export function PerformanceChart({ data, baseCurrency, onHover }: PerformanceChartProps) {
     const chartData = data && data.length > 0 ? data : DEFAULT_DATA
 
     return (
@@ -44,7 +45,15 @@ export function PerformanceChart({ data, baseCurrency }: PerformanceChartProps) 
             <CardContent className="pl-2">
                 <div className="h-[350px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={chartData}>
+                        <AreaChart
+                            data={chartData}
+                            onMouseMove={(state: any) => {
+                                if (state.isTooltipActive && state.activePayload && state.activePayload.length > 0) {
+                                    onHover?.(state.activePayload[0].payload)
+                                }
+                            }}
+                            onMouseLeave={() => onHover?.(null)}
+                        >
                             <defs>
                                 <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
                                     <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
