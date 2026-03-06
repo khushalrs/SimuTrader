@@ -378,6 +378,42 @@ def test_buy_and_hold_missing_bars_carry_forward(tmp_path, monkeypatch):
     assert len(db.equity_rows) == expected_days
 
 
+def test_buy_and_hold_forward_fill_bootstraps_from_next_available_start_bar(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 1)
+    end = date(2024, 1, 10)
+    symbols = ["AAPL"]
+
+    missing = {"AAPL": {start}}
+    _seed_duckdb(str(duckdb_path), symbols, start, end, missing=missing)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "universe": {
+                "instruments": [
+                    {"symbol": symbols[0], "asset_class": "US_EQUITY", "amount": 10000.0},
+                ]
+            },
+            "data_policy": {"missing_bar": "FORWARD_FILL"},
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "initial_cash": 10000.0,
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.fill_rows, "Expected at least one fill"
+    assert db.fill_rows[0].date == start
+
+
 def test_buy_and_hold_missing_bars_fail_by_default(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "simutrader.duckdb"
     start = date(2024, 1, 2)
