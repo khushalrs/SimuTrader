@@ -423,10 +423,15 @@ def run_engine(
                             "Set data_policy.missing_bar=FORWARD_FILL to allow forward fill."
                         )
                     if state.last_price[symbol] is None:
-                        raise ValueError(
-                            f"Missing bar for {symbol} on {day} with no prior value to forward-fill."
-                        )
-                    price = state.last_price[symbol]
+                        # Bootstrap start-of-range missing bars from the next observed in-range price.
+                        bootstrap_price = first_observed_price.get(symbol)
+                        if bootstrap_price is None:
+                            raise ValueError(
+                                f"Missing bar for {symbol} on {day} with no prior value to forward-fill."
+                            )
+                        price = bootstrap_price
+                    else:
+                        price = state.last_price[symbol]
                 state.last_price[symbol] = price
                 prices[symbol] = price
             else:
@@ -618,6 +623,12 @@ def run_engine(
             )
 
     symbol_set = set(symbols)
+    first_observed_price: Dict[str, float] = {}
+    for _, _, _, _, row_symbol, row_close in rows:
+        if row_symbol is None or row_symbol not in symbol_set or row_close is None:
+            continue
+        if row_symbol not in first_observed_price:
+            first_observed_price[row_symbol] = float(row_close)
 
     current_date: date | None = None
     flags: Dict[str, bool] | None = None
