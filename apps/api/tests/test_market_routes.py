@@ -147,10 +147,16 @@ def _client() -> TestClient:
     return TestClient(test_app)
 
 
+def _clear_market_caches() -> None:
+    _market_module._bars_cache.clear()
+    _market_module._snapshot_cache.clear()
+
+
 def test_market_bars_returns_rows_within_bounds(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "market_bars.duckdb"
     _seed_duckdb(str(duckdb_path), ["SPY", "QQQ"], date(2024, 1, 1), date(2024, 1, 10))
     monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    _clear_market_caches()
 
     client = _client()
     res = client.get(
@@ -174,6 +180,7 @@ def test_market_bars_forward_fill_is_continuous_with_start_bootstrap(tmp_path, m
     missing = {"SPY": {date(2024, 1, 1), date(2024, 1, 4)}}
     _seed_duckdb(str(duckdb_path), ["SPY"], date(2024, 1, 1), date(2024, 1, 8), missing=missing)
     monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    _clear_market_caches()
 
     client = _client()
     res = client.get(
@@ -199,6 +206,7 @@ def test_market_coverage_returns_first_last_and_rows(tmp_path, monkeypatch):
     missing = {"SPY": {date(2024, 1, 4)}}
     _seed_duckdb(str(duckdb_path), ["SPY"], date(2024, 1, 1), date(2024, 1, 8), missing=missing)
     monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    _clear_market_caches()
 
     client = _client()
     res = client.get(
@@ -222,6 +230,7 @@ def test_market_snapshot_returns_derived_fields(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "market_snapshot.duckdb"
     _seed_duckdb(str(duckdb_path), ["SPY"], date(2024, 1, 1), date(2025, 3, 1))
     monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    _clear_market_caches()
 
     client = _client()
     res = client.get("/market/snapshot", params={"symbols": "SPY"})
@@ -232,3 +241,59 @@ def test_market_snapshot_returns_derived_fields(tmp_path, monkeypatch):
     assert payload[0]["last_close"] > 0
     assert "return_1m" in payload[0]
     assert "recent_vol_20d" in payload[0]
+
+
+def test_market_snapshot_uses_cache(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "market_snapshot_cache.duckdb"
+    _seed_duckdb(str(duckdb_path), ["SPY"], date(2024, 1, 1), date(2025, 3, 1))
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    _clear_market_caches()
+
+    client = _client()
+    first = client.get("/market/snapshot", params={"symbols": "SPY"})
+    assert first.status_code == 200
+
+    monkeypatch.setattr(_market_module, "get_duckdb_conn", lambda: (_ for _ in ()).throw(AssertionError("cache miss")))
+    second = client.get("/market/snapshot", params={"symbols": "SPY"})
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+def test_market_bars_uses_shorter_default_range(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "market_default_range.duckdb"
+    _seed_duckdb(str(duckdb_path), ["SPY"], date(2024, 1, 1), date(2025, 3, 1))
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    _clear_market_caches()
+
+    client = _client()
+    res = client.get("/market/bars", params={"symbols": "SPY"})
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload[0]["date"] == "2024-09-02"
+    assert payload[-1]["date"] == "2025-02-28"
+    assert all(set(row).issuperset({"date", "symbol", "currency", "exchange", "close"}) for row in payload)
+    assert all("volume" not in row for row in payload)
+
+
+def test_market_bars_uses_cache_and_downsamples(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "market_bars_cache.duckdb"
+    _seed_duckdb(str(duckdb_path), ["SPY"], date(2024, 1, 1), date(2024, 3, 1))
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    _clear_market_caches()
+
+    client = _client()
+    first = client.get(
+        "/market/bars",
+        params={"symbols": "SPY", "start_date": "2024-01-01", "end_date": "2024-03-01"},
+    )
+    assert first.status_code == 200
+
+    monkeypatch.setattr(_market_module, "get_duckdb_conn", lambda: (_ for _ in ()).throw(AssertionError("cache miss")))
+    second = client.get(
+        "/market/bars",
+        params={"symbols": "SPY", "start_date": "2024-01-01", "end_date": "2024-03-01", "max_points": 5},
+    )
+    assert second.status_code == 200
+    payload = second.json()
+    assert len(payload) == 5
+    assert payload == sorted(payload, key=lambda row: (row["date"], row["symbol"]))
