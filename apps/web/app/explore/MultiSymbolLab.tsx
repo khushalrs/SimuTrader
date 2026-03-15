@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { AssetSearch } from "./AssetSearch";
 import { AssetOut } from "@/lib/api";
 import { getMarketBars, MarketBarOut } from "@/lib/market";
-import { computeReturns, normalizePerformance, correlationMatrix, rollingVol } from "@/lib/analytics";
+import { computeReturns, normalizePerformance, correlationMatrix, rollingVol, downsampleData } from "@/lib/analytics";
 import { X, Plus } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -113,7 +113,9 @@ export function MultiSymbolLab() {
                 combinedByDate[item.date][sym] = item.value;
             }
         }
-        return Object.values(combinedByDate).sort((a, b) => a.date.localeCompare(b.date));
+        
+        const combinedArray = Object.values(combinedByDate).sort((a, b) => a.date.localeCompare(b.date));
+        return downsampleData(combinedArray, 100);
     }, [barsData]);
 
     // 2. Risk-Return Scatter & Correlation Heatmap
@@ -167,7 +169,7 @@ export function MultiSymbolLab() {
 
     // Pair spread (if exactly 2)
     const pairSpreadSeries = useMemo(() => {
-        if (symbols.length !== 2 || !barsData.length) return [];
+        if (symbols.length !== 2 || !barsData.length) return null;
         const s1 = symbols[0].symbol;
         const s2 = symbols[1].symbol;
 
@@ -207,7 +209,7 @@ export function MultiSymbolLab() {
         });
 
         spreadSeries.sort((a, b) => a.date.localeCompare(b.date));
-        return { series: spreadSeries, mean, std, active: true };
+        return { series: downsampleData(spreadSeries, 100), mean, std, active: true };
 
     }, [symbols, barsData]);
 
@@ -306,7 +308,7 @@ export function MultiSymbolLab() {
                                                 <ZAxis type="category" dataKey="symbol" name="Symbol" />
                                                 <Tooltip cursor={{ strokeDasharray: '3 3' }} 
                                                     contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', fontSize: '12px' }}
-                                                    formatter={(val, name, props) => [val.toFixed(2) + "%", name]}
+                                                    formatter={(val: number | string | undefined) => typeof val === 'number' ? `${val.toFixed(2)}%` : val}
                                                 />
                                                 {scatterData.map((entry, index) => (
                                                     <Scatter key={entry.symbol} name={entry.symbol} data={[entry]} fill={COLORS[index % COLORS.length]} />

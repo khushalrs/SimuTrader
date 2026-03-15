@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getMarketSnapshot, getMarketBars, MarketSnapshotOut, MarketBarOut } from "@/lib/market";
-import { computeReturns, normalizePerformance, computeDrawdown, rollingVolSeries, correlationMatrix } from "@/lib/analytics";
+import { computeReturns, normalizePerformance, computeDrawdown, rollingVolSeries, correlationMatrix, downsampleData } from "@/lib/analytics";
 import { getLeaderLaggardNarrative, getRiskRegimeNarrative, getDiversificationSummary } from "@/lib/narratives";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -34,7 +34,7 @@ export function MarketSnapshot() {
                 // Fetch snapshot and last year of bars
                 const end = new Date();
                 const start = new Date();
-                start.setFullYear(end.getFullYear() - 1);
+                start.setMonth(end.getMonth() - 6); // Reduced from 1 year to 6 months for initial load
                 
                 const [snap, bars] = await Promise.all([
                     getMarketSnapshot(DEFAULT_BASKET),
@@ -83,7 +83,9 @@ export function MarketSnapshot() {
                 combinedByDate[item.date][sym] = item.value;
             }
         }
-        return Object.values(combinedByDate).sort((a, b) => a.date.localeCompare(b.date));
+        
+        const combinedArray = Object.values(combinedByDate).sort((a, b) => a.date.localeCompare(b.date));
+        return downsampleData(combinedArray, 100); // Downsample for the chart
     }, [barsData]);
 
     // 2. Correlation Matrix

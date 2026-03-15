@@ -167,3 +167,22 @@ export function monthlyReturnsHeatmap(bars: MarketBarOut[]): { year: number, mon
     
     return monthlyReturns;
 }
+
+/**
+ * Downsamples data to roughly `targetLength` points using a simple interval step.
+ * This prevents Recharts from rendering thousands of nodes.
+ */
+export function downsampleData<T>(data: T[], targetLength: number = 200): T[] {
+    if (data.length <= targetLength) return data;
+    
+    // Always keep the first and last points, and interval step through the rest
+    const step = Math.ceil((data.length - 2) / (targetLength - 2));
+    const result: T[] = [data[0]];
+    
+    for (let i = step; i < data.length - 1; i += step) {
+        result.push(data[i]);
+    }
+    
+    result.push(data[data.length - 1]);
+    return result;
+}

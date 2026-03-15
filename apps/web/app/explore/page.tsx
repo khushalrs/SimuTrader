@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MarketSnapshot } from "./MarketSnapshot";
 import { AssetSearchSection } from "./AssetSearchSection";
 import { MultiSymbolLab } from "./MultiSymbolLab";
+import { LazyLoadWrapper } from "./LazyLoadWrapper";
 
 export default function ExplorePage() {
     const [activeTab, setActiveTab] = useState("snapshot");
@@ -23,7 +24,9 @@ export default function ExplorePage() {
                 </TabsList>
                 
                 <TabsContent value="snapshot" className="space-y-4">
-                    <MarketSnapshot />
+                    <LazyLoadWrapper active={activeTab === "snapshot"}>
+                        <MarketSnapshot />
+                    </LazyLoadWrapper>
                 </TabsContent>
                 
                 <TabsContent value="search" className="space-y-4">
@@ -36,7 +39,9 @@ export default function ExplorePage() {
                         </CardHeader>
                         <CardContent>
                             <div className="min-h-[400px]">
-                                <AssetSearchSection />
+                                <LazyLoadWrapper active={activeTab === "search"}>
+                                    <AssetSearchSection />
+                                </LazyLoadWrapper>
                             </div>
                         </CardContent>
                     </Card>
@@ -52,7 +57,9 @@ export default function ExplorePage() {
                         </CardHeader>
                         <CardContent>
                             <div className="min-h-[400px]">
-                                <MultiSymbolLab />
+                                <LazyLoadWrapper active={activeTab === "lab"}>
+                                    <MultiSymbolLab />
+                                </LazyLoadWrapper>
                             </div>
                         </CardContent>
                     </Card>

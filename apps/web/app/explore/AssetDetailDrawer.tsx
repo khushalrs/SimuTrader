@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { AssetOut } from "@/lib/api";
 import { getMarketBars, MarketBarOut } from "@/lib/market";
-import { computeReturns, computeDrawdown } from "@/lib/analytics";
+import { computeReturns, computeDrawdown, downsampleData } from "@/lib/analytics";
 import { X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -39,7 +39,7 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
             try {
                 const end = new Date();
                 const start = new Date();
-                start.setFullYear(end.getFullYear() - 3); // 3 Years of history
+                start.setFullYear(end.getFullYear() - 1); // 1 Year of history
                 
                 const data = await getMarketBars([asset.symbol], start.toISOString().split("T")[0], end.toISOString().split("T")[0]);
                 if (isMounted) setBars(data);
@@ -58,7 +58,8 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
         if (!bars.length) return { closeSeries: [], returnsHist: [], drawdowns: [], stats: {} };
 
         // 1. Close Chart
-        const closeSeries = bars.map(b => ({ date: b.date, close: b.close }));
+        const closeSeriesRaw = bars.map(b => ({ date: b.date, close: b.close }));
+        const closeSeries = downsampleData(closeSeriesRaw, 100);
 
         // 2. Returns Hist (Fat tails analysis)
         const rets = computeReturns(bars);
@@ -79,11 +80,12 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
         const returnsHist = Object.keys(buckets).map(k => ({ bucket: k, count: buckets[k] }));
 
         // 3. Drawdowns
-        const dd = computeDrawdown(bars);
-        const drawdowns = dd.map(d => ({ date: d.date, drawdown: d.drawdown * 100 }));
+        const ddRaw = computeDrawdown(bars);
+        const drawdownsRaw = ddRaw.map(d => ({ date: d.date, drawdown: d.drawdown * 100 }));
+        const drawdowns = downsampleData(drawdownsRaw, 100);
         
-        const maxDd = Math.min(...drawdowns.map(d => d.drawdown));
-        const currentDd = drawdowns[drawdowns.length - 1]?.drawdown || 0;
+        const maxDd = Math.min(...drawdownsRaw.map(d => d.drawdown));
+        const currentDd = drawdownsRaw[drawdownsRaw.length - 1]?.drawdown || 0;
 
         // Returns inferences
         const getRet = (days: number) => {
@@ -232,7 +234,7 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
                                             <Tooltip 
                                                 contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', fontSize: '12px' }}
                                                 labelStyle={{ color: 'hsl(var(--muted-foreground))' }}
-                                                formatter={(val: number) => [`${val.toFixed(2)}%`, 'Drawdown']}
+                                                formatter={(val: number | string | undefined) => [typeof val === 'number' ? `${val.toFixed(2)}%` : val, 'Drawdown']}
                                             />
                                             <Area type="step" dataKey="drawdown" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} />
                                         </AreaChart>
@@ -252,7 +254,7 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
                                             <Tooltip 
                                                 cursor={{ fill: 'hsl(var(--muted))' }}
                                                 contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', fontSize: '12px' }}
-                                                formatter={(val: number) => [val, 'Days']}
+                                                formatter={(val: number | string | undefined) => [val, 'Days']}
                                             />
                                             <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
                                         </BarChart>
