@@ -18,3 +18,14 @@ class AssetOut(BaseModel):
     is_active: bool
     data_source: str
     meta: Dict[str, Any]
+
+
+class AssetCoverageOut(BaseModel):
+    symbol: str
+    first_date: str
+    last_date: str
+    rows: int
+
+
+class AssetDetailOut(AssetOut):
+    coverage: AssetCoverageOut | None = None

@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 import importlib.util
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import duckdb
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.sql import operators
@@ -39,6 +41,35 @@ def _asset(symbol: str, name: str, asset_class: str) -> SimpleNamespace:
     )
 
 
+def _seed_asset_coverage(path: Path, symbol: str) -> None:
+    con = duckdb.connect(str(path))
+    con.execute(
+        """
+        CREATE TABLE prices (
+            date DATE,
+            symbol VARCHAR,
+            asset_class VARCHAR,
+            currency VARCHAR,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE,
+            volume DOUBLE,
+            exchange VARCHAR,
+            data_source VARCHAR
+        );
+        """
+    )
+    con.executemany(
+        "INSERT INTO prices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (date(2024, 1, 2), symbol, "US_EQUITY", "USD", 100.0, 100.0, 100.0, 100.0, 1000.0, "NASDAQ", "seed"),
+            (date(2024, 1, 5), symbol, "US_EQUITY", "USD", 103.0, 103.0, 103.0, 103.0, 1200.0, "NASDAQ", "seed"),
+        ],
+    )
+    con.close()
+
+
 def _like_matches(value: str | None, pattern: str, *, case_insensitive: bool) -> bool:
     if value is None:
         return False
@@ -50,14 +81,22 @@ def _like_matches(value: str | None, pattern: str, *, case_insensitive: bool) ->
 def _resolve_operand(node, row):  # noqa: ANN001
     if isinstance(node, BindParameter):
         return node.value
+    if str(node) == "true":
+        return True
+    if str(node) == "false":
+        return False
     if isinstance(node, Function):
         if node.name.lower() == "lower":
             arg = next(iter(node.clauses))
             value = _resolve_operand(arg, row)
             return None if value is None else str(value).lower()
+        if node.name.lower() == "upper":
+            arg = next(iter(node.clauses))
+            value = _resolve_operand(arg, row)
+            return None if value is None else str(value).upper()
     if hasattr(node, "name") and hasattr(row, node.name):
         return getattr(row, node.name)
-    if hasattr(node, "key") and hasattr(row, node.key):
+    if getattr(node, "key", None) is not None and hasattr(row, node.key):
         return getattr(row, node.key)
     if hasattr(node, "element"):
         return _resolve_operand(node.element, row)
@@ -120,6 +159,10 @@ class _FakeQuery:
         if self.limit_value is None:
             return list(self.rows)
         return list(self.rows[: self.limit_value])
+
+    def first(self):
+        rows = self.all()
+        return rows[0] if rows else None
 
 
 class _FakeDB:
@@ -198,6 +241,24 @@ def test_assets_limit_is_enforced():
     assert invalid_res.status_code == 422
 
 
+def test_assets_filters_currency_exchange_and_is_active():
+    assets = [
+        _asset("AAPL", "Apple Inc", "US_EQUITY"),
+        _asset("MSFT", "Microsoft Corporation", "US_EQUITY"),
+    ]
+    assets[1].currency = "EUR"
+    assets[1].exchange = "XETRA"
+    assets[1].is_active = False
+    client = _client_with_assets(assets)
+    res = client.get(
+        "/assets",
+        params={"currency": "usd", "exchange": "nasdaq", "is_active": "true"},
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert [row["symbol"] for row in payload] == ["AAPL"]
+
+
 def test_assets_no_match_returns_empty_list():
     client = _client_with_assets([_asset("AAPL", "Apple Inc", "US_EQUITY")])
     res = client.get("/assets", params={"q": "not-a-match"})
@@ -232,11 +293,36 @@ def test_assets_no_params_preserves_legacy_behavior():
     assert [row["symbol"] for row in payload] == ["AAPL", "MRPL", "MSFT"]
 
 
+def test_assets_no_params_are_capped_by_default():
+    client = _client_with_assets(
+        [_asset(f"SYM{idx:02d}", f"Name {idx:02d}", "US_EQUITY") for idx in range(25)]
+    )
+    res = client.get("/assets")
+    assert res.status_code == 200
+    assert len(res.json()) == 20
+
+
+def test_asset_detail_returns_coverage(tmp_path, monkeypatch):
+    coverage_path = tmp_path / "assets_coverage.duckdb"
+    _seed_asset_coverage(coverage_path, "AAPL")
+    monkeypatch.setattr(_assets_module, "get_duckdb_conn", lambda: duckdb.connect(str(coverage_path)))
+
+    client = _client_with_assets([_asset("AAPL", "Apple Inc", "US_EQUITY")])
+    res = client.get("/assets/AAPL")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["symbol"] == "AAPL"
+    assert payload["coverage"]["first_date"] == "2024-01-02"
+    assert payload["coverage"]["last_date"] == "2024-01-05"
+    assert payload["coverage"]["rows"] == 2
+
+
 def test_assets_openapi_includes_query_params():
     client = _client_with_assets([])
     res = client.get("/openapi.json")
     assert res.status_code == 200
     schema = res.json()
-    params = schema["paths"]["/assets"]["get"]["parameters"]
-    names = {item["name"] for item in params}
-    assert {"q", "asset_class", "limit"}.issubset(names)
+    list_params = schema["paths"]["/assets"]["get"]["parameters"]
+    names = {item["name"] for item in list_params}
+    assert {"q", "asset_class", "currency", "exchange", "is_active", "limit"}.issubset(names)
+    assert schema["paths"]["/assets/{symbol}"]["get"]["parameters"][0]["name"] == "symbol"
