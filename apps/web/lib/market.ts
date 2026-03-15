@@ -64,7 +64,8 @@ export async function getMarketBars(
     endDate?: string,
     fields: string = "close",
     calendar: string = "GLOBAL",
-    missingBar: string = "FORWARD_FILL"
+    missingBar: string = "RAW",
+    maxPoints?: number
 ): Promise<MarketBarOut[]> {
     try {
         const url = new URL(`${API_BASE_URL}/market/bars`)
@@ -74,6 +75,7 @@ export async function getMarketBars(
         if (fields) url.searchParams.append("fields", fields)
         if (calendar) url.searchParams.append("calendar", calendar)
         if (missingBar) url.searchParams.append("missing_bar", missingBar)
+        if (maxPoints) url.searchParams.append("max_points", String(maxPoints))
 
         const cacheKey = `bars_${url.toString()}`;
         const cached = getCached<MarketBarOut[]>(cacheKey);

@@ -31,14 +31,22 @@ export function MarketSnapshot() {
         const fetchData = async () => {
             setIsLoading(true);
             try {
-                // Fetch snapshot and last year of bars
+                // Fetch snapshot and a smaller chart series for first paint.
                 const end = new Date();
                 const start = new Date();
-                start.setMonth(end.getMonth() - 6); // Reduced from 1 year to 6 months for initial load
+                start.setMonth(end.getMonth() - 3);
                 
                 const [snap, bars] = await Promise.all([
                     getMarketSnapshot(DEFAULT_BASKET),
-                    getMarketBars(DEFAULT_BASKET, start.toISOString().split("T")[0], end.toISOString().split("T")[0])
+                    getMarketBars(
+                        DEFAULT_BASKET,
+                        start.toISOString().split("T")[0],
+                        end.toISOString().split("T")[0],
+                        "close",
+                        "GLOBAL",
+                        "RAW",
+                        120,
+                    )
                 ]);
                 
                 if (isMounted) {

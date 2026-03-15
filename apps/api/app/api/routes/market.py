@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
+import logging
 from math import sqrt
 from statistics import median
 import time
@@ -12,6 +13,7 @@ from app.data.duckdb import get_duckdb_conn
 from app.schemas.market import MarketBarOut, MarketCoverageOut, MarketSnapshotOut
 
 router = APIRouter(prefix="/market", tags=["market"])
+logger = logging.getLogger("uvicorn.error")
 
 MAX_SYMBOLS = 20
 MAX_RANGE_DAYS = 730
@@ -298,6 +300,7 @@ def get_market_bars(
     missing_bar: str | None = Query(default=None),
     max_points: int | None = Query(default=None, ge=2, le=5000),
 ) -> list[MarketBarOut]:
+    route_started = time.perf_counter()
     parsed_symbols = _parse_symbols(symbols)
     parsed_fields = _parse_fields(fields)
     parsed_calendar = _parse_calendar(calendar)
@@ -312,10 +315,18 @@ def get_market_bars(
     )
     cached = _cache_get(_bars_cache, request_cache_key, BARS_TTL_SECONDS)
     if cached is not None:
-        return _downsample_rows(cached, max_points)
+        response = _downsample_rows(cached, max_points)
+        logger.info(
+            "market.bars cache_hit=true symbols=%s rows=%s total_ms=%.2f",
+            ",".join(parsed_symbols),
+            len(response),
+            (time.perf_counter() - route_started) * 1000.0,
+        )
+        return response
 
     con = get_duckdb_conn()
     try:
+        query_started = time.perf_counter()
         resolved_start, resolved_end = _resolve_dates(con, parsed_symbols, start_date, end_date)
         resolved_cache_key = (
             tuple(sorted(parsed_symbols)),
@@ -327,10 +338,19 @@ def get_market_bars(
         )
         cached = _cache_get(_bars_cache, resolved_cache_key, BARS_TTL_SECONDS)
         if cached is not None:
-            return _downsample_rows(cached, max_points)
+            response = _downsample_rows(cached, max_points)
+            logger.info(
+                "market.bars cache_hit=true symbols=%s rows=%s total_ms=%.2f",
+                ",".join(parsed_symbols),
+                len(response),
+                (time.perf_counter() - route_started) * 1000.0,
+            )
+            return response
 
         if parsed_missing == "RAW":
             rows = _raw_price_rows(con, parsed_symbols, resolved_start, resolved_end, parsed_fields)
+            query_ms = (time.perf_counter() - query_started) * 1000.0
+            model_started = time.perf_counter()
             payload = []
             for row in rows:
                 row_date, symbol, currency, exchange, *values = row
@@ -344,7 +364,11 @@ def get_market_bars(
                     item[field] = value
                 payload.append(item)
             out = _bar_rows_to_out(payload)
+            model_ms = (time.perf_counter() - model_started) * 1000.0
+            processing_ms = 0.0
         else:
+            query_ms = (time.perf_counter() - query_started) * 1000.0
+            processing_started = time.perf_counter()
             out = _continuous_bars(
                 con,
                 parsed_symbols,
@@ -354,9 +378,21 @@ def get_market_bars(
                 parsed_calendar,
                 parsed_missing,
             )
+            processing_ms = (time.perf_counter() - processing_started) * 1000.0
+            model_ms = 0.0
         _cache_set(_bars_cache, request_cache_key, out, BARS_TTL_SECONDS)
         _cache_set(_bars_cache, resolved_cache_key, out, BARS_TTL_SECONDS)
-        return _downsample_rows(out, max_points)
+        response = _downsample_rows(out, max_points)
+        logger.info(
+            "market.bars cache_hit=false symbols=%s rows=%s duckdb_ms=%.2f processing_ms=%.2f model_ms=%.2f total_ms=%.2f",
+            ",".join(parsed_symbols),
+            len(response),
+            query_ms,
+            processing_ms,
+            model_ms,
+            (time.perf_counter() - route_started) * 1000.0,
+        )
+        return response
     finally:
         con.close()
 
@@ -418,6 +454,7 @@ def get_market_snapshot(
     symbols: str = Query(...),
     end_date: date | None = Query(default=None),
 ) -> list[MarketSnapshotOut]:
+    route_started = time.perf_counter()
     parsed_symbols = _parse_symbols(symbols)
     request_cache_key = (
         tuple(sorted(parsed_symbols)),
@@ -425,21 +462,36 @@ def get_market_snapshot(
     )
     cached = _cache_get(_snapshot_cache, request_cache_key, SNAPSHOT_TTL_SECONDS)
     if cached is not None:
+        logger.info(
+            "market.snapshot cache_hit=true symbols=%s rows=%s total_ms=%.2f",
+            ",".join(parsed_symbols),
+            len(cached),
+            (time.perf_counter() - route_started) * 1000.0,
+        )
         return cached
 
     con = get_duckdb_conn()
     try:
+        query_started = time.perf_counter()
         _, max_date = _date_bounds(con, parsed_symbols)
         resolved_end = min(end_date or max_date, max_date)
         resolved_cache_key = (tuple(sorted(parsed_symbols)), resolved_end.isoformat())
         cached = _cache_get(_snapshot_cache, resolved_cache_key, SNAPSHOT_TTL_SECONDS)
         if cached is not None:
+            logger.info(
+                "market.snapshot cache_hit=true symbols=%s rows=%s total_ms=%.2f",
+                ",".join(parsed_symbols),
+                len(cached),
+                (time.perf_counter() - route_started) * 1000.0,
+            )
             return cached
         resolved_start = resolved_end - timedelta(days=420)
         rows = _raw_price_rows(con, parsed_symbols, resolved_start, resolved_end, ["close"])
+        query_ms = (time.perf_counter() - query_started) * 1000.0
     finally:
         con.close()
 
+    processing_started = time.perf_counter()
     by_symbol: dict[str, list[tuple[date, float]]] = defaultdict(list)
     for row_date, symbol, _currency, _exchange, close in rows:
         if close is None:
@@ -466,6 +518,15 @@ def get_market_snapshot(
                 meta={"observations": len(series)},
             )
         )
+    processing_ms = (time.perf_counter() - processing_started) * 1000.0
     _cache_set(_snapshot_cache, request_cache_key, payload, SNAPSHOT_TTL_SECONDS)
     _cache_set(_snapshot_cache, resolved_cache_key, payload, SNAPSHOT_TTL_SECONDS)
+    logger.info(
+        "market.snapshot cache_hit=false symbols=%s rows=%s duckdb_ms=%.2f processing_ms=%.2f total_ms=%.2f",
+        ",".join(parsed_symbols),
+        len(payload),
+        query_ms,
+        processing_ms,
+        (time.perf_counter() - route_started) * 1000.0,
+    )
     return payload
