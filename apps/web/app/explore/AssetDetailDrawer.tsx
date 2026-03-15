@@ -42,13 +42,13 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
                 start.setMonth(end.getMonth() - 6);
                 
                 const data = await getMarketBars(
-                    [asset.symbol],
-                    start.toISOString().split("T")[0],
+                    [asset.symbol], 
+                    start.toISOString().split("T")[0], 
                     end.toISOString().split("T")[0],
                     "close",
                     "GLOBAL",
                     "RAW",
-                    120,
+                    200 // Max points
                 );
                 if (isMounted) setBars(data);
             } catch (err) {
