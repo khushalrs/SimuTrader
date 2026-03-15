@@ -61,12 +61,16 @@ export function MultiSymbolLab() {
             try {
                 const end = new Date();
                 const start = new Date();
-                start.setFullYear(end.getFullYear() - 1);
+                start.setMonth(end.getMonth() - 3); // Default to 3 months, not a full year
                 
                 const data = await getMarketBars(
                     symbols.map(s => s.symbol), 
                     start.toISOString().split("T")[0], 
-                    end.toISOString().split("T")[0]
+                    end.toISOString().split("T")[0],
+                    "close",
+                    "GLOBAL",
+                    "RAW",
+                    200 // Max points to prevent massive arrays over network
                 );
                 
                 if (isMounted) setBarsData(data);

@@ -43,7 +43,8 @@ export interface MarketSnapshotOut {
 }
 
 // In-memory cache to prevent spamming backend during navigation and lab updates
-const cache = new Map<string, any>();
+const cache = new Map<string, { timestamp: number, data: any }>();
+const pendingRequests = new Map<string, Promise<any>>();
 const CACHE_TTL_MS = 60000; // 1 minute
 
 function getCached<T>(key: string): T | null {
@@ -58,13 +59,41 @@ function setCached(key: string, data: any) {
     cache.set(key, { timestamp: Date.now(), data });
 }
 
+async function deduplicatedFetch<T>(url: URL, cacheKey: string): Promise<T> {
+    const cached = getCached<T>(cacheKey);
+    if (cached) return cached;
+
+    if (pendingRequests.has(cacheKey)) {
+        return pendingRequests.get(cacheKey) as Promise<T>;
+    }
+
+    const promise = (async () => {
+        try {
+            const res = await fetch(url.toString(), { cache: "no-store" });
+            if (!res.ok) {
+                console.error(`Failed to fetch ${url.pathname}: ${res.status} ${res.statusText}`);
+                throw new Error(`${res.status} ${res.statusText}`);
+            }
+            const data = await res.json();
+            setCached(cacheKey, data);
+            return data;
+        } finally {
+            pendingRequests.delete(cacheKey);
+        }
+    })();
+
+    pendingRequests.set(cacheKey, promise);
+    return promise;
+}
+
 export async function getMarketBars(
     symbols: string[],
     startDate?: string,
     endDate?: string,
     fields: string = "close",
     calendar: string = "GLOBAL",
-    missingBar: string = "FORWARD_FILL"
+    missingBar: string = "FORWARD_FILL",
+    maxPoints?: number
 ): Promise<MarketBarOut[]> {
     try {
         const url = new URL(`${API_BASE_URL}/market/bars`)
@@ -74,19 +103,10 @@ export async function getMarketBars(
         if (fields) url.searchParams.append("fields", fields)
         if (calendar) url.searchParams.append("calendar", calendar)
         if (missingBar) url.searchParams.append("missing_bar", missingBar)
+        if (maxPoints != null) url.searchParams.append("max_points", maxPoints.toString())
 
         const cacheKey = `bars_${url.toString()}`;
-        const cached = getCached<MarketBarOut[]>(cacheKey);
-        if (cached) return cached;
-
-        const res = await fetch(url.toString(), { cache: "no-store" })
-        if (!res.ok) {
-            console.error(`Failed to fetch market bars: ${res.status} ${res.statusText}`)
-            return []
-        }
-        const data = await res.json();
-        setCached(cacheKey, data);
-        return data;
+        return await deduplicatedFetch<MarketBarOut[]>(url, cacheKey);
     } catch (error) {
         console.error("Error fetching market bars:", error)
         return []
@@ -107,17 +127,7 @@ export async function getMarketCoverage(
         if (calendar) url.searchParams.append("calendar", calendar)
 
         const cacheKey = `coverage_${url.toString()}`;
-        const cached = getCached<MarketCoverageOut[]>(cacheKey);
-        if (cached) return cached;
-
-        const res = await fetch(url.toString(), { cache: "no-store" })
-        if (!res.ok) {
-            console.error(`Failed to fetch market coverage: ${res.status} ${res.statusText}`)
-            return []
-        }
-        const data = await res.json();
-        setCached(cacheKey, data);
-        return data;
+        return await deduplicatedFetch<MarketCoverageOut[]>(url, cacheKey);
     } catch (error) {
         console.error("Error fetching market coverage:", error)
         return []
@@ -134,17 +144,7 @@ export async function getMarketSnapshot(
         if (endDate) url.searchParams.append("end_date", endDate)
 
         const cacheKey = `snapshot_${url.toString()}`;
-        const cached = getCached<MarketSnapshotOut[]>(cacheKey);
-        if (cached) return cached;
-
-        const res = await fetch(url.toString(), { cache: "no-store" })
-        if (!res.ok) {
-            console.error(`Failed to fetch market snapshot: ${res.status} ${res.statusText}`)
-            return []
-        }
-        const data = await res.json();
-        setCached(cacheKey, data);
-        return data;
+        return await deduplicatedFetch<MarketSnapshotOut[]>(url, cacheKey);
     } catch (error) {
         console.error("Error fetching market snapshot:", error)
         return []

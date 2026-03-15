@@ -41,7 +41,15 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
                 const start = new Date();
                 start.setFullYear(end.getFullYear() - 1); // 1 Year of history
                 
-                const data = await getMarketBars([asset.symbol], start.toISOString().split("T")[0], end.toISOString().split("T")[0]);
+                const data = await getMarketBars(
+                    [asset.symbol], 
+                    start.toISOString().split("T")[0], 
+                    end.toISOString().split("T")[0],
+                    "close",
+                    "GLOBAL",
+                    "RAW",
+                    200 // Max points
+                );
                 if (isMounted) setBars(data);
             } catch (err) {
                 console.error(err);
