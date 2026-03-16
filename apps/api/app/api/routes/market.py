@@ -1,16 +1,23 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import date, timedelta
+import json
 import logging
 from math import sqrt
+import os
 from statistics import median
 import time
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from app.data.duckdb import get_duckdb_conn
 from app.schemas.market import MarketBarOut, MarketCoverageOut, MarketSnapshotOut
+
+try:
+    import redis
+except ImportError:  # pragma: no cover - dependency exists in deployed app
+    redis = None
 
 router = APIRouter(prefix="/market", tags=["market"])
 logger = logging.getLogger("uvicorn.error")
@@ -18,14 +25,34 @@ logger = logging.getLogger("uvicorn.error")
 MAX_SYMBOLS = 20
 MAX_RANGE_DAYS = 730
 DEFAULT_RANGE_DAYS = 180
+MAX_CACHE_KEYS = 200
 ALLOWED_FIELDS = {"open", "high", "low", "close", "volume"}
 ALLOWED_CALENDARS = {"GLOBAL", "US", "IN", "FX"}
 ALLOWED_MISSING = {"RAW", "FORWARD_FILL", "DROP"}
+ALLOWED_INTERVALS = {"1d", "1w"}
 SNAPSHOT_TTL_SECONDS = 60.0
 BARS_TTL_SECONDS = 45.0
 
-_snapshot_cache: dict[tuple, tuple[float, list[MarketSnapshotOut]]] = {}
-_bars_cache: dict[tuple, tuple[float, list[MarketBarOut]]] = {}
+_snapshot_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+_bars_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+_redis_client = None
+
+
+def _redis_cache() -> "redis.Redis | None":
+    global _redis_client
+    if redis is None:
+        return None
+    if _redis_client is not None:
+        return _redis_client
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        return None
+    try:
+        _redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+        _redis_client.ping()
+    except Exception:
+        _redis_client = None
+    return _redis_client
 
 
 def _parse_symbols(symbols: str) -> list[str]:
@@ -71,6 +98,16 @@ def _parse_missing_bar(policy: str | None) -> str:
             detail=f"unsupported missing_bar '{policy_norm}'",
         )
     return policy_norm
+
+
+def _parse_interval(interval: str | None) -> str:
+    interval_norm = str(interval or "1d").strip().lower()
+    if interval_norm not in ALLOWED_INTERVALS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"unsupported interval '{interval_norm}'",
+        )
+    return interval_norm
 
 
 def _date_bounds(con, symbols: list[str]) -> tuple[date, date]:
@@ -167,19 +204,69 @@ def _bar_rows_to_out(rows: list[dict]) -> list[MarketBarOut]:
     return [MarketBarOut.model_validate(row) for row in rows]
 
 
-def _cache_get(cache: dict, key: tuple, ttl_seconds: float):
+def _cache_header(response: Response, value: str) -> None:
+    response.headers["Cache-Control"] = value
+
+
+def _cache_get(cache: OrderedDict[str, tuple[float, list[dict]]], key: str, ttl_seconds: float):
     cached = cache.get(key)
     if cached is None:
-        return None
+        client = _redis_cache()
+        if client is None:
+            return None
+        payload = client.get(key)
+        if payload is None:
+            return None
+        data = json.loads(payload)
+        cache[key] = (time.monotonic() + ttl_seconds, data)
+        cache.move_to_end(key)
+        return data
     expires_at, payload = cached
     if time.monotonic() >= expires_at:
         cache.pop(key, None)
+        client = _redis_cache()
+        if client is not None:
+            client.delete(key)
         return None
+    cache.move_to_end(key)
     return payload
 
 
-def _cache_set(cache: dict, key: tuple, payload: list, ttl_seconds: float) -> None:
+def _cache_set(cache: OrderedDict[str, tuple[float, list[dict]]], key: str, payload: list[dict], ttl_seconds: float) -> None:
     cache[key] = (time.monotonic() + ttl_seconds, payload)
+    cache.move_to_end(key)
+    while len(cache) > MAX_CACHE_KEYS:
+        cache.popitem(last=False)
+    client = _redis_cache()
+    if client is not None:
+        client.setex(key, int(ttl_seconds), json.dumps(payload))
+
+
+def _bars_cache_key(
+    symbols: list[str],
+    start_date: str | None,
+    end_date: str | None,
+    fields: list[str],
+    calendar: str,
+    missing_bar: str,
+    interval: str,
+) -> str:
+    return ":".join(
+        [
+            "bars",
+            ",".join(sorted(symbols)),
+            start_date or "default",
+            end_date or "default",
+            ",".join(fields),
+            calendar,
+            missing_bar,
+            interval,
+        ]
+    )
+
+
+def _snapshot_cache_key(symbols: list[str], end_date: str | None) -> str:
+    return ":".join(["snapshot", ",".join(sorted(symbols)), end_date or "default"])
 
 
 def _downsample_rows(rows: list[MarketBarOut], max_points: int | None) -> list[MarketBarOut]:
@@ -206,6 +293,43 @@ def _downsample_rows(rows: list[MarketBarOut], max_points: int | None) -> list[M
         reduced.extend(symbol_rows[idx] for idx in sorted(sampled_indexes))
 
     return sorted(reduced, key=lambda row: (row.date, row.symbol))
+
+
+def _aggregate_weekly(rows: list[MarketBarOut], fields: list[str]) -> list[MarketBarOut]:
+    weekly_rows: list[MarketBarOut] = []
+    grouped: dict[tuple[str, int, int], list[MarketBarOut]] = defaultdict(list)
+
+    for row in rows:
+        year, week, _ = date.fromisoformat(row.date).isocalendar()
+        grouped[(row.symbol, year, week)].append(row)
+
+    for _, bucket in grouped.items():
+        bucket.sort(key=lambda row: row.date)
+        first = bucket[0]
+        last = bucket[-1]
+        payload = {
+            "date": last.date,
+            "symbol": first.symbol,
+            "currency": first.currency,
+            "exchange": first.exchange,
+        }
+        if "open" in fields:
+            payload["open"] = first.open
+        if "high" in fields:
+            payload["high"] = max(
+                value.high for value in bucket if value.high is not None
+            )
+        if "low" in fields:
+            payload["low"] = min(
+                value.low for value in bucket if value.low is not None
+            )
+        if "close" in fields:
+            payload["close"] = last.close
+        if "volume" in fields:
+            payload["volume"] = sum(value.volume or 0.0 for value in bucket)
+        weekly_rows.append(MarketBarOut.model_validate(payload))
+
+    return sorted(weekly_rows, key=lambda row: (row.date, row.symbol))
 
 
 def _continuous_bars(
@@ -292,60 +416,78 @@ def _rolling_vols(series: list[tuple[date, float]], window: int = 20) -> list[fl
 
 @router.get("/bars", response_model=list[MarketBarOut])
 def get_market_bars(
+    response: Response,
     symbols: str = Query(...),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     fields: str | None = Query(default=None),
     calendar: str | None = Query(default=None),
     missing_bar: str | None = Query(default=None),
+    interval: str | None = Query(default=None),
     max_points: int | None = Query(default=None, ge=2, le=5000),
 ) -> list[MarketBarOut]:
     route_started = time.perf_counter()
+    _cache_header(response, "public, max-age=60, stale-while-revalidate=300")
     parsed_symbols = _parse_symbols(symbols)
     parsed_fields = _parse_fields(fields)
     parsed_calendar = _parse_calendar(calendar)
     parsed_missing = _parse_missing_bar(missing_bar)
-    request_cache_key = (
-        tuple(sorted(parsed_symbols)),
+    parsed_interval = _parse_interval(interval)
+    request_cache_key = _bars_cache_key(
+        parsed_symbols,
         start_date.isoformat() if start_date is not None else None,
         end_date.isoformat() if end_date is not None else None,
-        tuple(parsed_fields),
+        parsed_fields,
         parsed_calendar,
         parsed_missing,
+        parsed_interval,
     )
     cached = _cache_get(_bars_cache, request_cache_key, BARS_TTL_SECONDS)
     if cached is not None:
-        response = _downsample_rows(cached, max_points)
+        response_rows = _downsample_rows(
+            _aggregate_weekly(_bar_rows_to_out(cached), parsed_fields)
+            if parsed_interval == "1w"
+            else _bar_rows_to_out(cached),
+            max_points,
+        )
         logger.info(
-            "market.bars cache_hit=true symbols=%s rows=%s total_ms=%.2f",
+            "market.bars cache_hit=true symbols=%s interval=%s rows=%s total_ms=%.2f",
             ",".join(parsed_symbols),
-            len(response),
+            parsed_interval,
+            len(response_rows),
             (time.perf_counter() - route_started) * 1000.0,
         )
-        return response
+        return response_rows
 
     con = get_duckdb_conn()
     try:
         query_started = time.perf_counter()
         resolved_start, resolved_end = _resolve_dates(con, parsed_symbols, start_date, end_date)
-        resolved_cache_key = (
-            tuple(sorted(parsed_symbols)),
+        resolved_cache_key = _bars_cache_key(
+            parsed_symbols,
             resolved_start.isoformat(),
             resolved_end.isoformat(),
-            tuple(parsed_fields),
+            parsed_fields,
             parsed_calendar,
             parsed_missing,
+            parsed_interval,
         )
         cached = _cache_get(_bars_cache, resolved_cache_key, BARS_TTL_SECONDS)
         if cached is not None:
-            response = _downsample_rows(cached, max_points)
+            response_rows = _downsample_rows(
+                _aggregate_weekly(_bar_rows_to_out(cached), parsed_fields)
+                if parsed_interval == "1w"
+                else _bar_rows_to_out(cached),
+                max_points,
+            )
             logger.info(
-                "market.bars cache_hit=true symbols=%s rows=%s total_ms=%.2f",
+                "market.bars cache_hit=true symbols=%s interval=%s rows=%s total_ms=%.2f",
                 ",".join(parsed_symbols),
-                len(response),
+                parsed_interval,
+                len(response_rows),
                 (time.perf_counter() - route_started) * 1000.0,
             )
-            return response
+            return response_rows
 
         if parsed_missing == "RAW":
             rows = _raw_price_rows(con, parsed_symbols, resolved_start, resolved_end, parsed_fields)
@@ -380,19 +522,24 @@ def get_market_bars(
             )
             processing_ms = (time.perf_counter() - processing_started) * 1000.0
             model_ms = 0.0
-        _cache_set(_bars_cache, request_cache_key, out, BARS_TTL_SECONDS)
-        _cache_set(_bars_cache, resolved_cache_key, out, BARS_TTL_SECONDS)
-        response = _downsample_rows(out, max_points)
+        out_payload = [row.model_dump() for row in out]
+        _cache_set(_bars_cache, request_cache_key, out_payload, BARS_TTL_SECONDS)
+        _cache_set(_bars_cache, resolved_cache_key, out_payload, BARS_TTL_SECONDS)
+        response_rows = _downsample_rows(
+            _aggregate_weekly(out, parsed_fields) if parsed_interval == "1w" else out,
+            max_points,
+        )
         logger.info(
-            "market.bars cache_hit=false symbols=%s rows=%s duckdb_ms=%.2f processing_ms=%.2f model_ms=%.2f total_ms=%.2f",
+            "market.bars cache_hit=false symbols=%s interval=%s rows=%s duckdb_ms=%.2f processing_ms=%.2f model_ms=%.2f total_ms=%.2f",
             ",".join(parsed_symbols),
-            len(response),
+            parsed_interval,
+            len(response_rows),
             query_ms,
             processing_ms,
             model_ms,
             (time.perf_counter() - route_started) * 1000.0,
         )
-        return response
+        return response_rows
     finally:
         con.close()
 
@@ -451,40 +598,44 @@ def get_market_coverage(
 
 @router.get("/snapshot", response_model=list[MarketSnapshotOut])
 def get_market_snapshot(
+    response: Response,
     symbols: str = Query(...),
     end_date: date | None = Query(default=None),
 ) -> list[MarketSnapshotOut]:
     route_started = time.perf_counter()
+    _cache_header(response, "public, max-age=30, stale-while-revalidate=300")
     parsed_symbols = _parse_symbols(symbols)
-    request_cache_key = (
-        tuple(sorted(parsed_symbols)),
+    request_cache_key = _snapshot_cache_key(
+        parsed_symbols,
         end_date.isoformat() if end_date is not None else None,
     )
     cached = _cache_get(_snapshot_cache, request_cache_key, SNAPSHOT_TTL_SECONDS)
     if cached is not None:
+        cached_rows = [MarketSnapshotOut.model_validate(item) for item in cached]
         logger.info(
             "market.snapshot cache_hit=true symbols=%s rows=%s total_ms=%.2f",
             ",".join(parsed_symbols),
-            len(cached),
+            len(cached_rows),
             (time.perf_counter() - route_started) * 1000.0,
         )
-        return cached
+        return cached_rows
 
     con = get_duckdb_conn()
     try:
         query_started = time.perf_counter()
         _, max_date = _date_bounds(con, parsed_symbols)
         resolved_end = min(end_date or max_date, max_date)
-        resolved_cache_key = (tuple(sorted(parsed_symbols)), resolved_end.isoformat())
+        resolved_cache_key = _snapshot_cache_key(parsed_symbols, resolved_end.isoformat())
         cached = _cache_get(_snapshot_cache, resolved_cache_key, SNAPSHOT_TTL_SECONDS)
         if cached is not None:
+            cached_rows = [MarketSnapshotOut.model_validate(item) for item in cached]
             logger.info(
                 "market.snapshot cache_hit=true symbols=%s rows=%s total_ms=%.2f",
                 ",".join(parsed_symbols),
-                len(cached),
+                len(cached_rows),
                 (time.perf_counter() - route_started) * 1000.0,
             )
-            return cached
+            return cached_rows
         resolved_start = resolved_end - timedelta(days=420)
         rows = _raw_price_rows(con, parsed_symbols, resolved_start, resolved_end, ["close"])
         query_ms = (time.perf_counter() - query_started) * 1000.0
@@ -519,8 +670,9 @@ def get_market_snapshot(
             )
         )
     processing_ms = (time.perf_counter() - processing_started) * 1000.0
-    _cache_set(_snapshot_cache, request_cache_key, payload, SNAPSHOT_TTL_SECONDS)
-    _cache_set(_snapshot_cache, resolved_cache_key, payload, SNAPSHOT_TTL_SECONDS)
+    payload_dump = [row.model_dump() for row in payload]
+    _cache_set(_snapshot_cache, request_cache_key, payload_dump, SNAPSHOT_TTL_SECONDS)
+    _cache_set(_snapshot_cache, resolved_cache_key, payload_dump, SNAPSHOT_TTL_SECONDS)
     logger.info(
         "market.snapshot cache_hit=false symbols=%s rows=%s duckdb_ms=%.2f processing_ms=%.2f total_ms=%.2f",
         ",".join(parsed_symbols),

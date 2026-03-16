@@ -69,7 +69,7 @@ async function deduplicatedFetch<T>(url: URL, cacheKey: string): Promise<T> {
 
     const promise = (async () => {
         try {
-            const res = await fetch(url.toString(), { cache: "no-store" });
+            const res = await fetch(url.toString());
             if (!res.ok) {
                 console.error(`Failed to fetch ${url.pathname}: ${res.status} ${res.statusText}`);
                 throw new Error(`${res.status} ${res.statusText}`);
@@ -93,6 +93,7 @@ export async function getMarketBars(
     fields: string = "close",
     calendar: string = "GLOBAL",
     missingBar: string = "RAW",
+    interval: string = "1d",
     maxPoints?: number
 ): Promise<MarketBarOut[]> {
     try {
@@ -103,6 +104,7 @@ export async function getMarketBars(
         if (fields) url.searchParams.append("fields", fields)
         if (calendar) url.searchParams.append("calendar", calendar)
         if (missingBar) url.searchParams.append("missing_bar", missingBar)
+        if (interval) url.searchParams.append("interval", interval)
         if (maxPoints) url.searchParams.append("max_points", String(maxPoints))
 
         const cacheKey = `bars_${url.toString()}`;

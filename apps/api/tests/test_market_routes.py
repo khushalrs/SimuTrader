@@ -150,6 +150,7 @@ def _client() -> TestClient:
 def _clear_market_caches() -> None:
     _market_module._bars_cache.clear()
     _market_module._snapshot_cache.clear()
+    _market_module._redis_client = None
 
 
 def test_market_bars_returns_rows_within_bounds(tmp_path, monkeypatch):
@@ -173,6 +174,7 @@ def test_market_bars_returns_rows_within_bounds(tmp_path, monkeypatch):
     assert payload
     assert all("close" in row and "volume" in row for row in payload)
     assert all("2024-01-02" <= row["date"] <= "2024-01-05" for row in payload)
+    assert res.headers["cache-control"] == "public, max-age=60, stale-while-revalidate=300"
 
 
 def test_market_bars_forward_fill_is_continuous_with_start_bootstrap(tmp_path, monkeypatch):
@@ -241,6 +243,7 @@ def test_market_snapshot_returns_derived_fields(tmp_path, monkeypatch):
     assert payload[0]["last_close"] > 0
     assert "return_1m" in payload[0]
     assert "recent_vol_20d" in payload[0]
+    assert res.headers["cache-control"] == "public, max-age=30, stale-while-revalidate=300"
 
 
 def test_market_snapshot_uses_cache(tmp_path, monkeypatch):
@@ -297,3 +300,31 @@ def test_market_bars_uses_cache_and_downsamples(tmp_path, monkeypatch):
     payload = second.json()
     assert len(payload) == 5
     assert payload == sorted(payload, key=lambda row: (row["date"], row["symbol"]))
+
+
+def test_market_bars_can_aggregate_weekly(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "market_weekly.duckdb"
+    _seed_duckdb(str(duckdb_path), ["SPY"], date(2024, 1, 1), date(2024, 1, 19))
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    _clear_market_caches()
+
+    client = _client()
+    res = client.get(
+        "/market/bars",
+        params={
+            "symbols": "SPY",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-19",
+            "fields": "open,high,low,close,volume",
+            "interval": "1w",
+        },
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert len(payload) == 3
+    assert payload[0]["date"] == "2024-01-05"
+    assert payload[0]["open"] == 99.0
+    assert payload[0]["close"] == 104.0
+    assert payload[0]["high"] == 105.0
+    assert payload[0]["low"] == 98.0
+    assert payload[0]["volume"] == 5000.0

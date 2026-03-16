@@ -70,6 +70,7 @@ export function MultiSymbolLab() {
                     "close",
                     "GLOBAL",
                     "RAW",
+                    "1d",
                     200 // Max points to prevent massive arrays over network
                 );
                 

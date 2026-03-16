@@ -62,6 +62,7 @@ export function MarketSnapshot() {
                         "close",
                         "GLOBAL",
                         "RAW",
+                        "1d",
                         120,
                     )
                 ]);
@@ -99,6 +100,7 @@ export function MarketSnapshot() {
                     "close",
                     "GLOBAL",
                     "RAW",      // Use RAW missing_bar unless continuity strictly required
+                    "1d",
                     200         // max_points downsampling explicitly via backend
                 );
                 

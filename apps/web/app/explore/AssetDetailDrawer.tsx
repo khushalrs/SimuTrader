@@ -48,6 +48,7 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
                     "close",
                     "GLOBAL",
                     "RAW",
+                    "1d",
                     200 // Max points
                 );
                 if (isMounted) setBars(data);
