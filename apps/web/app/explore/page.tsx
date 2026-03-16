@@ -3,10 +3,15 @@
 import React, { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { MarketSnapshot } from "./MarketSnapshot";
-import { AssetSearchSection } from "./AssetSearchSection";
-import { MultiSymbolLab } from "./MultiSymbolLab";
+import dynamic from "next/dynamic";
+import { Skeleton } from "@/components/ui/skeleton";
 import { LazyLoadWrapper } from "./LazyLoadWrapper";
+
+const TabSkeleton = () => <Skeleton className="h-[500px] w-full mt-4" />;
+
+const MarketSnapshot = dynamic(() => import("./MarketSnapshot").then(mod => mod.MarketSnapshot), { ssr: false, loading: () => <TabSkeleton /> });
+const AssetSearchSection = dynamic(() => import("./AssetSearchSection").then(mod => mod.AssetSearchSection), { ssr: false, loading: () => <TabSkeleton /> });
+const MultiSymbolLab = dynamic(() => import("./MultiSymbolLab").then(mod => mod.MultiSymbolLab), { ssr: false, loading: () => <TabSkeleton /> });
 
 export default function ExplorePage() {
     const [activeTab, setActiveTab] = useState("snapshot");

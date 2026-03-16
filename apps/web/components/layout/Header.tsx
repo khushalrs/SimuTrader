@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { getMarketSnapshot } from '@/lib/market';
 
 const navItems = [
     { name: 'Playground', href: '/playground' },
@@ -15,6 +16,18 @@ const navItems = [
 
 export function Header() {
     const pathname = usePathname();
+
+    const handleMouseEnter = (name: string) => {
+        if (name === 'Explore') {
+            getMarketSnapshot(["SPY", "QQQ", "IWM", "TLT", "GLD", "BTC"])
+                .then(snap => {
+                    try {
+                        localStorage.setItem("marketSnapshot:last", JSON.stringify(snap));
+                    } catch (e) {}
+                })
+                .catch(() => {});
+        }
+    };
 
     return (
         <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -28,6 +41,7 @@ export function Header() {
                             <Link
                                 key={item.href}
                                 href={item.href}
+                                onMouseEnter={() => handleMouseEnter(item.name)}
                                 className={cn(
                                     "transition-colors hover:text-foreground/80",
                                     pathname === item.href ? "text-foreground" : "text-foreground/60"
