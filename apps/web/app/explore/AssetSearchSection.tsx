@@ -3,7 +3,9 @@
 import React, { useState } from "react";
 import { AssetSearch } from "./AssetSearch";
 import { AssetOut } from "@/lib/api";
-import { AssetDetailDrawer } from "./AssetDetailDrawer";
+import dynamic from "next/dynamic";
+
+const AssetDetailDrawer = dynamic(() => import("./AssetDetailDrawer").then(mod => mod.AssetDetailDrawer), { ssr: false });
 
 export function AssetSearchSection() {
     const [selectedAsset, setSelectedAsset] = useState<AssetOut | null>(null);
@@ -34,11 +36,13 @@ export function AssetSearchSection() {
                 )}
             </div>
 
-            <AssetDetailDrawer 
-                asset={selectedAsset} 
-                open={isDrawerOpen} 
-                onOpenChange={setIsDrawerOpen} 
-            />
+            {selectedAsset && (
+                <AssetDetailDrawer 
+                    asset={selectedAsset} 
+                    open={isDrawerOpen} 
+                    onOpenChange={setIsDrawerOpen} 
+                />
+            )}
         </div>
     );
 }

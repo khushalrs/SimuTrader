@@ -21,9 +21,17 @@ const DEFAULT_BASKET = ["SPY", "QQQ", "IWM", "TLT", "GLD", "BTC"];
 const COLORS = ["#8884d8", "#82ca9d", "#ffc658", "#ff8042", "#0088fe", "#00C49F"];
 
 export function MarketSnapshot() {
-    const [snapshotData, setSnapshotData] = useState<MarketSnapshotOut[]>([]);
+    const [snapshotData, setSnapshotData] = useState<MarketSnapshotOut[]>(() => {
+        if (typeof window !== "undefined") {
+            try {
+                const cached = localStorage.getItem("marketSnapshot:last");
+                if (cached) return JSON.parse(cached);
+            } catch (e) { console.error("Cache read error", e); }
+        }
+        return [];
+    });
     const [barsData, setBarsData] = useState<MarketBarOut[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
+    const [isLoading, setIsLoading] = useState(() => snapshotData.length === 0);
     const [isChartVisible, setIsChartVisible] = useState(false);
     const chartRef = useRef<HTMLDivElement>(null);
 
@@ -46,7 +54,7 @@ export function MarketSnapshot() {
     useEffect(() => {
         let isMounted = true;
         const fetchSnapshot = async () => {
-            setIsLoading(true);
+            if (snapshotData.length === 0) setIsLoading(true);
             try {
                 // Fetch snapshot and a smaller chart series for first paint.
                 const end = new Date();
@@ -69,6 +77,9 @@ export function MarketSnapshot() {
                 
                 if (isMounted) {
                     setSnapshotData(snap);
+                    try {
+                        localStorage.setItem("marketSnapshot:last", JSON.stringify(snap));
+                    } catch (e) { console.error("Cache write error", e); }
                     setBarsData(bars);
                 }
             } catch (err) {
@@ -82,37 +93,8 @@ export function MarketSnapshot() {
         return () => { isMounted = false; };
     }, []);
 
-    // Fetch bars only when charts are visible
-    useEffect(() => {
-        if (!isChartVisible) return;
-        
-        let isMounted = true;
-        const fetchBars = async () => {
-            try {
-                const end = new Date();
-                const start = new Date();
-                start.setMonth(end.getMonth() - 3); // Reduced to 3 months
-                
-                const bars = await getMarketBars(
-                    DEFAULT_BASKET, 
-                    start.toISOString().split("T")[0], 
-                    end.toISOString().split("T")[0],
-                    "close",
-                    "GLOBAL",
-                    "RAW",      // Use RAW missing_bar unless continuity strictly required
-                    "1d",
-                    200         // max_points downsampling explicitly via backend
-                );
-                
-                if (isMounted) setBarsData(bars);
-            } catch (err) {
-                console.error(err);
-            }
-        };
-
-        fetchBars();
-        return () => { isMounted = false; };
-    }, [isChartVisible]);
+    // Note: The visibility-triggered fetchBars useEffect has been removed to prevent duplicate requests. 
+    // The bars are now fetched aggressively alongside the snapshot on initial load for maximum perceived performance.
 
     // 1. Normalized Performance
     const chartDataRebased = useMemo(() => {
@@ -148,7 +130,7 @@ export function MarketSnapshot() {
 
     // 2. Correlation Matrix
     const { corrMatrix, symbols } = useMemo(() => {
-        if (!barsData.length) return { corrMatrix: {}, symbols: [] };
+        if (!isChartVisible || !barsData.length) return { corrMatrix: {}, symbols: [] };
         
         const bySymbol: Record<string, MarketBarOut[]> = {};
         for (const b of barsData) {
