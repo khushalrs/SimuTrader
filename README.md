@@ -1,107 +1,225 @@
 # SimuTrader
 
-SimuTrader is a web app for running daily backtests over US stocks, Indian stocks, and FX using snapshot datasets. The current implementation focuses on a multi-symbol Buy & Hold baseline with a FastAPI backend, DuckDB for reading Parquet OHLCV, and Postgres for run metadata + results.
+SimuTrader is a local full-stack backtesting workspace with a FastAPI backend, a Next.js frontend, DuckDB market data access, and Postgres persistence for run results. The current repo already supports submitting runs, exploring market data, and viewing run dashboards from the web app.
 
-## Current State (What Works Today)
+## Current Repo State
 
-- Buy & Hold backtests for a basket of symbols with either explicit amounts or equal-weight default.
-- Executes at the first available close in the date range and then holds.
-- Missing bars on open-market days default to **FAIL**; optional **FORWARD_FILL** policy is available.
-- Persists daily equity series and basic metrics.
-- API endpoints for runs and assets (see API section).
-- Docker Compose for API, worker, Postgres, Redis, and web container.
+What is implemented in this checkout:
 
-## MVP To-Do (Remaining)
+- FastAPI backend with routes for `backtests`, `runs`, `assets`, and `market`
+- Next.js frontend with:
+  - landing page
+  - strategy builder
+  - preset playground
+  - market explore page
+  - run dashboard page
+- Postgres for run metadata and persisted outputs
+- DuckDB for querying processed OHLCV data
+- Redis + Celery worker for async backtest execution
+- Docker Compose setup for local development
+- Backend tests covering config validation, calendar logic, market routes, asset routes, run routes, and backtest integration
 
-- ~~Repo + Docker Compose skeleton (frontend, api, postgres, redis)~~
-- ~~Data ingestion script v1: normalize snapshot data -> Parquet partitions + DuckDB views~~
-- ~~Trading calendar alignment: deterministic weekday calendars + DuckDB calendar views~~
-- Config validation: JSON Schema validation for strategy configs + server-side checks
-- Backtest engine v1: add fills, positions, and cash flow persistence
-- Add transaction costs: commission + slippage models
-- Add shorting support: negative qty, borrow fee daily, cover events
-- Add margin support: leverage constraints, borrowed cash tracking, margin interest
-- Add taxes v1: FIFO lots + holding period buckets; US/India toggle parameters; generate `run_tax_events`
-- Persist outputs: write `run_positions`, `run_fills`, `run_cash_flows` to Postgres
-- Frontend MVP: strategy builder + run list + run detail dashboard (charts + ledger + cost decomposition)
-- Compare runs UI: side-by-side metrics + equity/drawdown overlays
-- Stretch: notable strategy presets gallery + seeded demo runs
-- Stretch: report export (CSV trades + JSON config + HTML summary)
-- Stretch: performance bench page (rows/sec, p95 runtime)
+The git worktree is currently clean.
 
-## System Overview
+## Tech Stack
 
-- Frontend: Next.js + Tailwind + Charts (Recharts/Plotly)
-- Backend: FastAPI (Python)
-- Compute/Data: DuckDB reading Parquet partitions for fast OHLCV access
-- DB: Postgres for metadata, configs, runs, trades, daily portfolio values, and metrics
-- Async: Celery + Redis for non-blocking backtests
-- Local deployment: Docker Compose (frontend + api + postgres + redis)
+- Frontend: Next.js 14, React 18, Tailwind CSS, Radix UI, Recharts, Framer Motion
+- Backend: FastAPI, SQLAlchemy, Alembic
+- Data: DuckDB + Parquet
+- Queueing: Celery + Redis
+- Database: Postgres 16
+- Local orchestration: Docker Compose
 
-## Data Model (High-Level)
+## Repo Layout
 
-- Parquet OHLCV partitions for price data (asset_class/symbol/year)
-- Postgres for assets, strategies, backtest runs, metrics, daily equity, trades, taxes, and financing
-- No FX conversion; multi-currency runs report `equity_by_currency` without a single total.
+```text
+.
+├── apps/
+│   ├── api/          # FastAPI app, backtest engine, Alembic, tests
+│   └── web/          # Next.js app
+├── infra/
+│   └── postgres/     # init SQL
+├── scripts/
+│   ├── ingest/       # data ingestion helpers
+│   └── duckdb/       # DuckDB SQL helpers
+├── docker-compose.yml
+├── Makefile
+└── README.md
+```
 
-## API (Current)
+## Backend Features
 
-- `GET /health`
-- `GET /assets`
-- `POST /backtests`, `GET /backtests/{run_id}`
+### Backtests
+
+- `POST /backtests`
+- `GET /backtests/{run_id}`
+
+Backtests can run in:
+
+- `sync` mode for immediate execution in the API process
+- `async` mode via Celery worker
+
+The current strategy builder and preset playground both submit runs through this API.
+
+### Runs
+
 - `GET /runs/{run_id}`
 - `GET /runs/{run_id}/equity`
 - `GET /runs/{run_id}/metrics`
+- `GET /runs/{run_id}/positions`
+- `GET /runs/{run_id}/fills`
+- `GET /runs/{run_id}/costs_summary`
 
-## Backtest Config (Buy & Hold)
+Persisted run data includes:
 
-Amount-based allocation:
-```json
-{
-  "universe": {
-    "instruments": [
-      { "symbol": "AAPL", "asset_class": "US_EQUITY", "amount": 4000 },
-      { "symbol": "MSFT", "asset_class": "US_EQUITY", "amount": 6000 }
-    ]
-  },
-  "start_date": "2024-01-02",
-  "end_date": "2024-03-01",
-  "initial_cash": 10000
-}
+- daily equity
+- run metrics
+- orders
+- fills
+- positions
+- financing rows
+
+### Assets
+
+- `GET /assets`
+- `GET /assets/{symbol}`
+
+Supports search plus filters such as asset class, currency, exchange, and active status. Asset detail also includes DuckDB-derived coverage metadata when available.
+
+### Market Data
+
+- `GET /market/bars`
+- `GET /market/coverage`
+- `GET /market/snapshot`
+
+Current market route capabilities include:
+
+- multi-symbol queries
+- field selection
+- trading-calendar alignment
+- missing-bar policies: `RAW`, `FORWARD_FILL`, `DROP`
+- daily and weekly intervals
+- in-memory and optional Redis-backed response caching
+
+## Frontend Pages
+
+Implemented app routes:
+
+- `/` : landing page
+- `/build_page` : multi-step strategy builder
+- `/playground` : run presets without manual configuration
+- `/explore` : market snapshot, asset search, and multi-symbol lab
+- `/runs/[runId]` : run dashboard
+
+The run dashboard consumes run summary, metrics, equity, positions, fills, and cost data from the API.
+
+## Local Development
+
+### 1. Create env files
+
+Root:
+
+```bash
+cp .env.example .env
 ```
 
-Equal-weight default (no amounts or weights):
-```json
-{
-  "universe": {
-    "instruments": [
-      { "symbol": "AAPL", "asset_class": "US_EQUITY" },
-      { "symbol": "MSFT", "asset_class": "US_EQUITY" }
-    ]
-  },
-  "start_date": "2024-01-02",
-  "end_date": "2024-03-01",
-  "initial_cash": 10000
-}
+API:
+
+```bash
+cp apps/api/.env.example apps/api/.env
 ```
 
-## Local Dev
+Web:
 
-1) Copy env templates as needed.
-2) Run `make up`.
-3) API health: `http://localhost:8000/health`.
-4) Prepare data (once per dataset):
-   - Run `scripts/ingest/ingest_preprocess.py`
-   - Run `scripts/create_calendar_views.py`
-   - Run `scripts/seed_postgres_metadata.py`
+```bash
+cp apps/web/.env.local.example apps/web/.env.local
+```
 
-## Required Next Steps
+### 2. Start the stack
 
-- Add holdings/fills/cashflow persistence in the backtest engine.
-- Add strategy registry + validation (Pydantic).
-- Build UI in `apps/web/app/` for strategy builder, run list, and dashboards.
+```bash
+make up
+```
 
-## Quality Bar
+This starts:
 
-- Unit tests for fill costs, borrow fees, margin interest, FIFO lots, and tax bucket classification.
-- Deterministic reruns with fixed seed + fixed fill model.
+- `postgres`
+- `redis`
+- `api`
+- `worker`
+- `web`
+
+Default local endpoints:
+
+- web: `http://localhost:3000`
+- api: `http://localhost:8000`
+- health: `http://localhost:8000/health`
+
+Useful commands:
+
+```bash
+make down
+make logs
+make api
+make web
+```
+
+## Environment Notes
+
+Important root-level settings from `.env.example`:
+
+- `WEB_PORT`, `API_PORT`, `POSTGRES_PORT`, `REDIS_PORT`
+- `DATA_DIR`, `PARQUET_DIR`, `DUCKDB_PATH`
+- `DATA_SNAPSHOT_ID`
+- `BACKTEST_EXEC_MODE`
+
+Important API settings from `apps/api/.env.example`:
+
+- `DATABASE_URL`
+- `REDIS_URL`
+- `CELERY_BROKER_URL`
+- `CELERY_RESULT_BACKEND`
+- `CORS_ORIGINS`
+- `BASE_CURRENCY`
+
+Frontend settings from `apps/web/.env.local.example`:
+
+- `NEXT_PUBLIC_API_BASE_URL`
+- `API_BASE_URL`
+
+## Data Preparation
+
+The app expects processed market data under `./data` and a DuckDB database at the configured `DUCKDB_PATH`.
+
+Helper scripts present in this repo:
+
+- `scripts/ingest/ingest_preprocess.py`
+- `scripts/ingest/ingest_fx.py`
+- `scripts/create_calendar_views.py`
+- `scripts/seed_postgres_metadata.py`
+- `scripts/validate_data.py`
+- `scripts/get_yahoo_data.py`
+
+Typical preparation flow:
+
+1. place or ingest raw data into the expected local data directory
+2. run preprocessing to generate processed data
+3. build calendar views in DuckDB
+4. seed Postgres asset metadata
+
+## Testing
+
+Backend tests are located in `apps/api/tests` and currently cover:
+
+- config validation
+- trading calendar behavior
+- market route behavior
+- asset route behavior
+- run route behavior
+- backtest persistence and integration flows
+
+## Notes on Current Behavior
+
+- The README previously described the project as mostly roadmap-stage; the codebase is now beyond that and already includes a functioning UI and richer run persistence.
+- `docker-data/` exists in this repo and is being used for local Postgres storage in Compose.
+- `apps/web/.next` and `apps/web/node_modules` are present locally, which indicates the frontend has already been built/run in this checkout.
