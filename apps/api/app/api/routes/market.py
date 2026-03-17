@@ -30,8 +30,8 @@ ALLOWED_FIELDS = {"open", "high", "low", "close", "volume"}
 ALLOWED_CALENDARS = {"GLOBAL", "US", "IN", "FX"}
 ALLOWED_MISSING = {"RAW", "FORWARD_FILL", "DROP"}
 ALLOWED_INTERVALS = {"1d", "1w"}
-SNAPSHOT_TTL_SECONDS = 60.0
-BARS_TTL_SECONDS = 45.0
+SNAPSHOT_TTL_SECONDS = 900.0
+BARS_TTL_SECONDS = 900.0
 
 _snapshot_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
 _bars_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
