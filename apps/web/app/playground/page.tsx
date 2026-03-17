@@ -6,42 +6,45 @@ import { motion } from "framer-motion"
 import { TrendingUp, BarChart2, Zap, ArrowRight, Layers, Activity } from "lucide-react"
 import Link from "next/link"
 
-const presets = [
-    {
-        id: "buy-hold-us",
-        title: "Buy & Hold — US Mega Cap",
-        universe: "S&P 500 Top 50",
-        behavior: "Passive indexing with quarterly rebalancing.",
-        icon: TrendingUp,
-        color: "text-blue-500",
-    },
-    {
-        id: "equal-weight-in",
-        title: "Equal Weight — India Top 10",
-        universe: "NIFTY 50 Top 10",
-        behavior: "Contrarian rebalancing to equal weights.",
-        icon: Layers,
-        color: "text-orange-500",
-    },
-    {
-        id: "momentum",
-        title: "Momentum — Top K Monthly",
-        universe: "Nasdaq 100",
-        behavior: "Aggressive rotation into winners.",
-        icon: Zap,
-        color: "text-yellow-500",
-    },
-    {
-        id: "mean-reversion",
-        title: "Mean Reversion — Conservative",
-        universe: "Russell 2000",
-        behavior: "Buying dips, selling rips.",
-        icon: Activity,
-        color: "text-green-500",
-    },
-]
+import { presets, PresetConfig } from "@/config/presets"
+import { useState } from "react"
+import { useRouter } from "next/navigation"
+import { createRunFromSnapshot } from "@/lib/api"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
+import { Loader2, Copy, Check } from "lucide-react"
 
 export default function PlaygroundPage() {
+    const router = useRouter()
+    const [pendingRunId, setPendingRunId] = useState<string | null>(null)
+    const [error, setError] = useState<string | null>(null)
+    const [viewConfig, setViewConfig] = useState<PresetConfig | null>(null)
+    const [copied, setCopied] = useState(false)
+
+    const handleRunPreset = async (preset: PresetConfig) => {
+        try {
+            setError(null)
+            setPendingRunId(preset.id)
+            const runId = await createRunFromSnapshot(preset.config_snapshot)
+            router.push(`/runs/${runId}`)
+        } catch (err: any) {
+            setError(err.message || "Failed to create run")
+            setPendingRunId(null)
+        }
+    }
+
+    const handleCopyConfig = async () => {
+        if (!viewConfig) return
+        await navigator.clipboard.writeText(JSON.stringify(viewConfig.config_snapshot, null, 2))
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+    }
+
     return (
         <main className="container py-12">
             <div className="mb-8">
@@ -71,17 +74,64 @@ export default function PlaygroundPage() {
                                 <p className="text-sm text-muted-foreground">{preset.behavior}</p>
                             </CardContent>
                             <CardFooter className="flex justify-between gap-2">
-                                <Button variant="outline" className="w-full">View Config</Button>
-                                <Button className="w-full" asChild>
-                                    <Link href={`/runs/mock-${preset.id}`}>
-                                        Run <ArrowRight className="ml-2 h-4 w-4" />
-                                    </Link>
+                                <Button
+                                    variant="outline"
+                                    className="w-full"
+                                    onClick={() => setViewConfig(preset)}
+                                >
+                                    View Config
+                                </Button>
+                                <Button
+                                    className="w-full"
+                                    disabled={pendingRunId === preset.id}
+                                    onClick={() => handleRunPreset(preset)}
+                                >
+                                    {pendingRunId === preset.id ? (
+                                        <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            Running...
+                                        </>
+                                    ) : (
+                                        <>
+                                            Run <ArrowRight className="ml-2 h-4 w-4" />
+                                        </>
+                                    )}
                                 </Button>
                             </CardFooter>
                         </Card>
                     </motion.div>
                 ))}
             </div>
+
+            {error && (
+                <div className="mt-8 p-4 bg-destructive/10 text-destructive rounded-md">
+                    {error}
+                </div>
+            )}
+
+            <Dialog open={!!viewConfig} onOpenChange={(open) => !open && setViewConfig(null)}>
+                <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+                    <DialogHeader>
+                        <DialogTitle>{viewConfig?.title} Configuration</DialogTitle>
+                        <DialogDescription>
+                            JSON snapshot of the strategy config that will be sent to the run engine.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="flex-1 overflow-auto bg-muted p-4 rounded-md relative text-sm font-mono mt-4">
+                        <Button
+                            size="icon"
+                            variant="ghost"
+                            className="absolute top-2 right-2 bg-background/50 hover:bg-background"
+                            onClick={handleCopyConfig}
+                        >
+                            {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                        </Button>
+                        <pre>
+                            {viewConfig ? JSON.stringify(viewConfig.config_snapshot, null, 2) : ""}
+                        </pre>
+                    </div>
+                </DialogContent>
+            </Dialog>
         </main>
     )
 }

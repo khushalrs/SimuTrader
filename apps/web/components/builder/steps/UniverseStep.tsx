@@ -1,14 +1,51 @@
 "use client"
 
-import { useState } from "react"
+import React, { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
+import { searchAssets, AssetOut } from "@/lib/api"
+import { Loader2, Search, AlertCircle } from "lucide-react"
 
 export function UniverseStep({ config, updateConfig, nextStep }: any) {
     const [symbolInput, setSymbolInput] = useState("")
+    const [debouncedInput, setDebouncedInput] = useState("")
+    const [results, setResults] = useState<AssetOut[]>([])
+    const [isSearching, setIsSearching] = useState(false)
+    const [showDropdown, setShowDropdown] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [conflictAsset, setConflictAsset] = useState<AssetOut | null>(null)
+
+    // Debounce manual input
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedInput(symbolInput)
+        }, 300)
+        return () => clearTimeout(timer)
+    }, [symbolInput])
+
+    // Search Assets
+    useEffect(() => {
+        if (!debouncedInput.trim()) {
+            setResults([])
+            setIsSearching(false)
+            return
+        }
+        let active = true
+        setIsSearching(true)
+        searchAssets(debouncedInput.trim()).then(res => {
+            if (active) {
+                setResults(res)
+                setIsSearching(false)
+            }
+        }).catch(() => {
+            if (active) setIsSearching(false)
+        })
+
+        return () => { active = false }
+    }, [debouncedInput])
 
     const handleAddPreset = (type: string) => {
         setError(null);
+        setConflictAsset(null);
         const newAssetClass = type === "US" ? "US_EQUITY" : "IN_EQUITY";
         const existingAssetClass = config.universe.instruments.length > 0 ? config.universe.instruments[0].asset_class : null;
 
@@ -36,28 +73,39 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
         }))
     }
 
-    const handleAddSymbol = (e: React.FormEvent) => {
-        e.preventDefault()
+    const validateAndAddAsset = (asset: AssetOut) => {
         setError(null);
-        if (!symbolInput.trim()) return;
-
-        const symbol = symbolInput.trim().toUpperCase()
-        const assetClass = symbol.endsWith(".NS") ? "IN_EQUITY" : (symbol.length === 6 && !symbol.includes(".") ? "FX" : "US_EQUITY")
-
+        setConflictAsset(null);
         const existingAssetClass = config.universe.instruments.length > 0 ? config.universe.instruments[0].asset_class : null;
-        if (existingAssetClass && existingAssetClass !== assetClass) {
-            setError(`Cannot mix different asset classes. Your universe already contains ${existingAssetClass} instruments.`);
+
+        if (existingAssetClass && existingAssetClass !== asset.asset_class) {
+            setConflictAsset(asset);
             return;
         }
 
-        updateConfig((prev: any) => ({
-            ...prev,
-            universe: {
-                ...prev.universe,
-                instruments: [...prev.universe.instruments, { symbol, asset_class: assetClass }]
+        executeAddAsset(asset);
+    }
+
+    const executeAddAsset = (asset: AssetOut, clearExisting: boolean = false) => {
+        updateConfig((prev: any) => {
+            const currentInstruments = clearExisting ? [] : prev.universe.instruments;
+            return {
+                ...prev,
+                universe: {
+                    ...prev.universe,
+                    instruments: [...currentInstruments, { symbol: asset.symbol, asset_class: asset.asset_class }]
+                }
             }
-        }))
+        })
         setSymbolInput("")
+        setShowDropdown(false)
+        setConflictAsset(null)
+    }
+
+    const handleClearAndSwitch = () => {
+        if (conflictAsset) {
+            executeAddAsset(conflictAsset, true)
+        }
     }
 
     const handleRemoveSymbol = (index: number) => {
@@ -69,6 +117,20 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
                 universe: { ...prev.universe, instruments: newInst }
             }
         });
+    }
+
+    // Free text add
+    const handleAddSymbolObj = (e: React.FormEvent) => {
+        e.preventDefault()
+        if (!symbolInput.trim()) return;
+        // Check if there's an exact match in results
+        const exactMatch = results.find(r => r.symbol.toUpperCase() === symbolInput.trim().toUpperCase())
+        if (exactMatch) {
+            validateAndAddAsset(exactMatch)
+        } else {
+            // Unrecognized text. We need backend confirmation.
+            setError(`Unknown symbol: ${symbolInput.toUpperCase()}. Please select an instrument from the search results to ensure validity.`)
+        }
     }
 
     return (
@@ -89,17 +151,88 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
                 </div>
 
                 <div className="space-y-2">
-                    <label className="text-sm font-medium">Instruments</label>
-                    <form onSubmit={handleAddSymbol} className="flex space-x-2">
-                        <input
-                            type="text"
-                            placeholder="e.g. AAPL, RELIANCE.NS, USDINR"
-                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                            value={symbolInput}
-                            onChange={e => setSymbolInput(e.target.value)}
-                        />
-                        <Button type="submit" variant="secondary">Add</Button>
-                    </form>
+                    <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium">Instruments</label>
+                        <span className="text-xs text-muted-foreground bg-primary/10 text-primary px-2 py-1 rounded-md">
+                            Single asset class mode (no FX conversion yet)
+                        </span>
+                    </div>
+
+                    <div className="relative">
+                        <form onSubmit={handleAddSymbolObj} className="flex space-x-2">
+                            <div className="relative w-full">
+                                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                                <input
+                                    type="text"
+                                    placeholder="Search instruments (e.g. AAPL, Reliance...)"
+                                    className="flex h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                    value={symbolInput}
+                                    onChange={e => {
+                                        setSymbolInput(e.target.value)
+                                        setShowDropdown(true)
+                                        setError(null)
+                                        setConflictAsset(null)
+                                    }}
+                                    onFocus={() => setShowDropdown(true)}
+                                />
+                            </div>
+                            <Button type="submit" variant="secondary">Add</Button>
+                        </form>
+
+                        {showDropdown && symbolInput.trim() && (
+                            <div className="absolute top-12 left-0 w-[calc(100%-4rem)] bg-background border border-border shadow-lg z-50 rounded-md max-h-60 overflow-y-auto">
+                                {isSearching ? (
+                                    <div className="p-4 flex items-center justify-center text-muted-foreground text-sm">
+                                        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Searching...
+                                    </div>
+                                ) : results.length > 0 ? (
+                                    <ul className="py-1 text-sm">
+                                        {results.map((r, i) => (
+                                            <li
+                                                key={i}
+                                                className="px-4 py-2 hover:bg-muted cursor-pointer flex justify-between items-center"
+                                                onClick={() => validateAndAddAsset(r)}
+                                            >
+                                                <span>
+                                                    <span className="font-semibold text-foreground mr-2">{r.symbol}</span>
+                                                    <span className="text-muted-foreground">{r.name}</span>
+                                                </span>
+                                                <span className="text-xs bg-muted-foreground/20 text-muted-foreground px-1.5 py-0.5 rounded">
+                                                    {r.asset_class}
+                                                </span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                ) : (
+                                    <div className="p-4 text-muted-foreground text-sm text-center">
+                                        No matches found for "{debouncedInput}"
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {conflictAsset && (
+                        <div className="bg-amber-500/10 border border-amber-500/30 text-amber-500 text-sm rounded-md p-4 flex flex-col gap-3">
+                            <div className="flex items-start gap-2">
+                                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                                <div>
+                                    <p className="font-medium">Asset Class Conflict</p>
+                                    <p className="text-amber-500/80 mt-1">
+                                        You are trying to add a <strong>{conflictAsset.asset_class}</strong> instrument, but your universe currently contains <strong>{config.universe.instruments[0].asset_class}</strong> instruments. Mixing asset classes is not yet supported.
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex gap-2 justify-end">
+                                <Button size="sm" variant="outline" className="border-amber-500/30 text-amber-500 hover:bg-amber-500/10" onClick={() => setConflictAsset(null)}>
+                                    Keep current class
+                                </Button>
+                                <Button size="sm" className="bg-amber-500 hover:bg-amber-600 text-white" onClick={handleClearAndSwitch}>
+                                    Clear existing & Switch
+                                </Button>
+                            </div>
+                        </div>
+                    )}
 
                     <div className="flex space-x-2 mt-2">
                         <Button type="button" variant="outline" size="sm" onClick={() => handleAddPreset("US")}>+ US Mega Cap</Button>
@@ -169,6 +302,6 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
             <div className="mt-8 flex justify-end pt-4 border-t border-border">
                 <Button onClick={nextStep} disabled={config.universe.instruments.length === 0}>Next Step</Button>
             </div>
-        </div>
+        </div >
     )
 }

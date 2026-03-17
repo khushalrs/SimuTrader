@@ -1,8 +1,11 @@
 const DEFAULT_API_BASE_URL = "http://localhost:8000"
 
 const isServer = typeof window === "undefined"
+// @ts-ignore
 const API_BASE_URL = isServer
+    // @ts-ignore
     ? process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL
+    // @ts-ignore
     : process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL
 
 export interface RunMetric {
@@ -410,3 +413,25 @@ export async function getRunFills(runId: string, start?: string, end?: string): 
     }
 }
 
+export interface AssetOut {
+    symbol: string
+    name: string
+    asset_class: string
+}
+
+export async function searchAssets(query: string): Promise<AssetOut[]> {
+    if (!query) return []
+    try {
+        const url = new URL(`${API_BASE_URL}/assets`)
+        url.searchParams.append("q", query)
+        const res = await fetch(url.toString())
+        if (!res.ok) {
+            console.error(`Failed to fetch assets: ${res.status}`)
+            return []
+        }
+        return await res.json()
+    } catch (e) {
+        console.error("Error searching assets", e)
+        return []
+    }
+}
