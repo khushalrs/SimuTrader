@@ -1,11 +1,13 @@
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.backtest import execute_run
+from app.backtest import claim_run, execute_run
 from app.db import get_db
-from app.models.backtests import BacktestRun
+from app.models.backtests import BacktestRequestIdempotency, BacktestRun
 from app.schemas.backtests import BacktestCreate, BacktestOut
 from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
@@ -32,18 +34,58 @@ def _to_backtest_out(run: BacktestRun) -> BacktestOut:
     )
 
 
+def _find_idempotent_run(
+    db: Session,
+    idempotency_key: str,
+    now_utc: datetime,
+) -> BacktestRun | None:
+    row = (
+        db.query(BacktestRequestIdempotency)
+        .filter(
+            BacktestRequestIdempotency.idempotency_key == idempotency_key,
+            BacktestRequestIdempotency.expires_at > now_utc,
+        )
+        .first()
+    )
+    if not row:
+        return None
+    return db.query(BacktestRun).filter(BacktestRun.run_id == row.run_id).first()
+
+
 @router.post("", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
 def create_backtest(
     payload: BacktestCreate,
     response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ) -> BacktestOut:
+    settings = get_settings()
+    now_utc = datetime.now(timezone.utc)
+    clean_idempotency_key = (idempotency_key or "").strip() or None
+
     try:
         resolved_config = validate_and_resolve_config(payload.config_snapshot)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+
+    if clean_idempotency_key:
+        # Allow key reuse after dedupe expiry.
+        (
+            db.query(BacktestRequestIdempotency)
+            .filter(
+                BacktestRequestIdempotency.idempotency_key == clean_idempotency_key,
+                BacktestRequestIdempotency.expires_at <= now_utc,
+            )
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+
+        existing_run = _find_idempotent_run(db, clean_idempotency_key, now_utc)
+        if existing_run:
+            response.status_code = status.HTTP_202_ACCEPTED
+            return _to_backtest_out(existing_run)
 
     run = BacktestRun(
         strategy_id=payload.strategy_id,
@@ -54,9 +96,33 @@ def create_backtest(
         seed=payload.seed,
     )
     db.add(run)
-    db.commit()
+    db.flush()
+
+    if clean_idempotency_key:
+        dedupe_expires_at = now_utc + timedelta(
+            seconds=settings.backtest_idempotency_window_seconds
+        )
+        db.add(
+            BacktestRequestIdempotency(
+                idempotency_key=clean_idempotency_key,
+                run_id=run.run_id,
+                expires_at=dedupe_expires_at,
+            )
+        )
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if clean_idempotency_key:
+            existing_run = _find_idempotent_run(db, clean_idempotency_key, now_utc)
+            if existing_run:
+                response.status_code = status.HTTP_202_ACCEPTED
+                return _to_backtest_out(existing_run)
+        raise
+
     db.refresh(run)
-    settings = get_settings()
+
     if settings.backtest_exec_mode == "async":
         from app.worker import execute_run_task
 
@@ -73,7 +139,13 @@ def create_backtest(
             ),
         )
 
-    return _to_backtest_out(execute_run(db, run))
+    claimed_run = claim_run(db, run.run_id)
+    if not claimed_run:
+        response.status_code = status.HTTP_202_ACCEPTED
+        db.refresh(run)
+        return _to_backtest_out(run)
+
+    return _to_backtest_out(execute_run(db, claimed_run))
 
 
 @router.get("/{run_id}", response_model=BacktestOut)

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.backtest.buy_and_hold import run_buy_and_hold
@@ -25,6 +26,19 @@ from app.backtest.momentum import run_momentum
 from app.models.backtests import BacktestRun
 
 logger = logging.getLogger(__name__)
+
+
+def claim_run(db: Session, run_id) -> BacktestRun | None:
+    claimed_at = datetime.now(timezone.utc)
+    result = db.execute(
+        update(BacktestRun)
+        .where(BacktestRun.run_id == run_id, BacktestRun.status == "QUEUED")
+        .values(status="RUNNING", started_at=claimed_at, finished_at=None)
+    )
+    db.commit()
+    if result.rowcount != 1:
+        return None
+    return db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
 
 
 def _resolve_strategy_type(config_snapshot: dict[str, Any]) -> str:
@@ -74,10 +88,6 @@ def _map_exception(exc: Exception) -> BacktestError:
 def execute_run(db: Session, run: BacktestRun) -> BacktestRun:
     config_snapshot = run.config_snapshot or {}
     strategy = "BUY_AND_HOLD"
-
-    run.status = "RUNNING"
-    run.started_at = datetime.now(timezone.utc)
-    db.commit()
 
     try:
         strategy = _resolve_strategy_type(config_snapshot)

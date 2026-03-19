@@ -144,6 +144,22 @@ function formatDateLabel(iso: string): string {
     })
 }
 
+function buildIdempotencyKey(prefix: string, payload: unknown): string {
+    const raw = `${prefix}:${JSON.stringify(payload)}`
+    let hash = 2166136261
+    for (let i = 0; i < raw.length; i += 1) {
+        hash ^= raw.charCodeAt(i)
+        hash +=
+            (hash << 1) +
+            (hash << 4) +
+            (hash << 7) +
+            (hash << 8) +
+            (hash << 24)
+    }
+    const bucket = Math.floor(Date.now() / 30000)
+    return `${prefix}-${bucket}-${Math.abs(hash >>> 0)}`
+}
+
 function metricTrend(value?: number | null): "up" | "down" | "neutral" {
     if (value === undefined || value === null) {
         return "neutral"
@@ -340,11 +356,13 @@ export async function createRun(config: any): Promise<string> {
         data_snapshot_id: "default_snapshot_2026",
         seed: 42
     };
+    const idempotencyKey = buildIdempotencyKey("create-run", payload)
 
     const res = await fetch(`${API_BASE_URL}/backtests`, {
         method: 'POST',
         headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify(payload)
     });
@@ -365,11 +383,13 @@ export async function createRunFromSnapshot(validConfig: any): Promise<string> {
         data_snapshot_id: "default_snapshot_2026",
         seed: 42
     };
+    const idempotencyKey = buildIdempotencyKey("retry-run", payload)
 
     const res = await fetch(`${API_BASE_URL}/backtests`, {
         method: 'POST',
         headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify(payload)
     });

@@ -1,6 +1,7 @@
 from app.models.assets import Asset
 from app.models.backtests import (
     BacktestRun,
+    BacktestRequestIdempotency,
     RunDailyEquity,
     RunFill,
     RunFinancing,
@@ -16,6 +17,7 @@ __all__ = [
     "Asset",
     "Strategy",
     "BacktestRun",
+    "BacktestRequestIdempotency",
     "RunMetric",
     "RunDailyEquity",
     "RunPosition",

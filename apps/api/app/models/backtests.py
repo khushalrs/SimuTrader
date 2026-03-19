@@ -45,6 +45,19 @@ class BacktestRun(Base):
     )
 
 
+class BacktestRequestIdempotency(Base):
+    __tablename__ = "backtest_request_idempotency"
+
+    idempotency_key = Column(String, primary_key=True, nullable=False)
+    run_id = Column(UUID(as_uuid=True), ForeignKey("backtest_runs.run_id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("backtest_request_idempotency_expires_idx", "expires_at"),
+    )
+
+
 class RunMetric(Base):
     __tablename__ = "run_metrics"
 

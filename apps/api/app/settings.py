@@ -16,6 +16,7 @@ class Settings:
     env: str
     backtest_exec_mode: str
     allow_sync_execution: bool
+    backtest_idempotency_window_seconds: int
     cors_origins: list[str]
 
     @property
@@ -36,6 +37,8 @@ class Settings:
                 "Invalid execution mode for non-dev environment: set BACKTEST_EXEC_MODE=async "
                 "or explicitly set ALLOW_SYNC_EXECUTION=true."
             )
+        if self.backtest_idempotency_window_seconds <= 0:
+            raise RuntimeError("BACKTEST_IDEMPOTENCY_WINDOW_SECONDS must be > 0.")
 
 
 @lru_cache(maxsize=1)
@@ -43,6 +46,9 @@ def get_settings() -> Settings:
     env = os.getenv("ENV", "dev").strip().lower()
     exec_mode = os.getenv("BACKTEST_EXEC_MODE", "async").strip().lower()
     allow_sync_execution = _parse_bool(os.getenv("ALLOW_SYNC_EXECUTION"), default=False)
+    idempotency_window_seconds = int(
+        os.getenv("BACKTEST_IDEMPOTENCY_WINDOW_SECONDS", "300").strip()
+    )
     origins_env = os.getenv(
         "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
     )
@@ -51,5 +57,6 @@ def get_settings() -> Settings:
         env=env,
         backtest_exec_mode=exec_mode,
         allow_sync_execution=allow_sync_execution,
+        backtest_idempotency_window_seconds=idempotency_window_seconds,
         cors_origins=cors_origins,
     )

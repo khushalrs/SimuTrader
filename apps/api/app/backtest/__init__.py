@@ -10,7 +10,7 @@ from app.backtest.errors import (
 from app.backtest.fixed_weight_rebalance import run_fixed_weight_rebalance
 from app.backtest.mean_reversion import run_mean_reversion
 from app.backtest.momentum import run_momentum
-from app.backtest.executor import execute_run
+from app.backtest.executor import claim_run, execute_run
 
 __all__ = [
     "BacktestError",
@@ -24,4 +24,5 @@ __all__ = [
     "run_mean_reversion",
     "run_momentum",
     "execute_run",
+    "claim_run",
 ]

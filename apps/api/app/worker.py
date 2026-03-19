@@ -7,7 +7,7 @@ import os
 from celery import Celery
 from uuid import UUID
 
-from app.backtest import execute_run
+from app.backtest import claim_run, execute_run
 from app.db.session import SessionLocal
 from app.models.backtests import BacktestRun
 
@@ -26,9 +26,12 @@ def execute_run_task(run_id: str) -> str:
             run_uuid = UUID(run_id)
         except ValueError:
             return "INVALID"
-        run = db.query(BacktestRun).filter(BacktestRun.run_id == run_uuid).first()
+        run = claim_run(db, run_uuid)
         if not run:
-            return "MISSING"
+            exists = db.query(BacktestRun.run_id).filter(BacktestRun.run_id == run_uuid).first()
+            if not exists:
+                return "MISSING"
+            return "SKIPPED_ALREADY_CLAIMED"
         execute_run(db, run)
         return run.status
     finally:
