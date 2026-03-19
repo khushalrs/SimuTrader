@@ -48,6 +48,27 @@ def _recover_stale_running_runs(db, stale_after_seconds: int) -> int:
     return int(result.rowcount or 0)
 
 
+def _recover_stale_queued_runs(db, stale_after_seconds: int) -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
+    result = db.execute(
+        update(BacktestRun)
+        .where(
+            BacktestRun.status == "QUEUED",
+            BacktestRun.started_at.is_(None),
+            BacktestRun.created_at < cutoff,
+        )
+        .values(
+            status="ENQUEUE_FAILED",
+            error_code="E_ENQUEUE_STALE",
+            error_message_public="This run could not be queued in time. Please retry.",
+            error_retryable=True,
+            finished_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+    return int(result.rowcount or 0)
+
+
 def _release_run_for_retry(db, run_id: UUID) -> None:
     db.execute(
         update(BacktestRun)
@@ -67,6 +88,10 @@ def execute_run_task(self, run_id: str) -> str:
     db = SessionLocal()
     try:
         stale_timeout_seconds = int(os.getenv("STALE_RUN_TIMEOUT_SECONDS", "7200"))
+        stale_queued_timeout_seconds = int(
+            os.getenv("STALE_QUEUED_TIMEOUT_SECONDS", "900")
+        )
+        _recover_stale_queued_runs(db, stale_after_seconds=stale_queued_timeout_seconds)
         _recover_stale_running_runs(db, stale_after_seconds=stale_timeout_seconds)
 
         try:

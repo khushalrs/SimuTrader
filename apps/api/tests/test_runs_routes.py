@@ -19,6 +19,7 @@ class _FakeQuery:
     all_values: list | None = None
     scalar_value: object | None = None
     limit_value: int | None = None
+    offset_value: int = 0
 
     def filter(self, *args, **kwargs):  # noqa: ANN002, ANN003
         return self
@@ -30,6 +31,10 @@ class _FakeQuery:
         self.limit_value = value
         return self
 
+    def offset(self, value: int):
+        self.offset_value = value
+        return self
+
     def first(self):
         return self.first_value
 
@@ -38,6 +43,8 @@ class _FakeQuery:
 
     def all(self):
         values = list(self.all_values or [])
+        if self.offset_value:
+            values = values[self.offset_value :]
         if self.limit_value is not None:
             return values[: self.limit_value]
         return values
@@ -68,7 +75,7 @@ class _FakeDB:
                 return _FakeQuery(first_value=(uuid4(),) if self.run_exists else None)
             if entity is BacktestRun:
                 run_obj = (
-                    SimpleNamespace(run_id=uuid4(), actor_key="guest:test")
+                    SimpleNamespace(run_id=uuid4(), actor_key="guest:test", status="SUCCEEDED")
                     if self.run_exists
                     else None
                 )

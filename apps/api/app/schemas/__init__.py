@@ -2,6 +2,7 @@ from app.schemas.assets import AssetCoverageOut, AssetDetailOut, AssetOut
 from app.schemas.backtests import (
     BacktestCreate,
     BacktestOut,
+    BacktestStatusOut,
     RunCostsSummaryOut,
     RunDailyEquityOut,
     RunFillOut,
@@ -16,6 +17,7 @@ __all__ = [
     "AssetOut",
     "BacktestCreate",
     "BacktestOut",
+    "BacktestStatusOut",
     "MarketBarOut",
     "MarketCoverageOut",
     "MarketSnapshotOut",

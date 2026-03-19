@@ -34,6 +34,17 @@ class BacktestOut(BaseModel):
     seed: int
 
 
+class BacktestStatusOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: UUID
+    status: str
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    error_code: Optional[str] = None
+    error_message_public: Optional[str] = None
+
+
 class RunDailyEquityOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

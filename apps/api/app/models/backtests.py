@@ -46,6 +46,8 @@ class BacktestRun(Base):
         Index("backtest_runs_status_idx", "status"),
         Index("backtest_runs_created_idx", "created_at"),
         Index("backtest_runs_actor_status_idx", "actor_key", "status"),
+        Index("backtest_runs_actor_created_idx", "actor_key", "created_at"),
+        Index("backtest_runs_status_created_idx", "status", "created_at"),
         Index("backtest_runs_execution_task_id_idx", "execution_task_id"),
     )
 

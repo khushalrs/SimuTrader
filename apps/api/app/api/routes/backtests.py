@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+import logging
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy import func
@@ -15,6 +16,7 @@ from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
+logger = logging.getLogger(__name__)
 
 
 def _to_backtest_out(run: BacktestRun) -> BacktestOut:
@@ -56,6 +58,31 @@ def _find_idempotent_run(
     return db.query(BacktestRun).filter(BacktestRun.run_id == row.run_id).first()
 
 
+def _mark_stale_queued_runs(db: Session, stale_after_seconds: int) -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
+    stale_runs = (
+        db.query(BacktestRun)
+        .filter(
+            BacktestRun.status == "QUEUED",
+            BacktestRun.started_at.is_(None),
+            BacktestRun.created_at < cutoff,
+        )
+        .all()
+    )
+    for stale_run in stale_runs:
+        stale_run.status = "ENQUEUE_FAILED"
+        stale_run.error_code = "E_ENQUEUE_STALE"
+        stale_run.error_message_public = (
+            "This run could not be queued in time. Please retry."
+        )
+        stale_run.error_retryable = True
+        stale_run.error_id = str(uuid4())
+        stale_run.finished_at = datetime.now(timezone.utc)
+    if stale_runs:
+        db.commit()
+    return len(stale_runs)
+
+
 @router.post("", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
 def create_backtest(
     payload: BacktestCreate,
@@ -67,6 +94,7 @@ def create_backtest(
     settings = get_settings()
     now_utc = datetime.now(timezone.utc)
     clean_idempotency_key = (idempotency_key or "").strip() or None
+    _mark_stale_queued_runs(db, stale_after_seconds=settings.stale_queued_timeout_seconds)
 
     try:
         resolved_config = validate_and_resolve_config(payload.config_snapshot)
@@ -170,10 +198,33 @@ def create_backtest(
     if settings.backtest_exec_mode == "async":
         from app.worker import execute_run_task
 
-        task_result = execute_run_task.delay(str(run.run_id))
-        run.execution_task_id = task_result.id
-        db.commit()
-        db.refresh(run)
+        try:
+            task_result = execute_run_task.delay(str(run.run_id))
+            run.execution_task_id = task_result.id
+            db.commit()
+            db.refresh(run)
+        except Exception:
+            error_id = str(uuid4())
+            logger.exception(
+                "Backtest enqueue failed",
+                extra={
+                    "run_id": str(run.run_id),
+                    "error_id": error_id,
+                    "actor_key": actor.actor_key,
+                },
+            )
+            run.status = "ENQUEUE_FAILED"
+            run.error_code = "E_ENQUEUE_FAILED"
+            run.error_message_public = (
+                "The simulation could not be queued. Please retry."
+            )
+            run.error_retryable = True
+            run.error_id = error_id
+            run.finished_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(run)
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return _to_backtest_out(run)
         response.status_code = status.HTTP_202_ACCEPTED
         return _to_backtest_out(run)
 
