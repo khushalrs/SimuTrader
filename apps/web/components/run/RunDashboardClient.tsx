@@ -7,49 +7,63 @@ import { PerformanceChart } from "@/components/run/PerformanceChart"
 import { RiskTab } from "@/components/run/RiskTab"
 import { CostsTab } from "@/components/run/CostsTab"
 import { PortfolioTab } from "@/components/run/PortfolioTab"
+import { FillsTab } from "@/components/run/FillsTab"
 import { ConfigTab } from "@/components/run/ConfigTab"
-import { InspectorPanel } from "@/components/run/InspectorPanel"
-import { RunHeader } from "@/components/run/RunHeader"
-import { KPIGrid } from "@/components/run/KPIGrid"
 import { RunRetryButton } from "@/components/run/RunRetryButton"
+import { Skeleton } from "@/components/ui/skeleton"
 import { AlertCircle, Loader2 } from "lucide-react"
-import { RunData, getRun, getRunMetrics, getRunEquity } from "@/lib/api"
+import { RunData, getRun, getRunMetrics, getRunEquity, getRunStatus } from "@/lib/api"
 
-export function RunDashboardClient({ initialData }: { initialData: RunData }) {
-    const { data: runDataRaw } = useSWR(
-        initialData.id ? `/runs/${initialData.id}` : null,
-        () => getRun(initialData.id),
+export function RunDashboardClient({ runId }: { runId: string }) {
+    const { data: statusData } = useSWR(
+        runId ? `/runs/${runId}/status` : null,
+        () => getRunStatus(runId),
         {
-            fallbackData: initialData,
             refreshInterval: (data) => {
-                if (data?.status === "QUEUED" || data?.status === "RUNNING") return 1000;
+                if (!data) return 1000;
+                if (data.status === "QUEUED" || data.status === "RUNNING") return 1000;
                 return 0;
-            }
+            },
+            keepPreviousData: true
         }
     );
 
-    const runDataSummary = runDataRaw || initialData;
-    const isSucceeded = runDataSummary.status === "SUCCEEDED";
+    const isPending = !statusData || statusData.status === "QUEUED" || statusData.status === "RUNNING";
+    const status = statusData?.status || "QUEUED";
+    const isSucceeded = status === "SUCCEEDED";
+    const isFailed = status === "FAILED";
+
+    const { data: runSummaryData } = useSWR(
+        (isSucceeded || isFailed) ? `/runs/${runId}` : null,
+        () => getRun(runId),
+        { revalidateOnFocus: false, keepPreviousData: true }
+    );
 
     const { data: metricsData } = useSWR(
-        isSucceeded ? `/runs/${initialData.id}/metrics` : null,
-        () => getRunMetrics(initialData.id),
-        { revalidateOnFocus: false }
+        isSucceeded ? `/runs/${runId}/metrics` : null,
+        () => getRunMetrics(runId),
+        { revalidateOnFocus: false, keepPreviousData: true }
     );
 
     const { data: equityDataList } = useSWR(
-        isSucceeded ? `/runs/${initialData.id}/equity` : null,
-        () => getRunEquity(initialData.id),
-        { revalidateOnFocus: false }
+        isSucceeded ? `/runs/${runId}/equity` : null,
+        () => getRunEquity(runId),
+        { revalidateOnFocus: false, keepPreviousData: true }
     );
 
-    const runData: RunData = {
-        ...runDataSummary,
-        metrics: metricsData?.metrics || runDataSummary.metrics,
-        costs: metricsData?.costs || runDataSummary.costs,
-        equity: equityDataList || runDataSummary.equity,
-        effective_start_date: equityDataList?.[0]?.date || runDataSummary.effective_start_date,
-        effective_end_date: equityDataList?.[equityDataList.length - 1]?.date || runDataSummary.effective_end_date,
+    const runData: Partial<RunData> = {
+        ...(runSummaryData || {}),
+        id: runId,
+        status: status,
+        metrics: metricsData?.metrics || runSummaryData?.metrics || [],
+        costs: metricsData?.costs || runSummaryData?.costs,
+        equity: equityDataList || runSummaryData?.equity || [],
+        error_code: statusData?.error_code || runSummaryData?.error_code,
+        error_message_public: statusData?.error_message_public || runSummaryData?.error_message_public,
+        error_retryable: statusData?.error_retryable ?? runSummaryData?.error_retryable ?? true,
+        error_id: statusData?.error_id || runSummaryData?.error_id,
+        effective_start_date: equityDataList?.[0]?.date || runSummaryData?.effective_start_date,
+        effective_end_date: equityDataList?.[equityDataList?.length - 1]?.date || runSummaryData?.effective_end_date,
     };
 
     const equityData = runData.equity || [];
@@ -69,14 +83,14 @@ export function RunDashboardClient({ initialData }: { initialData: RunData }) {
 
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
-            {runData.status === "QUEUED" || runData.status === "RUNNING" ? (
+            {isPending && (
                 <div className="flex items-center gap-2 p-4 bg-primary/10 text-primary border border-primary/20 rounded-lg">
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>Simulation is {runData.status.toLowerCase()}...</span>
+                    <span>Simulation is {status.toLowerCase()}...</span>
                 </div>
-            ) : null}
+            )}
 
-            {runData.status === "FAILED" && (
+            {isFailed && (
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-lg border border-destructive/20 bg-destructive/10 p-4 text-destructive">
                     <div className="flex items-start sm:items-center gap-3">
                         <AlertCircle className="h-5 w-5 shrink-0 mt-0.5 sm:mt-0" />
@@ -93,26 +107,36 @@ export function RunDashboardClient({ initialData }: { initialData: RunData }) {
                             )}
                         </div>
                     </div>
-                    {runData.error_retryable !== false && (
+                    {runData.error_retryable !== false && runData.config_snapshot && (
                         <RunRetryButton config={runData.config_snapshot} />
                     )}
                 </div>
             )}
 
-            <RunHeader
-                runId={runData.id}
-                title={runData.title}
-                date={runData.date}
-                tags={runData.tags}
-                requestedStart={runData.requested_start_date}
-                requestedEnd={runData.requested_end_date}
-                effectiveStart={runData.effective_start_date}
-                effectiveEnd={runData.effective_end_date}
-                configSnapshot={runData.config_snapshot}
-                equity={runData.equity}
-            />
+            {isPending ? (
+                <Skeleton className="w-full h-[150px] rounded-lg" />
+            ) : (
+                <RunHeader
+                    runId={runData.id as string}
+                    title={runData.title as string}
+                    date={runData.date as string}
+                    tags={runData.tags as string[]}
+                    requestedStart={runData.requested_start_date}
+                    requestedEnd={runData.requested_end_date}
+                    effectiveStart={runData.effective_start_date}
+                    effectiveEnd={runData.effective_end_date}
+                    configSnapshot={runData.config_snapshot}
+                    equity={runData.equity}
+                />
+            )}
 
-            <KPIGrid metrics={runData.metrics} />
+            {isPending ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-24 w-full rounded-lg" />)}
+                </div>
+            ) : (
+                <KPIGrid metrics={runData.metrics || []} />
+            )}
 
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 min-h-[500px] pb-10">
                 <div className="lg:col-span-3 space-y-4">
@@ -120,43 +144,55 @@ export function RunDashboardClient({ initialData }: { initialData: RunData }) {
                     <div className="flex items-center justify-between mb-4">
                         <TabsList>
                             <TabsTrigger value="performance">Performance</TabsTrigger>
-                            <TabsTrigger value="risk">Risk</TabsTrigger>
-                            <TabsTrigger value="costs">Costs</TabsTrigger>
-                            <TabsTrigger value="portfolio">Portfolio</TabsTrigger>
-                            <TabsTrigger value="configuration">Configuration</TabsTrigger>
+                            <TabsTrigger value="risk" disabled={isPending || isFailed}>Risk</TabsTrigger>
+                            <TabsTrigger value="costs" disabled={isPending || isFailed}>Costs</TabsTrigger>
+                            <TabsTrigger value="portfolio" disabled={isPending || isFailed}>Portfolio</TabsTrigger>
+                            <TabsTrigger value="fills" disabled={isPending || isFailed}>Fills</TabsTrigger>
+                            <TabsTrigger value="configuration" disabled={isPending}>Configuration</TabsTrigger>
                         </TabsList>
                     </div>
 
                     <TabsContent value="performance" className="mt-0 min-h-[450px]">
-                        <PerformanceChart
-                            data={runData.equity}
-                            baseCurrency={runData.baseCurrency}
-                            onHover={setHoveredPoint}
-                        />
+                        {isPending ? (
+                            <Skeleton className="w-full h-[450px] rounded-lg" />
+                        ) : (
+                            <PerformanceChart
+                                data={runData.equity}
+                                baseCurrency={runData.baseCurrency || "USD"}
+                                onHover={setHoveredPoint}
+                            />
+                        )}
                     </TabsContent>
                     <TabsContent value="risk" className="mt-0 min-h-[450px]">
                         <RiskTab equity={runData.equity} />
                     </TabsContent>
                     <TabsContent value="costs" className="mt-0 min-h-[450px]">
-                        <CostsTab data={runData} status={runData.status} />
+                        <CostsTab data={runData as RunData} status={status} />
                     </TabsContent>
                     <TabsContent value="portfolio" className="mt-0 min-h-[450px]">
-                        <PortfolioTab runId={runData.id} equity={runData.equity} baseCurrency={runData.baseCurrency} status={runData.status} />
+                        <PortfolioTab runId={runData.id as string} equity={runData.equity} baseCurrency={runData.baseCurrency || "USD"} status={status} />
+                    </TabsContent>
+                    <TabsContent value="fills" className="mt-0 min-h-[450px]">
+                        <FillsTab runId={runData.id as string} baseCurrency={runData.baseCurrency || "USD"} status={status} />
                     </TabsContent>
                     <TabsContent value="configuration" className="mt-0 min-h-[450px]">
-                        <ConfigTab data={runData} />
+                        <ConfigTab data={runData as RunData} />
                     </TabsContent>
                 </Tabs>
             </div>
 
             <div className="hidden lg:block lg:col-span-1 h-full">
-                <InspectorPanel
-                    runId={runData.id}
-                    date={inspectorDate}
-                    equity={inspectorEquity}
-                    baseCurrency={runData.baseCurrency}
-                    status={runData.status}
-                />
+                {isPending ? (
+                     <Skeleton className="w-full h-full min-h-[500px] rounded-lg" />
+                ) : (
+                    <InspectorPanel
+                        runId={runData.id as string}
+                        date={inspectorDate}
+                        equity={inspectorEquity}
+                        baseCurrency={runData.baseCurrency || "USD"}
+                        status={status}
+                    />
+                )}
             </div>
         </div>
         </div>

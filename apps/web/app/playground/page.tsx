@@ -34,10 +34,18 @@ export default function PlaygroundPage() {
             if (!idempotencyKeyMap.current[preset.id]) {
                 idempotencyKeyMap.current[preset.id] = crypto.randomUUID()
             }
-            const runId = await createRunFromSnapshot(preset.config_snapshot, idempotencyKeyMap.current[preset.id])
+            const currentKey = idempotencyKeyMap.current[preset.id]
+            const runId = await createRunFromSnapshot(preset.config_snapshot, currentKey)
+            
+            // Rotate key after success
+            idempotencyKeyMap.current[preset.id] = crypto.randomUUID()
+            
             router.push(`/runs/${runId}`)
         } catch (err: any) {
             setError(err.message || "Failed to create run")
+            // Rotate key after failure
+            idempotencyKeyMap.current[preset.id] = crypto.randomUUID()
+        } finally {
             setPendingRunId(null)
         }
     }

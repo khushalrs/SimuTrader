@@ -69,6 +69,19 @@ interface BacktestOut {
     config_snapshot?: any
 }
 
+export interface RunStatusOut {
+    run_id: string
+    status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
+    progress: number
+    started_at?: string
+    completed_at?: string
+    error_code?: string
+    error_message_runtime?: string
+    error_message_public?: string
+    error_retryable?: boolean
+    error_id?: string
+}
+
 interface RunMetricOut {
     cagr?: number | null
     volatility?: number | null
@@ -272,6 +285,17 @@ export async function getRun(runId: string): Promise<RunData | null> {
     }
 }
 
+export async function getRunStatus(runId: string): Promise<RunStatusOut | null> {
+    try {
+        const res = await fetch(`${API_BASE_URL}/runs/${runId}/status`, { cache: "no-store" })
+        if (!res.ok) return null
+        return await res.json()
+    } catch (e) {
+        console.error("Error fetching run status:", e)
+        return null
+    }
+}
+
 export async function getRunMetrics(runId: string) {
     const res = await fetch(`${API_BASE_URL}/runs/${runId}/metrics`, { cache: "no-store" });
     if (!res.ok) return null;
@@ -426,7 +450,7 @@ export async function getRunPositions(runId: string, date?: string, limit?: numb
     }
 }
 
-export async function getRunFills(runId: string, start?: string, end?: string): Promise<RunFillOut[]> {
+export async function getRunFills(runId: string, start?: string, end?: string, limit?: number, offset?: number): Promise<RunFillOut[]> {
     try {
         const url = new URL(`${API_BASE_URL}/runs/${runId}/fills`)
         if (start) {
@@ -434,6 +458,12 @@ export async function getRunFills(runId: string, start?: string, end?: string): 
         }
         if (end) {
             url.searchParams.append("end", end)
+        }
+        if (limit !== undefined) {
+            url.searchParams.append("limit", limit.toString())
+        }
+        if (offset !== undefined) {
+            url.searchParams.append("offset", offset.toString())
         }
         const res = await fetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
@@ -443,6 +473,22 @@ export async function getRunFills(runId: string, start?: string, end?: string): 
         return await res.json()
     } catch (e) {
         console.error("Error fetching fills:", e)
+        return []
+    }
+}
+
+export async function getRunTopHoldings(runId: string, limit: number = 5): Promise<RunPositionOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/runs/${runId}/top-holdings`)
+        url.searchParams.append("limit", limit.toString())
+        const res = await fetch(url.toString(), { cache: "no-store" })
+        if (!res.ok) {
+            console.error(`Failed to fetch top holdings: ${res.status} ${res.statusText}`)
+            return []
+        }
+        return await res.json()
+    } catch (e) {
+        console.error("Error fetching top holdings:", e)
         return []
     }
 }
