@@ -11,6 +11,7 @@ from app.backtest import claim_run, execute_run
 from app.db import get_db
 from app.models.backtests import BacktestRequestIdempotency, BacktestRun
 from app.security import ActorContext, ActorTier, get_current_actor
+from app.services.redis_store import refresh_run_cache
 from app.schemas.backtests import BacktestCreate, BacktestOut
 from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
@@ -80,6 +81,8 @@ def _mark_stale_queued_runs(db: Session, stale_after_seconds: int) -> int:
         stale_run.finished_at = datetime.now(timezone.utc)
     if stale_runs:
         db.commit()
+        for stale_run in stale_runs:
+            refresh_run_cache(stale_run)
     return len(stale_runs)
 
 
@@ -194,6 +197,7 @@ def create_backtest(
         raise
 
     db.refresh(run)
+    refresh_run_cache(run)
 
     if settings.backtest_exec_mode == "async":
         from app.worker import execute_run_task
@@ -203,6 +207,7 @@ def create_backtest(
             run.execution_task_id = task_result.id
             db.commit()
             db.refresh(run)
+            refresh_run_cache(run)
         except Exception:
             error_id = str(uuid4())
             logger.exception(
@@ -223,6 +228,7 @@ def create_backtest(
             run.finished_at = datetime.now(timezone.utc)
             db.commit()
             db.refresh(run)
+            refresh_run_cache(run)
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
             return _to_backtest_out(run)
         response.status_code = status.HTTP_202_ACCEPTED
@@ -241,6 +247,7 @@ def create_backtest(
     if not claimed_run:
         response.status_code = status.HTTP_202_ACCEPTED
         db.refresh(run)
+        refresh_run_cache(run)
         return _to_backtest_out(run)
 
     return _to_backtest_out(execute_run(db, claimed_run))

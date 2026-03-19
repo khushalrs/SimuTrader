@@ -17,9 +17,18 @@ class Settings:
     backtest_exec_mode: str
     allow_sync_execution: bool
     backtest_idempotency_window_seconds: int
+    stale_run_timeout_seconds: int
     stale_queued_timeout_seconds: int
     max_active_runs_per_guest: int
     max_active_runs_per_user: int
+    redis_cache_url: str
+    redis_lock_url: str
+    redis_cache_prefix: str
+    redis_lock_prefix: str
+    run_status_cache_ttl_seconds: int
+    run_summary_cache_ttl_seconds: int
+    top_holdings_cache_ttl_seconds: int
+    redis_lock_timeout_seconds: int
     cors_origins: list[str]
 
     @property
@@ -42,12 +51,26 @@ class Settings:
             )
         if self.backtest_idempotency_window_seconds <= 0:
             raise RuntimeError("BACKTEST_IDEMPOTENCY_WINDOW_SECONDS must be > 0.")
+        if self.stale_run_timeout_seconds <= 0:
+            raise RuntimeError("STALE_RUN_TIMEOUT_SECONDS must be > 0.")
         if self.stale_queued_timeout_seconds <= 0:
             raise RuntimeError("STALE_QUEUED_TIMEOUT_SECONDS must be > 0.")
         if self.max_active_runs_per_guest <= 0:
             raise RuntimeError("MAX_ACTIVE_RUNS_PER_GUEST must be > 0.")
         if self.max_active_runs_per_user <= 0:
             raise RuntimeError("MAX_ACTIVE_RUNS_PER_USER must be > 0.")
+        if not self.redis_cache_url:
+            raise RuntimeError("REDIS_CACHE_URL must be set.")
+        if not self.redis_lock_url:
+            raise RuntimeError("REDIS_LOCK_URL must be set.")
+        if self.run_status_cache_ttl_seconds <= 0:
+            raise RuntimeError("RUN_STATUS_CACHE_TTL_SECONDS must be > 0.")
+        if self.run_summary_cache_ttl_seconds <= 0:
+            raise RuntimeError("RUN_SUMMARY_CACHE_TTL_SECONDS must be > 0.")
+        if self.top_holdings_cache_ttl_seconds <= 0:
+            raise RuntimeError("TOP_HOLDINGS_CACHE_TTL_SECONDS must be > 0.")
+        if self.redis_lock_timeout_seconds <= 0:
+            raise RuntimeError("REDIS_LOCK_TIMEOUT_SECONDS must be > 0.")
 
 
 @lru_cache(maxsize=1)
@@ -55,9 +78,11 @@ def get_settings() -> Settings:
     env = os.getenv("ENV", "dev").strip().lower()
     exec_mode = os.getenv("BACKTEST_EXEC_MODE", "async").strip().lower()
     allow_sync_execution = _parse_bool(os.getenv("ALLOW_SYNC_EXECUTION"), default=False)
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0").strip()
     idempotency_window_seconds = int(
         os.getenv("BACKTEST_IDEMPOTENCY_WINDOW_SECONDS", "300").strip()
     )
+    stale_run_timeout_seconds = int(os.getenv("STALE_RUN_TIMEOUT_SECONDS", "7200").strip())
     stale_queued_timeout_seconds = int(
         os.getenv("STALE_QUEUED_TIMEOUT_SECONDS", "900").strip()
     )
@@ -67,13 +92,36 @@ def get_settings() -> Settings:
         "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
     )
     cors_origins = [origin.strip() for origin in origins_env.split(",") if origin.strip()]
+    redis_cache_url = os.getenv("REDIS_CACHE_URL", redis_url).strip()
+    redis_lock_url = os.getenv("REDIS_LOCK_URL", redis_url).strip()
+    redis_cache_prefix = os.getenv("REDIS_CACHE_PREFIX", "simutrader:cache").strip()
+    redis_lock_prefix = os.getenv("REDIS_LOCK_PREFIX", "simutrader:lock").strip()
+    run_status_cache_ttl_seconds = int(
+        os.getenv("RUN_STATUS_CACHE_TTL_SECONDS", "30").strip()
+    )
+    run_summary_cache_ttl_seconds = int(
+        os.getenv("RUN_SUMMARY_CACHE_TTL_SECONDS", "120").strip()
+    )
+    top_holdings_cache_ttl_seconds = int(
+        os.getenv("TOP_HOLDINGS_CACHE_TTL_SECONDS", "120").strip()
+    )
+    redis_lock_timeout_seconds = int(os.getenv("REDIS_LOCK_TIMEOUT_SECONDS", "3600").strip())
     return Settings(
         env=env,
         backtest_exec_mode=exec_mode,
         allow_sync_execution=allow_sync_execution,
         backtest_idempotency_window_seconds=idempotency_window_seconds,
+        stale_run_timeout_seconds=stale_run_timeout_seconds,
         stale_queued_timeout_seconds=stale_queued_timeout_seconds,
         max_active_runs_per_guest=max_active_runs_per_guest,
         max_active_runs_per_user=max_active_runs_per_user,
+        redis_cache_url=redis_cache_url,
+        redis_lock_url=redis_lock_url,
+        redis_cache_prefix=redis_cache_prefix,
+        redis_lock_prefix=redis_lock_prefix,
+        run_status_cache_ttl_seconds=run_status_cache_ttl_seconds,
+        run_summary_cache_ttl_seconds=run_summary_cache_ttl_seconds,
+        top_holdings_cache_ttl_seconds=top_holdings_cache_ttl_seconds,
+        redis_lock_timeout_seconds=redis_lock_timeout_seconds,
         cors_origins=cors_origins,
     )

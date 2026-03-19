@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -15,6 +15,13 @@ from app.models.backtests import (
     RunPosition,
 )
 from app.security import ActorContext, get_current_actor
+from app.services.redis_store import (
+    get_cached_run_status,
+    get_cached_top_holdings,
+    set_cached_run_status,
+    set_cached_run_summary,
+    set_cached_top_holdings,
+)
 from app.schemas.backtests import (
     BacktestOut,
     BacktestStatusOut,
@@ -26,6 +33,15 @@ from app.schemas.backtests import (
 )
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+def _parse_datetime(value: str | None):
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _to_backtest_out(run: BacktestRun) -> BacktestOut:
@@ -70,6 +86,8 @@ def get_run(
     db: Session = Depends(get_db),
 ) -> BacktestOut:
     run = _get_actor_run(run_id, actor, db)
+    set_cached_run_summary(run)
+    set_cached_run_status(run)
     return _to_backtest_out(run)
 
 
@@ -79,7 +97,19 @@ def get_run_status(
     actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> BacktestStatusOut:
+    cached = get_cached_run_status(actor.actor_key, str(run_id))
+    if cached:
+        return BacktestStatusOut(
+            run_id=run_id,
+            status=cached.status,
+            started_at=_parse_datetime(cached.started_at),
+            finished_at=_parse_datetime(cached.finished_at),
+            error_code=cached.error_code,
+            error_message_public=cached.error_message_public,
+        )
     run = _get_actor_run(run_id, actor, db)
+    set_cached_run_status(run)
+    set_cached_run_summary(run)
     return BacktestStatusOut(
         run_id=run.run_id,
         status=run.status,
@@ -296,10 +326,16 @@ def get_run_top_holdings(
     actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> list[RunPositionOut]:
-    return get_run_positions(
+    cached = get_cached_top_holdings(actor.actor_key, str(run_id), limit)
+    if cached is not None:
+        return [RunPositionOut.model_validate(item) for item in cached]
+    rows = get_run_positions(
         run_id=run_id,
         date_value=None,
         limit=limit,
         actor=actor,
         db=db,
     )
+    payload = [row.model_dump(mode="json") for row in rows]
+    set_cached_top_holdings(actor.actor_key, str(run_id), limit, payload)
+    return rows

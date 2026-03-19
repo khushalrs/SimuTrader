@@ -25,6 +25,7 @@ from app.backtest.fixed_weight_rebalance import run_fixed_weight_rebalance
 from app.backtest.mean_reversion import run_mean_reversion
 from app.backtest.momentum import run_momentum
 from app.models.backtests import BacktestRun
+from app.services.redis_store import refresh_run_cache
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,10 @@ def claim_run(db: Session, run_id, task_id: str | None = None) -> BacktestRun | 
     db.commit()
     if result.rowcount != 1:
         return None
-    return db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
+    run = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
+    if run:
+        refresh_run_cache(run)
+    return run
 
 
 def _resolve_strategy_type(config_snapshot: dict[str, Any]) -> str:
@@ -150,5 +154,6 @@ def execute_run(db: Session, run: BacktestRun) -> BacktestRun:
         run.finished_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(run)
+        refresh_run_cache(run)
 
     return run

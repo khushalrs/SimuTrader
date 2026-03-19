@@ -7,13 +7,18 @@ from datetime import datetime, timedelta, timezone
 
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
-from uuid import UUID
-from sqlalchemy import update
+from uuid import UUID, uuid4
 
 from app.backtest import claim_run, execute_run
 from app.backtest.executor import is_transient_exception
 from app.db.session import SessionLocal
 from app.models.backtests import BacktestRun
+from app.services.redis_store import (
+    refresh_run_cache,
+    release_run_lock,
+    try_acquire_run_lock,
+)
+from app.settings import get_settings
 
 celery_app = Celery(
     "simutrader",
@@ -30,67 +35,83 @@ celery_app.conf.update(
 
 def _recover_stale_running_runs(db, stale_after_seconds: int) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
-    result = db.execute(
-        update(BacktestRun)
-        .where(
+    stale_runs = (
+        db.query(BacktestRun)
+        .filter(
             BacktestRun.status == "RUNNING",
             BacktestRun.started_at.isnot(None),
             BacktestRun.started_at < cutoff,
         )
-        .values(
-            status="QUEUED",
-            started_at=None,
-            finished_at=None,
-            execution_task_id=None,
-        )
+        .all()
     )
+    if not stale_runs:
+        return 0
+    for run in stale_runs:
+        run.status = "QUEUED"
+        run.started_at = None
+        run.finished_at = None
+        run.execution_task_id = None
+        run.error_code = None
+        run.error_message_public = None
+        run.error_retryable = None
+        run.error_id = None
     db.commit()
-    return int(result.rowcount or 0)
+    for run in stale_runs:
+        refresh_run_cache(run)
+    return len(stale_runs)
 
 
 def _recover_stale_queued_runs(db, stale_after_seconds: int) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
-    result = db.execute(
-        update(BacktestRun)
-        .where(
+    stale_runs = (
+        db.query(BacktestRun)
+        .filter(
             BacktestRun.status == "QUEUED",
             BacktestRun.started_at.is_(None),
             BacktestRun.created_at < cutoff,
         )
-        .values(
-            status="ENQUEUE_FAILED",
-            error_code="E_ENQUEUE_STALE",
-            error_message_public="This run could not be queued in time. Please retry.",
-            error_retryable=True,
-            finished_at=datetime.now(timezone.utc),
-        )
+        .all()
     )
+    if not stale_runs:
+        return 0
+    now = datetime.now(timezone.utc)
+    for run in stale_runs:
+        run.status = "ENQUEUE_FAILED"
+        run.error_code = "E_ENQUEUE_STALE"
+        run.error_message_public = "This run could not be queued in time. Please retry."
+        run.error_retryable = True
+        run.error_id = str(uuid4())
+        run.finished_at = now
     db.commit()
-    return int(result.rowcount or 0)
+    for run in stale_runs:
+        refresh_run_cache(run)
+    return len(stale_runs)
 
 
 def _release_run_for_retry(db, run_id: UUID) -> None:
-    db.execute(
-        update(BacktestRun)
-        .where(BacktestRun.run_id == run_id)
-        .values(
-            status="QUEUED",
-            started_at=None,
-            finished_at=None,
-            execution_task_id=None,
-        )
-    )
+    run = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
+    if not run:
+        return
+    run.status = "QUEUED"
+    run.started_at = None
+    run.finished_at = None
+    run.execution_task_id = None
+    run.error_code = None
+    run.error_message_public = None
+    run.error_retryable = None
+    run.error_id = None
     db.commit()
+    refresh_run_cache(run)
 
 
 @celery_app.task(bind=True, name="app.backtest.execute_run")
 def execute_run_task(self, run_id: str) -> str:
     db = SessionLocal()
+    settings = get_settings()
+    lock_token = try_acquire_run_lock(run_id, settings.redis_lock_timeout_seconds)
     try:
-        stale_timeout_seconds = int(os.getenv("STALE_RUN_TIMEOUT_SECONDS", "7200"))
-        stale_queued_timeout_seconds = int(
-            os.getenv("STALE_QUEUED_TIMEOUT_SECONDS", "900")
-        )
+        stale_timeout_seconds = settings.stale_run_timeout_seconds
+        stale_queued_timeout_seconds = settings.stale_queued_timeout_seconds
         _recover_stale_queued_runs(db, stale_after_seconds=stale_queued_timeout_seconds)
         _recover_stale_running_runs(db, stale_after_seconds=stale_timeout_seconds)
 
@@ -111,8 +132,11 @@ def execute_run_task(self, run_id: str) -> str:
             run.error_code = "E_INTERNAL"
             run.error_message_public = "The simulation failed unexpectedly. Please retry."
             run.error_retryable = True
+            run.error_id = str(uuid4())
             run.finished_at = datetime.now(timezone.utc)
             db.commit()
+            db.refresh(run)
+            refresh_run_cache(run)
             return run.status
         except Exception as exc:
             if not is_transient_exception(exc):
@@ -123,4 +147,5 @@ def execute_run_task(self, run_id: str) -> str:
             raise self.retry(exc=exc, countdown=delay_seconds, max_retries=max_retries) from exc
         return run.status
     finally:
+        release_run_lock(run_id, lock_token)
         db.close()
