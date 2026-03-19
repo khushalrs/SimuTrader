@@ -28,12 +28,19 @@ from app.models.backtests import BacktestRun
 logger = logging.getLogger(__name__)
 
 
-def claim_run(db: Session, run_id) -> BacktestRun | None:
+def claim_run(db: Session, run_id, task_id: str | None = None) -> BacktestRun | None:
     claimed_at = datetime.now(timezone.utc)
+    values: dict[str, Any] = {
+        "status": "RUNNING",
+        "started_at": claimed_at,
+        "finished_at": None,
+    }
+    if task_id:
+        values["execution_task_id"] = task_id
     result = db.execute(
         update(BacktestRun)
         .where(BacktestRun.run_id == run_id, BacktestRun.status == "QUEUED")
-        .values(status="RUNNING", started_at=claimed_at, finished_at=None)
+        .values(**values)
     )
     db.commit()
     if result.rowcount != 1:

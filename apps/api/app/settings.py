@@ -17,6 +17,8 @@ class Settings:
     backtest_exec_mode: str
     allow_sync_execution: bool
     backtest_idempotency_window_seconds: int
+    max_active_runs_per_guest: int
+    max_active_runs_per_user: int
     cors_origins: list[str]
 
     @property
@@ -39,6 +41,10 @@ class Settings:
             )
         if self.backtest_idempotency_window_seconds <= 0:
             raise RuntimeError("BACKTEST_IDEMPOTENCY_WINDOW_SECONDS must be > 0.")
+        if self.max_active_runs_per_guest <= 0:
+            raise RuntimeError("MAX_ACTIVE_RUNS_PER_GUEST must be > 0.")
+        if self.max_active_runs_per_user <= 0:
+            raise RuntimeError("MAX_ACTIVE_RUNS_PER_USER must be > 0.")
 
 
 @lru_cache(maxsize=1)
@@ -49,6 +55,8 @@ def get_settings() -> Settings:
     idempotency_window_seconds = int(
         os.getenv("BACKTEST_IDEMPOTENCY_WINDOW_SECONDS", "300").strip()
     )
+    max_active_runs_per_guest = int(os.getenv("MAX_ACTIVE_RUNS_PER_GUEST", "5").strip())
+    max_active_runs_per_user = int(os.getenv("MAX_ACTIVE_RUNS_PER_USER", "20").strip())
     origins_env = os.getenv(
         "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
     )
@@ -58,5 +66,7 @@ def get_settings() -> Settings:
         backtest_exec_mode=exec_mode,
         allow_sync_execution=allow_sync_execution,
         backtest_idempotency_window_seconds=idempotency_window_seconds,
+        max_active_runs_per_guest=max_active_runs_per_guest,
+        max_active_runs_per_user=max_active_runs_per_user,
         cors_origins=cors_origins,
     )

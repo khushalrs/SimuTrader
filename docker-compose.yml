@@ -37,7 +37,10 @@ services:
       context: ./apps/api
     env_file:
       - ./apps/api/.env
-    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=INFO"]
+    command:
+      - sh
+      - -lc
+      - celery -A app.worker.celery_app worker --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-2}
     volumes:
       - ./apps/api/app:/app/app
       - ./data:/app/data

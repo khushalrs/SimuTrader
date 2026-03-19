@@ -32,6 +32,9 @@ class BacktestRun(Base):
     error_message_public = Column(Text)
     error_retryable = Column(Boolean)
     error_id = Column(String)
+    actor_tier = Column(String, nullable=False, server_default=text("'guest'"))
+    actor_key = Column(String)
+    execution_task_id = Column(String)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     started_at = Column(DateTime(timezone=True))
     finished_at = Column(DateTime(timezone=True))
@@ -42,6 +45,8 @@ class BacktestRun(Base):
     __table_args__ = (
         Index("backtest_runs_status_idx", "status"),
         Index("backtest_runs_created_idx", "created_at"),
+        Index("backtest_runs_actor_status_idx", "actor_key", "status"),
+        Index("backtest_runs_execution_task_id_idx", "execution_task_id"),
     )
 
 

@@ -2,12 +2,14 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.backtest import claim_run, execute_run
 from app.db import get_db
 from app.models.backtests import BacktestRequestIdempotency, BacktestRun
+from app.security import ActorContext, ActorTier, get_actor_context
 from app.schemas.backtests import BacktestCreate, BacktestOut
 from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
@@ -57,6 +59,7 @@ def create_backtest(
     payload: BacktestCreate,
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    actor: ActorContext = Depends(get_actor_context),
     db: Session = Depends(get_db),
 ) -> BacktestOut:
     settings = get_settings()
@@ -69,6 +72,26 @@ def create_backtest(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+
+    max_active_runs = (
+        settings.max_active_runs_per_user
+        if actor.tier == ActorTier.USER
+        else settings.max_active_runs_per_guest
+    )
+    active_run_count = (
+        db.query(func.count(BacktestRun.run_id))
+        .filter(
+            BacktestRun.actor_key == actor.actor_key,
+            BacktestRun.status.in_(("QUEUED", "RUNNING")),
+        )
+        .scalar()
+        or 0
+    )
+    if active_run_count >= max_active_runs:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many active runs. Please wait for current runs to finish.",
+        )
 
     if clean_idempotency_key:
         # Allow key reuse after dedupe expiry.
@@ -91,6 +114,8 @@ def create_backtest(
         strategy_id=payload.strategy_id,
         name=payload.name,
         status="QUEUED",
+        actor_tier=actor.tier.value,
+        actor_key=actor.actor_key,
         config_snapshot=resolved_config,
         data_snapshot_id=payload.data_snapshot_id,
         seed=payload.seed,
@@ -126,7 +151,10 @@ def create_backtest(
     if settings.backtest_exec_mode == "async":
         from app.worker import execute_run_task
 
-        execute_run_task.delay(str(run.run_id))
+        task_result = execute_run_task.delay(str(run.run_id))
+        run.execution_task_id = task_result.id
+        db.commit()
+        db.refresh(run)
         response.status_code = status.HTTP_202_ACCEPTED
         return _to_backtest_out(run)
 
