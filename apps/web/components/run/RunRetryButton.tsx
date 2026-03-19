@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { RefreshCw } from "lucide-react"
@@ -13,12 +13,13 @@ interface RunRetryButtonProps {
 export function RunRetryButton({ config }: RunRetryButtonProps) {
     const router = useRouter()
     const [isRetrying, setIsRetrying] = useState(false)
+    const idempotencyKey = useRef(crypto.randomUUID())
 
     const handleRetry = async () => {
         if (!config) return
         setIsRetrying(true)
         try {
-            const newRunId = await createRunFromSnapshot(config)
+            const newRunId = await createRunFromSnapshot(config, idempotencyKey.current)
             router.push(`/runs/${newRunId}`)
         } catch (err) {
             console.error("Failed to retry run:", err)

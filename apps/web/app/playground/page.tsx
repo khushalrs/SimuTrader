@@ -7,7 +7,7 @@ import { TrendingUp, BarChart2, Zap, ArrowRight, Layers, Activity } from "lucide
 import Link from "next/link"
 
 import { presets, PresetConfig } from "@/config/presets"
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { createRunFromSnapshot } from "@/lib/api"
 import {
@@ -25,12 +25,16 @@ export default function PlaygroundPage() {
     const [error, setError] = useState<string | null>(null)
     const [viewConfig, setViewConfig] = useState<PresetConfig | null>(null)
     const [copied, setCopied] = useState(false)
+    const idempotencyKeyMap = useRef<Record<string, string>>({})
 
     const handleRunPreset = async (preset: PresetConfig) => {
         try {
             setError(null)
             setPendingRunId(preset.id)
-            const runId = await createRunFromSnapshot(preset.config_snapshot)
+            if (!idempotencyKeyMap.current[preset.id]) {
+                idempotencyKeyMap.current[preset.id] = crypto.randomUUID()
+            }
+            const runId = await createRunFromSnapshot(preset.config_snapshot, idempotencyKeyMap.current[preset.id])
             router.push(`/runs/${runId}`)
         } catch (err: any) {
             setError(err.message || "Failed to create run")

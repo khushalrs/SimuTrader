@@ -1,10 +1,5 @@
-import { RunHeader } from "@/components/run/RunHeader"
-import { KPIGrid } from "@/components/run/KPIGrid"
 import { RunDashboardClient } from "@/components/run/RunDashboardClient"
 import { getRun } from "@/lib/api"
-import { RunPoller } from "@/components/run/RunPoller"
-import { RunRetryButton } from "@/components/run/RunRetryButton"
-import { AlertCircle } from "lucide-react"
 
 export default async function RunDashboardPage({ params }: { params: { runId: string } }) {
     const runData = await getRun(params.runId);
@@ -24,45 +19,7 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
 
     return (
         <main className="container py-8 space-y-8">
-            <RunPoller status={runData.status} />
-
-            {runData.status === "FAILED" && (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-lg border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-                    <div className="flex items-start sm:items-center gap-3">
-                        <AlertCircle className="h-5 w-5 shrink-0 mt-0.5 sm:mt-0" />
-                        <div>
-                            <h3 className="font-semibold">Run Failed</h3>
-                            <p className="text-sm opacity-90">
-                                {runData.error_message_public || "The simulation failed unexpectedly. Please retry."}
-                            </p>
-                            {runData.error_code && (
-                                <p className="mt-1 text-xs opacity-80">
-                                    {runData.error_code}
-                                    {runData.error_id ? ` • Incident ${runData.error_id}` : ""}
-                                </p>
-                            )}
-                        </div>
-                    </div>
-                    <RunRetryButton config={runData.config_snapshot} />
-                </div>
-            )}
-
-            <RunHeader
-                runId={runData.id}
-                title={runData.title}
-                date={runData.date}
-                tags={runData.tags}
-                requestedStart={runData.requested_start_date}
-                requestedEnd={runData.requested_end_date}
-                effectiveStart={runData.effective_start_date}
-                effectiveEnd={runData.effective_end_date}
-                configSnapshot={runData.config_snapshot}
-                equity={runData.equity}
-            />
-
-            <KPIGrid metrics={runData.metrics} />
-
-            <RunDashboardClient runData={runData} />
+            <RunDashboardClient initialData={runData} />
         </main>
     )
 }

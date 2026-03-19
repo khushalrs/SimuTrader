@@ -3,7 +3,21 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency } from "@/lib/utils"
 import { useEffect, useState } from "react"
+import useSWR from "swr"
 import { RunPositionOut, getRunPositions } from "@/lib/api"
+
+export function useDebounce<T>(value: T, delay: number): T {
+    const [debouncedValue, setDebouncedValue] = useState<T>(value);
+    useEffect(() => {
+        const handler = setTimeout(() => {
+            setDebouncedValue(value);
+        }, delay);
+        return () => {
+            clearTimeout(handler);
+        };
+    }, [value, delay]);
+    return debouncedValue;
+}
 
 interface InspectorPanelProps {
     runId: string;
@@ -14,20 +28,13 @@ interface InspectorPanelProps {
 }
 
 export function InspectorPanel({ runId, status, date, equity, baseCurrency }: InspectorPanelProps) {
-    const [topHoldings, setTopHoldings] = useState<RunPositionOut[]>([])
-    const [isLoading, setIsLoading] = useState(true)
-
-    useEffect(() => {
-        setIsLoading(true)
-        getRunPositions(runId, date)
-            .then(data => {
-                // sort by market_value_base descending, take top 5
-                const sorted = [...data].sort((a, b) => b.market_value_base - a.market_value_base).slice(0, 5)
-                setTopHoldings(sorted)
-            })
-            .catch(err => console.error(err))
-            .finally(() => setIsLoading(false))
-    }, [runId, status, date])
+    const debouncedDate = useDebounce(date, 200);
+    const { data: topHoldings, isLoading } = useSWR(
+        status === "SUCCEEDED" ? `/runs/${runId}/positions?date=${debouncedDate}&limit=5` : null,
+        () => getRunPositions(runId, debouncedDate, 5),
+        { revalidateOnFocus: false }
+    );
+    const holdings = topHoldings || [];
 
     return (
         <Card className="col-span-1 h-full border-l-4 border-l-primary/20">
@@ -48,11 +55,11 @@ export function InspectorPanel({ runId, status, date, equity, baseCurrency }: In
                         </div>
                     </div>
 
-                    {(!isLoading && topHoldings.length > 0) && (
+                    {(!isLoading && holdings.length > 0) && (
                         <div className="space-y-2 pt-4 border-t">
                             <span className="text-xs text-muted-foreground block">Top Holdings</span>
                             <div className="space-y-2 text-sm">
-                                {topHoldings.map(pos => (
+                                {holdings.map(pos => (
                                     <div key={pos.symbol} className="flex justify-between items-center">
                                         <span className="font-medium">{pos.symbol}</span>
                                         <span className="text-muted-foreground">

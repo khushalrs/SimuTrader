@@ -12,7 +12,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { RunEquityPoint, RunPositionOut, getRunPositions } from "@/lib/api"
 import { formatCurrency } from "@/lib/utils"
-import { useEffect, useState } from "react"
+import useSWR from "swr"
 
 interface PortfolioTabProps {
     runId: string
@@ -22,16 +22,13 @@ interface PortfolioTabProps {
 }
 
 export function PortfolioTab({ runId, status, equity, baseCurrency }: PortfolioTabProps) {
-    const [positions, setPositions] = useState<RunPositionOut[]>([])
-    const [isLoading, setIsLoading] = useState(true)
-
-    useEffect(() => {
-        setIsLoading(true)
-        getRunPositions(runId)
-            .then(data => setPositions(data))
-            .catch(err => console.error(err))
-            .finally(() => setIsLoading(false))
-    }, [runId, status])
+    const isSucceeded = status === "SUCCEEDED";
+    const { data: positions, isLoading } = useSWR(
+        isSucceeded ? `/runs/${runId}/positions` : null,
+        () => getRunPositions(runId),
+        { revalidateOnFocus: false }
+    );
+    const posData = positions || [];
 
     if (!equity || equity.length === 0) {
         return <div className="p-4 text-center text-muted-foreground">No data available for portfolio analysis</div>
@@ -138,14 +135,14 @@ export function PortfolioTab({ runId, status, equity, baseCurrency }: PortfolioT
                                             Loading positions...
                                         </td>
                                     </tr>
-                                ) : positions.length === 0 ? (
+                                ) : posData.length === 0 ? (
                                     <tr>
                                         <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
                                             No open positions for this run/date.
                                         </td>
                                     </tr>
                                 ) : (
-                                    positions.map((pos) => (
+                                    posData.map((pos) => (
                                         <tr key={pos.symbol} className="border-b transition-colors hover:bg-muted/50">
                                             <td className="px-4 py-3 font-medium">{pos.symbol}</td>
                                             <td className="px-4 py-3 text-right">

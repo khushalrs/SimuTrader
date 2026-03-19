@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { createRun, buildValidConfig } from "@/lib/api"
@@ -9,12 +9,13 @@ export function ReviewStep({ config, prevStep }: any) {
     const router = useRouter()
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const idempotencyKey = useRef(crypto.randomUUID())
 
     const handleRun = async () => {
         try {
             setIsSubmitting(true)
             setError(null)
-            const runId = await createRun(config)
+            const runId = await createRun(config, idempotencyKey.current)
             router.push(`/runs/${runId}`)
         } catch (err: any) {
             console.error("Run error:", err)

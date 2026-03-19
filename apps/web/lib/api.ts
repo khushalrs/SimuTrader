@@ -223,13 +223,8 @@ function mapEquity(equity: RunDailyEquityOut[] | null): RunEquityPoint[] | undef
 }
 
 export async function getRun(runId: string): Promise<RunData | null> {
-
     try {
-        const [runRes, metricsRes, equityRes] = await Promise.all([
-            fetch(`${API_BASE_URL}/runs/${runId}`, { cache: "no-store" }),
-            fetch(`${API_BASE_URL}/runs/${runId}/metrics`, { cache: "no-store" }),
-            fetch(`${API_BASE_URL}/runs/${runId}/equity`, { cache: "no-store" }),
-        ])
+        const runRes = await fetch(`${API_BASE_URL}/runs/${runId}`, { cache: "no-store" })
 
         if (!runRes.ok) {
             console.error(`Failed to fetch run ${runId}: ${runRes.status} ${runRes.statusText}`)
@@ -237,8 +232,6 @@ export async function getRun(runId: string): Promise<RunData | null> {
         }
 
         const run: BacktestOut = await runRes.json()
-        const metrics: RunMetricOut | null = metricsRes.ok ? await metricsRes.json() : null
-        const equity: RunDailyEquityOut[] | null = equityRes.ok ? await equityRes.json() : null
 
         const title = run.name?.trim() || `Run ${run.run_id.slice(0, 8)}`
         const dateSource = run.finished_at || run.started_at || run.created_at
@@ -253,43 +246,52 @@ export async function getRun(runId: string): Promise<RunData | null> {
         const requested_start_date = configSnapshot.backtest?.start_date;
         const requested_end_date = configSnapshot.backtest?.end_date;
 
-        let effective_start_date: string | undefined = undefined;
-        let effective_end_date: string | undefined = undefined;
-
-        if (equity && equity.length > 0) {
-            effective_start_date = equity[0].date;
-            effective_end_date = equity[equity.length - 1].date;
-        }
-
         return {
             id: run.run_id,
             title,
             date,
             tags,
-            metrics: mapMetrics(metrics),
-            equity: mapEquity(equity),
-            costs: metrics ? {
-                fee_drag: metrics.fee_drag,
-                tax_drag: metrics.tax_drag,
-                borrow_drag: metrics.borrow_drag,
-                margin_interest_drag: metrics.margin_interest_drag,
-            } : undefined,
+            metrics: mapMetrics(null),
+            equity: undefined,
+            costs: undefined,
             config_snapshot: run.config_snapshot,
             requested_start_date,
             requested_end_date,
-            effective_start_date,
-            effective_end_date,
             baseCurrency: configSnapshot.base_currency || "USD",
             status: run.status,
             error_code: run.error_code,
             error_message_public: run.error_message_public,
             error_retryable: run.error_retryable,
             error_id: run.error_id,
+            effective_start_date: undefined, // Let client fetch equity to determine this if needed
+            effective_end_date: undefined,
         }
     } catch (error) {
         console.error("Error fetching run:", error)
         return null
     }
+}
+
+export async function getRunMetrics(runId: string) {
+    const res = await fetch(`${API_BASE_URL}/runs/${runId}/metrics`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data: RunMetricOut = await res.json();
+    return {
+        metrics: mapMetrics(data),
+        costs: {
+            fee_drag: data.fee_drag,
+            tax_drag: data.tax_drag,
+            borrow_drag: data.borrow_drag,
+            margin_interest_drag: data.margin_interest_drag,
+        }
+    };
+}
+
+export async function getRunEquity(runId: string) {
+    const res = await fetch(`${API_BASE_URL}/runs/${runId}/equity`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data: RunDailyEquityOut[] = await res.json();
+    return mapEquity(data);
 }
 
 export function buildValidConfig(config: any) {
@@ -347,7 +349,7 @@ export function buildValidConfig(config: any) {
     };
 }
 
-export async function createRun(config: any): Promise<string> {
+export async function createRun(config: any, client_idempotency_key?: string): Promise<string> {
     const validConfig = buildValidConfig(config);
 
     const payload = {
@@ -356,7 +358,7 @@ export async function createRun(config: any): Promise<string> {
         data_snapshot_id: "default_snapshot_2026",
         seed: 42
     };
-    const idempotencyKey = buildIdempotencyKey("create-run", payload)
+    const idempotencyKey = client_idempotency_key || buildIdempotencyKey("create-run", payload)
 
     const res = await fetch(`${API_BASE_URL}/backtests`, {
         method: 'POST',
@@ -376,14 +378,14 @@ export async function createRun(config: any): Promise<string> {
     return data.run_id;
 }
 
-export async function createRunFromSnapshot(validConfig: any): Promise<string> {
+export async function createRunFromSnapshot(validConfig: any, client_idempotency_key?: string): Promise<string> {
     const payload = {
         name: "Retried Strategy Run",
         config_snapshot: validConfig,
         data_snapshot_id: "default_snapshot_2026",
         seed: 42
     };
-    const idempotencyKey = buildIdempotencyKey("retry-run", payload)
+    const idempotencyKey = client_idempotency_key || buildIdempotencyKey("retry-run", payload)
 
     const res = await fetch(`${API_BASE_URL}/backtests`, {
         method: 'POST',
@@ -403,11 +405,14 @@ export async function createRunFromSnapshot(validConfig: any): Promise<string> {
     return data.run_id;
 }
 
-export async function getRunPositions(runId: string, date?: string): Promise<RunPositionOut[]> {
+export async function getRunPositions(runId: string, date?: string, limit?: number): Promise<RunPositionOut[]> {
     try {
         const url = new URL(`${API_BASE_URL}/runs/${runId}/positions`)
         if (date) {
             url.searchParams.append("date", date)
+        }
+        if (limit) {
+            url.searchParams.append("limit", limit.toString())
         }
         const res = await fetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
