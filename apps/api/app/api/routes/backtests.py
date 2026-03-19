@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.backtest import claim_run, execute_run
 from app.db import get_db
 from app.models.backtests import BacktestRequestIdempotency, BacktestRun
-from app.security import ActorContext, ActorTier, get_actor_context
+from app.security import ActorContext, ActorTier, get_current_actor
 from app.schemas.backtests import BacktestCreate, BacktestOut
 from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
@@ -38,12 +38,14 @@ def _to_backtest_out(run: BacktestRun) -> BacktestOut:
 
 def _find_idempotent_run(
     db: Session,
+    actor_key: str,
     idempotency_key: str,
     now_utc: datetime,
 ) -> BacktestRun | None:
     row = (
         db.query(BacktestRequestIdempotency)
         .filter(
+            BacktestRequestIdempotency.actor_key == actor_key,
             BacktestRequestIdempotency.idempotency_key == idempotency_key,
             BacktestRequestIdempotency.expires_at > now_utc,
         )
@@ -59,7 +61,7 @@ def create_backtest(
     payload: BacktestCreate,
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    actor: ActorContext = Depends(get_actor_context),
+    actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> BacktestOut:
     settings = get_settings()
@@ -72,6 +74,36 @@ def create_backtest(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+
+    if clean_idempotency_key:
+        # Allow key reuse after dedupe expiry.
+        (
+            db.query(BacktestRequestIdempotency)
+            .filter(
+                BacktestRequestIdempotency.actor_key == actor.actor_key,
+                BacktestRequestIdempotency.idempotency_key == clean_idempotency_key,
+                BacktestRequestIdempotency.expires_at <= now_utc,
+            )
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+
+        existing_run = _find_idempotent_run(
+            db, actor.actor_key, clean_idempotency_key, now_utc
+        )
+        if existing_run:
+            if existing_run.status in {"QUEUED", "RUNNING"}:
+                response.status_code = status.HTTP_202_ACCEPTED
+                return _to_backtest_out(existing_run)
+            (
+                db.query(BacktestRequestIdempotency)
+                .filter(
+                    BacktestRequestIdempotency.actor_key == actor.actor_key,
+                    BacktestRequestIdempotency.idempotency_key == clean_idempotency_key,
+                )
+                .delete(synchronize_session=False)
+            )
+            db.commit()
 
     max_active_runs = (
         settings.max_active_runs_per_user
@@ -93,23 +125,6 @@ def create_backtest(
             detail="Too many active runs. Please wait for current runs to finish.",
         )
 
-    if clean_idempotency_key:
-        # Allow key reuse after dedupe expiry.
-        (
-            db.query(BacktestRequestIdempotency)
-            .filter(
-                BacktestRequestIdempotency.idempotency_key == clean_idempotency_key,
-                BacktestRequestIdempotency.expires_at <= now_utc,
-            )
-            .delete(synchronize_session=False)
-        )
-        db.commit()
-
-        existing_run = _find_idempotent_run(db, clean_idempotency_key, now_utc)
-        if existing_run:
-            response.status_code = status.HTTP_202_ACCEPTED
-            return _to_backtest_out(existing_run)
-
     run = BacktestRun(
         strategy_id=payload.strategy_id,
         name=payload.name,
@@ -129,6 +144,7 @@ def create_backtest(
         )
         db.add(
             BacktestRequestIdempotency(
+                actor_key=actor.actor_key,
                 idempotency_key=clean_idempotency_key,
                 run_id=run.run_id,
                 expires_at=dedupe_expires_at,
@@ -140,10 +156,13 @@ def create_backtest(
     except IntegrityError:
         db.rollback()
         if clean_idempotency_key:
-            existing_run = _find_idempotent_run(db, clean_idempotency_key, now_utc)
+            existing_run = _find_idempotent_run(
+                db, actor.actor_key, clean_idempotency_key, now_utc
+            )
             if existing_run:
-                response.status_code = status.HTTP_202_ACCEPTED
-                return _to_backtest_out(existing_run)
+                if existing_run.status in {"QUEUED", "RUNNING"}:
+                    response.status_code = status.HTTP_202_ACCEPTED
+                    return _to_backtest_out(existing_run)
         raise
 
     db.refresh(run)
@@ -177,8 +196,16 @@ def create_backtest(
 
 
 @router.get("/{run_id}", response_model=BacktestOut)
-def get_backtest(run_id: UUID, db: Session = Depends(get_db)) -> BacktestOut:
-    run = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
+def get_backtest(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> BacktestOut:
+    run = (
+        db.query(BacktestRun)
+        .filter(BacktestRun.run_id == run_id, BacktestRun.actor_key == actor.actor_key)
+        .first()
+    )
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return _to_backtest_out(run)

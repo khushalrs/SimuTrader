@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from typing import Any
 
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,8 @@ from app.backtest.momentum import run_momentum
 from app.models.backtests import BacktestRun
 
 logger = logging.getLogger(__name__)
+
+TRANSIENT_EXCEPTIONS = (OperationalError, DBAPIError, OSError, ConnectionError, TimeoutError)
 
 
 def claim_run(db: Session, run_id, task_id: str | None = None) -> BacktestRun | None:
@@ -92,6 +95,10 @@ def _map_exception(exc: Exception) -> BacktestError:
     )
 
 
+def is_transient_exception(exc: Exception) -> bool:
+    return isinstance(exc, TRANSIENT_EXCEPTIONS)
+
+
 def execute_run(db: Session, run: BacktestRun) -> BacktestRun:
     config_snapshot = run.config_snapshot or {}
     strategy = "BUY_AND_HOLD"
@@ -120,6 +127,8 @@ def execute_run(db: Session, run: BacktestRun) -> BacktestRun:
         run.error_retryable = None
         run.error_id = None
     except Exception as exc:
+        if is_transient_exception(exc):
+            raise
         mapped_error = _map_exception(exc)
         error_id = str(uuid4())
         logger.exception(

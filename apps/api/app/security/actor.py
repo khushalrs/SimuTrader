@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from uuid import uuid4
 
-from fastapi import Request
+from fastapi import Request, Response
 
 
 class ActorTier(str, Enum):
@@ -17,7 +18,27 @@ class ActorContext:
     actor_key: str
 
 
-def get_actor_context(request: Request) -> ActorContext:
-    # Auth is not wired yet: default every request to guest.
-    client_host = request.client.host if request.client else "unknown"
-    return ActorContext(tier=ActorTier.GUEST, actor_key=f"guest:{client_host}")
+GUEST_COOKIE_NAME = "simutrader_guest_id"
+
+
+def get_current_actor(request: Request, response: Response) -> ActorContext:
+    # Auth-ready seam: once auth exists, map authenticated identity here.
+    user_id = request.headers.get("X-User-Id")
+    if user_id:
+        user_key = user_id.strip()
+        if user_key:
+            return ActorContext(tier=ActorTier.USER, actor_key=f"user:{user_key}")
+
+    guest_id = request.cookies.get(GUEST_COOKIE_NAME)
+    if not guest_id:
+        guest_id = uuid4().hex
+        response.set_cookie(
+            key=GUEST_COOKIE_NAME,
+            value=guest_id,
+            max_age=60 * 60 * 24 * 365,
+            httponly=True,
+            secure=False,
+            samesite="lax",
+            path="/",
+        )
+    return ActorContext(tier=ActorTier.GUEST, actor_key=f"guest:{guest_id}")

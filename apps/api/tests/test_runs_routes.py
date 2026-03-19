@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.routes.runs import get_run_fills, get_run_positions
+from app.security import ActorContext, ActorTier
 from app.models.backtests import BacktestRun, RunDailyEquity, RunFill, RunOrder, RunPosition
 
 
@@ -65,6 +66,13 @@ class _FakeDB:
             entity = entities[0]
             if entity is BacktestRun.run_id:
                 return _FakeQuery(first_value=(uuid4(),) if self.run_exists else None)
+            if entity is BacktestRun:
+                run_obj = (
+                    SimpleNamespace(run_id=uuid4(), actor_key="guest:test")
+                    if self.run_exists
+                    else None
+                )
+                return _FakeQuery(first_value=run_obj)
             if entity is RunPosition:
                 return _FakeQuery(all_values=self.positions)
             if entity is RunFill:
@@ -81,7 +89,8 @@ class _FakeDB:
 
 def test_get_run_positions_returns_empty_when_no_positions_exist():
     db = _FakeDB(run_exists=True, latest_position_date=None)
-    result = get_run_positions(run_id=uuid4(), db=db)
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+    result = get_run_positions(run_id=uuid4(), actor=actor, db=db)
     assert result == []
 
 
@@ -102,7 +111,8 @@ def test_get_run_positions_defaults_to_latest_date_and_computes_weight():
         ],
         equity_base=1000.0,
     )
-    result = get_run_positions(run_id=uuid4(), db=db)
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+    result = get_run_positions(run_id=uuid4(), actor=actor, db=db)
     assert len(result) == 1
     assert result[0].date == latest
     assert result[0].weight == pytest.approx(0.5)
@@ -110,15 +120,17 @@ def test_get_run_positions_defaults_to_latest_date_and_computes_weight():
 
 def test_get_run_positions_returns_404_for_missing_run():
     db = _FakeDB(run_exists=False)
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
     with pytest.raises(HTTPException) as exc:
-        get_run_positions(run_id=uuid4(), db=db)
+        get_run_positions(run_id=uuid4(), actor=actor, db=db)
     assert exc.value.status_code == 404
 
 
 def test_get_run_fills_returns_404_for_missing_run():
     db = _FakeDB(run_exists=False)
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
     with pytest.raises(HTTPException) as exc:
-        get_run_fills(run_id=uuid4(), db=db)
+        get_run_fills(run_id=uuid4(), actor=actor, db=db)
     assert exc.value.status_code == 404
 
 
@@ -140,7 +152,8 @@ def test_get_run_fills_maps_side_from_orders():
         ],
         order_sides=[(order_id, "BUY")],
     )
-    result = get_run_fills(run_id=uuid4(), db=db)
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+    result = get_run_fills(run_id=uuid4(), actor=actor, db=db)
     assert len(result) == 1
     assert result[0].side == "BUY"
     assert result[0].price == 150.0

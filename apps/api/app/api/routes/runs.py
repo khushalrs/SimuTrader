@@ -14,6 +14,7 @@ from app.models.backtests import (
     RunOrder,
     RunPosition,
 )
+from app.security import ActorContext, get_current_actor
 from app.schemas.backtests import (
     BacktestOut,
     RunCostsSummaryOut,
@@ -46,11 +47,24 @@ def _to_backtest_out(run: BacktestRun) -> BacktestOut:
     )
 
 
-@router.get("/{run_id}", response_model=BacktestOut)
-def get_run(run_id: UUID, db: Session = Depends(get_db)) -> BacktestOut:
-    run = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
+def _get_actor_run(run_id: UUID, actor: ActorContext, db: Session) -> BacktestRun:
+    run = (
+        db.query(BacktestRun)
+        .filter(BacktestRun.run_id == run_id, BacktestRun.actor_key == actor.actor_key)
+        .first()
+    )
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return run
+
+
+@router.get("/{run_id}", response_model=BacktestOut)
+def get_run(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> BacktestOut:
+    run = _get_actor_run(run_id, actor, db)
     return _to_backtest_out(run)
 
 
@@ -59,11 +73,10 @@ def get_run_equity(
     run_id: UUID,
     start_date: date | None = None,
     end_date: date | None = None,
+    actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> list[RunDailyEquityOut]:
-    run = db.query(BacktestRun.run_id).filter(BacktestRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    _get_actor_run(run_id, actor, db)
     if start_date and end_date and end_date < start_date:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -85,10 +98,12 @@ def get_run_equity(
 
 
 @router.get("/{run_id}/metrics", response_model=RunMetricOut)
-def get_run_metrics(run_id: UUID, db: Session = Depends(get_db)) -> RunMetricOut:
-    run = db.query(BacktestRun.run_id).filter(BacktestRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+def get_run_metrics(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> RunMetricOut:
+    _get_actor_run(run_id, actor, db)
     metrics = db.query(RunMetric).filter(RunMetric.run_id == run_id).first()
     if not metrics:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Metrics not found")
@@ -100,11 +115,10 @@ def get_run_positions(
     run_id: UUID,
     date_value: date | None = Query(default=None, alias="date"),
     limit: int = 50,
+    actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> list[RunPositionOut]:
-    run = db.query(BacktestRun.run_id).filter(BacktestRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    _get_actor_run(run_id, actor, db)
     if limit <= 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -162,11 +176,10 @@ def get_run_fills(
     run_id: UUID,
     start: date | None = None,
     end: date | None = None,
+    actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> list[RunFillOut]:
-    run = db.query(BacktestRun.run_id).filter(BacktestRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    _get_actor_run(run_id, actor, db)
     if start and end and end < start:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -213,11 +226,10 @@ def get_run_costs_summary(
     run_id: UUID,
     start: date | None = None,
     end: date | None = None,
+    actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> RunCostsSummaryOut:
-    run = db.query(BacktestRun.run_id).filter(BacktestRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    _get_actor_run(run_id, actor, db)
     if start and end and end < start:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
