@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.data.duckdb import get_duckdb_conn
+from app.backtest.errors import DataUnavailableError, NoTradingDaysError
 from app.models.backtests import (
     BacktestRun,
     RunDailyEquity,
@@ -74,7 +75,7 @@ def _ensure_calendar_views(con) -> None:
         con.execute("select 1 from global_calendar limit 1")
         con.execute("select 1 from global_trading_days limit 1")
     except Exception as exc:
-        raise RuntimeError(
+        raise DataUnavailableError(
             "DuckDB calendar views missing. Run scripts/create_calendar_views.py first."
         ) from exc
 
@@ -121,7 +122,7 @@ def _fetch_symbol_currencies(con, symbols: list[str]) -> Dict[str, str]:
     mapping = {symbol: currency for symbol, currency in rows}
     missing = [symbol for symbol in symbols if symbol not in mapping]
     if missing:
-        raise ValueError(f"Missing currency metadata for symbols: {missing}")
+        raise DataUnavailableError(f"Missing currency metadata for symbols: {missing}")
     return mapping
 
 
@@ -306,8 +307,8 @@ def run_engine(
         con.close()
 
     if not rows:
-        raise ValueError(
-            "E_NO_TRADING_DAYS_IN_RANGE: No trading days found between "
+        raise NoTradingDaysError(
+            "No trading days found between "
             f"{start_date} and {end_date} for the selected calendars."
         )
 
@@ -418,7 +419,7 @@ def run_engine(
             if is_open:
                 if price is None:
                     if policy == "FAIL":
-                        raise ValueError(
+                        raise DataUnavailableError(
                             f"Missing bar for {symbol} on {day}. "
                             "Set data_policy.missing_bar=FORWARD_FILL to allow forward fill."
                         )
@@ -426,7 +427,7 @@ def run_engine(
                         # Bootstrap start-of-range missing bars from the next observed in-range price.
                         bootstrap_price = first_observed_price.get(symbol)
                         if bootstrap_price is None:
-                            raise ValueError(
+                            raise DataUnavailableError(
                                 f"Missing bar for {symbol} on {day} with no prior value to forward-fill."
                             )
                         price = bootstrap_price

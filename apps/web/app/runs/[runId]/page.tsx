@@ -32,7 +32,15 @@ export default async function RunDashboardPage({ params }: { params: { runId: st
                         <AlertCircle className="h-5 w-5 shrink-0 mt-0.5 sm:mt-0" />
                         <div>
                             <h3 className="font-semibold">Run Failed</h3>
-                            <p className="text-sm opacity-90">{runData.error || "An unknown error occurred during the backtest execution."}</p>
+                            <p className="text-sm opacity-90">
+                                {runData.error_message_public || "The simulation failed unexpectedly. Please retry."}
+                            </p>
+                            {runData.error_code && (
+                                <p className="mt-1 text-xs opacity-80">
+                                    {runData.error_code}
+                                    {runData.error_id ? ` • Incident ${runData.error_id}` : ""}
+                                </p>
+                            )}
                         </div>
                     </div>
                     <RunRetryButton config={runData.config_snapshot} />

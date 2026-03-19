@@ -22,7 +22,10 @@ class BacktestOut(BaseModel):
     strategy_id: Optional[UUID] = None
     name: Optional[str] = None
     status: str
-    error: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message_public: Optional[str] = None
+    error_retryable: Optional[bool] = None
+    error_id: Optional[str] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None

@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -27,6 +28,10 @@ class BacktestRun(Base):
     name = Column(String)
     status = Column(String, nullable=False)
     error = Column(Text)
+    error_code = Column(String)
+    error_message_public = Column(Text)
+    error_retryable = Column(Boolean)
+    error_id = Column(String)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     started_at = Column(DateTime(timezone=True))
     finished_at = Column(DateTime(timezone=True))

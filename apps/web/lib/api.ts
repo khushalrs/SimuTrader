@@ -47,14 +47,20 @@ export interface RunData {
     effective_end_date?: string
     baseCurrency?: string
     status?: string
-    error?: string | null
+    error_code?: string | null
+    error_message_public?: string | null
+    error_retryable?: boolean | null
+    error_id?: string | null
 }
 
 interface BacktestOut {
     run_id: string
     name?: string | null
     status: string
-    error?: string | null
+    error_code?: string | null
+    error_message_public?: string | null
+    error_retryable?: boolean | null
+    error_id?: string | null
     created_at: string
     started_at?: string | null
     finished_at?: string | null
@@ -259,7 +265,10 @@ export async function getRun(runId: string): Promise<RunData | null> {
             effective_end_date,
             baseCurrency: configSnapshot.base_currency || "USD",
             status: run.status,
-            error: run.error,
+            error_code: run.error_code,
+            error_message_public: run.error_message_public,
+            error_retryable: run.error_retryable,
+            error_id: run.error_id,
         }
     } catch (error) {
         console.error("Error fetching run:", error)

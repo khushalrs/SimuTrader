@@ -450,7 +450,14 @@ def test_buy_and_hold_missing_bars_fail_by_default(tmp_path, monkeypatch):
     execute_run(db, run)
 
     assert run.status == "FAILED"
-    assert run.error and "Missing bar" in run.error
+    assert run.error is None
+    assert run.error_code == "E_DATA_UNAVAILABLE"
+    assert (
+        run.error_message_public
+        == "Required market data was unavailable for this run."
+    )
+    assert run.error_retryable is True
+    assert run.error_id
 
 
 def test_buy_and_hold_weekend_boundary_records_effective_dates(tmp_path, monkeypatch):
@@ -534,7 +541,14 @@ def test_buy_and_hold_no_trading_days_in_range_returns_explicit_error(tmp_path, 
     execute_run(db, run)
 
     assert run.status == "FAILED"
-    assert run.error and run.error.startswith("E_NO_TRADING_DAYS_IN_RANGE:")
+    assert run.error is None
+    assert run.error_code == "E_NO_TRADING_DAYS"
+    assert (
+        run.error_message_public
+        == "No trading days were found in the selected range."
+    )
+    assert run.error_retryable is False
+    assert run.error_id
 
 
 def test_fixed_weight_rebalance_daily(tmp_path, monkeypatch):

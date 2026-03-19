@@ -26,12 +26,32 @@ from app.schemas.backtests import (
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
+def _to_backtest_out(run: BacktestRun) -> BacktestOut:
+    # Explicitly map only safe/public run fields.
+    return BacktestOut(
+        run_id=run.run_id,
+        strategy_id=run.strategy_id,
+        name=run.name,
+        status=run.status,
+        error_code=run.error_code,
+        error_message_public=run.error_message_public,
+        error_retryable=run.error_retryable,
+        error_id=run.error_id,
+        created_at=run.created_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        config_snapshot=run.config_snapshot,
+        data_snapshot_id=run.data_snapshot_id,
+        seed=run.seed,
+    )
+
+
 @router.get("/{run_id}", response_model=BacktestOut)
 def get_run(run_id: UUID, db: Session = Depends(get_db)) -> BacktestOut:
     run = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    return run
+    return _to_backtest_out(run)
 
 
 @router.get("/{run_id}/equity", response_model=list[RunDailyEquityOut])
