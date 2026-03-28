@@ -9,13 +9,16 @@ import { CostsTab } from "@/components/run/CostsTab"
 import { PortfolioTab } from "@/components/run/PortfolioTab"
 import { FillsTab } from "@/components/run/FillsTab"
 import { ConfigTab } from "@/components/run/ConfigTab"
+import { InspectorPanel } from "@/components/run/InspectorPanel"
+import { RunHeader } from "@/components/run/RunHeader"
+import { KPIGrid } from "@/components/run/KPIGrid"
 import { RunRetryButton } from "@/components/run/RunRetryButton"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AlertCircle, Loader2 } from "lucide-react"
 import { RunData, getRun, getRunMetrics, getRunEquity, getRunStatus } from "@/lib/api"
 
 export function RunDashboardClient({ runId }: { runId: string }) {
-    const { data: statusData } = useSWR(
+    const { data: statusData, isLoading: isStatusLoading } = useSWR(
         runId ? `/runs/${runId}/status` : null,
         () => getRunStatus(runId),
         {
@@ -28,7 +31,8 @@ export function RunDashboardClient({ runId }: { runId: string }) {
         }
     );
 
-    const isPending = !statusData || statusData.status === "QUEUED" || statusData.status === "RUNNING";
+    const isNotFound = statusData === null && !isStatusLoading;
+    const isPending = isStatusLoading || statusData?.status === "QUEUED" || statusData?.status === "RUNNING";
     const status = statusData?.status || "QUEUED";
     const isSucceeded = status === "SUCCEEDED";
     const isFailed = status === "FAILED";
@@ -80,6 +84,16 @@ export function RunDashboardClient({ runId }: { runId: string }) {
         if (code === "NO_TRADING_DAYS") return "No trading days were found in the selected range.";
         return runData.error_message_public || "The simulation failed unexpectedly. Please retry.";
     };
+
+    if (isNotFound) {
+        return (
+            <div className="text-center py-12 animate-in fade-in duration-500">
+                <h1 className="text-2xl font-bold">Run Not Found</h1>
+                <p className="text-muted-foreground mt-2">Could not fetch data for run: {runId}</p>
+                <p className="text-xs text-muted-foreground mt-2">The simulation may have crashed or was purged by the backend engine.</p>
+            </div>
+        )
+    }
 
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
