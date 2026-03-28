@@ -9,15 +9,18 @@ import { CostsTab } from "@/components/run/CostsTab"
 import { PortfolioTab } from "@/components/run/PortfolioTab"
 import { FillsTab } from "@/components/run/FillsTab"
 import { ConfigTab } from "@/components/run/ConfigTab"
+import { InspectorPanel } from "@/components/run/InspectorPanel"
+import { RunHeader } from "@/components/run/RunHeader"
+import { KPIGrid } from "@/components/run/KPIGrid"
 import { RunRetryButton } from "@/components/run/RunRetryButton"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AlertCircle, Loader2 } from "lucide-react"
 import { RunData, getRun, getRunMetrics, getRunEquity, getRunStatus } from "@/lib/api"
 
 export function RunDashboardClient({ runId }: { runId: string }) {
-    const { data: runDataRaw, isLoading } = useSWR(
-        runId ? `/runs/${runId}` : null,
-        () => getRun(runId),
+    const { data: statusData, isLoading: isStatusLoading } = useSWR(
+        runId ? `/runs/${runId}/status` : null,
+        () => getRunStatus(runId),
         {
             refreshInterval: (data) => {
                 if (!data) return 1000;
@@ -28,21 +31,11 @@ export function RunDashboardClient({ runId }: { runId: string }) {
         }
     );
 
-    if (isLoading) {
-        return (
-            <div className="flex items-center gap-2 p-4 rounded-lg border bg-muted/30">
-                <Loader2 className="w-5 h-5 animate-spin" />
-                <span>Loading run...</span>
-            </div>
-        );
-    }
-    if (!runDataRaw) {
-        return (
-            <div className="p-4 rounded-lg border border-destructive/20 bg-destructive/10 text-destructive">
-                Run not found for this session. If this run was created in another browser/session, open it there.
-            </div>
-        )
-    }
+    const isNotFound = statusData === null && !isStatusLoading;
+    const isPending = isStatusLoading || statusData?.status === "QUEUED" || statusData?.status === "RUNNING";
+    const status = statusData?.status || "QUEUED";
+    const isSucceeded = status === "SUCCEEDED";
+    const isFailed = status === "FAILED";
 
     const runDataSummary = runDataRaw;
     const isSucceeded = runDataSummary.status === "SUCCEEDED";
@@ -88,6 +81,16 @@ export function RunDashboardClient({ runId }: { runId: string }) {
         if (code === "NO_TRADING_DAYS") return "No trading days were found in the selected range.";
         return runData.error_message_public || "The simulation failed unexpectedly. Please retry.";
     };
+
+    if (isNotFound) {
+        return (
+            <div className="text-center py-12 animate-in fade-in duration-500">
+                <h1 className="text-2xl font-bold">Run Not Found</h1>
+                <p className="text-muted-foreground mt-2">Could not fetch data for run: {runId}</p>
+                <p className="text-xs text-muted-foreground mt-2">The simulation may have crashed or was purged by the backend engine.</p>
+            </div>
+        )
+    }
 
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
