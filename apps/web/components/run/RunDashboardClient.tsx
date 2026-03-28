@@ -15,12 +15,11 @@ import { RunRetryButton } from "@/components/run/RunRetryButton"
 import { AlertCircle, Loader2 } from "lucide-react"
 import { RunData, getRun, getRunMetrics, getRunEquity } from "@/lib/api"
 
-export function RunDashboardClient({ initialData }: { initialData: RunData }) {
-    const { data: runDataRaw } = useSWR(
-        initialData.id ? `/runs/${initialData.id}` : null,
-        () => getRun(initialData.id),
+export function RunDashboardClient({ runId }: { runId: string }) {
+    const { data: runDataRaw, isLoading } = useSWR(
+        runId ? `/runs/${runId}` : null,
+        () => getRun(runId),
         {
-            fallbackData: initialData,
             refreshInterval: (data) => {
                 if (data?.status === "QUEUED" || data?.status === "RUNNING") return 1000;
                 return 0;
@@ -28,18 +27,34 @@ export function RunDashboardClient({ initialData }: { initialData: RunData }) {
         }
     );
 
-    const runDataSummary = runDataRaw || initialData;
+    if (isLoading) {
+        return (
+            <div className="flex items-center gap-2 p-4 rounded-lg border bg-muted/30">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>Loading run...</span>
+            </div>
+        );
+    }
+    if (!runDataRaw) {
+        return (
+            <div className="p-4 rounded-lg border border-destructive/20 bg-destructive/10 text-destructive">
+                Run not found for this session. If this run was created in another browser/session, open it there.
+            </div>
+        )
+    }
+
+    const runDataSummary = runDataRaw;
     const isSucceeded = runDataSummary.status === "SUCCEEDED";
 
     const { data: metricsData } = useSWR(
-        isSucceeded ? `/runs/${initialData.id}/metrics` : null,
-        () => getRunMetrics(initialData.id),
+        isSucceeded ? `/runs/${runId}/metrics` : null,
+        () => getRunMetrics(runId),
         { revalidateOnFocus: false }
     );
 
     const { data: equityDataList } = useSWR(
-        isSucceeded ? `/runs/${initialData.id}/equity` : null,
-        () => getRunEquity(initialData.id),
+        isSucceeded ? `/runs/${runId}/equity` : null,
+        () => getRunEquity(runId),
         { revalidateOnFocus: false }
     );
 

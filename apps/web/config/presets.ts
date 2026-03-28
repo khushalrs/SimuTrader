@@ -72,7 +72,7 @@ export const presets: PresetConfig[] = [
             strategy: "FIXED_WEIGHT_REBALANCE",
             strategy_params: {
                 rebalance_frequency: "monthly",
-                weights: {
+                target_weights: {
                     "RELIANCE": 0.2,
                     "TCS": 0.2,
                     "HDFCBANK": 0.2,
@@ -178,8 +178,8 @@ export const presets: PresetConfig[] = [
             version: 1,
             strategy: "MEAN_REVERSION",
             strategy_params: {
-                entry_z_score: -2.0,
-                exit_z_score: 0.0,
+                entry_threshold: 2.0,
+                exit_threshold: 0.5,
                 lookback_days: 20
             },
             base_currency: "USD",
