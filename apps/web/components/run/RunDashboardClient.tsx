@@ -15,9 +15,9 @@ import { AlertCircle, Loader2 } from "lucide-react"
 import { RunData, getRun, getRunMetrics, getRunEquity, getRunStatus } from "@/lib/api"
 
 export function RunDashboardClient({ runId }: { runId: string }) {
-    const { data: statusData } = useSWR(
-        runId ? `/runs/${runId}/status` : null,
-        () => getRunStatus(runId),
+    const { data: runDataRaw, isLoading } = useSWR(
+        runId ? `/runs/${runId}` : null,
+        () => getRun(runId),
         {
             refreshInterval: (data) => {
                 if (!data) return 1000;
@@ -28,27 +28,35 @@ export function RunDashboardClient({ runId }: { runId: string }) {
         }
     );
 
-    const isPending = !statusData || statusData.status === "QUEUED" || statusData.status === "RUNNING";
-    const status = statusData?.status || "QUEUED";
-    const isSucceeded = status === "SUCCEEDED";
-    const isFailed = status === "FAILED";
+    if (isLoading) {
+        return (
+            <div className="flex items-center gap-2 p-4 rounded-lg border bg-muted/30">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>Loading run...</span>
+            </div>
+        );
+    }
+    if (!runDataRaw) {
+        return (
+            <div className="p-4 rounded-lg border border-destructive/20 bg-destructive/10 text-destructive">
+                Run not found for this session. If this run was created in another browser/session, open it there.
+            </div>
+        )
+    }
 
-    const { data: runSummaryData } = useSWR(
-        (isSucceeded || isFailed) ? `/runs/${runId}` : null,
-        () => getRun(runId),
-        { revalidateOnFocus: false, keepPreviousData: true }
-    );
+    const runDataSummary = runDataRaw;
+    const isSucceeded = runDataSummary.status === "SUCCEEDED";
 
     const { data: metricsData } = useSWR(
         isSucceeded ? `/runs/${runId}/metrics` : null,
         () => getRunMetrics(runId),
-        { revalidateOnFocus: false, keepPreviousData: true }
+        { revalidateOnFocus: false }
     );
 
     const { data: equityDataList } = useSWR(
         isSucceeded ? `/runs/${runId}/equity` : null,
         () => getRunEquity(runId),
-        { revalidateOnFocus: false, keepPreviousData: true }
+        { revalidateOnFocus: false }
     );
 
     const runData: Partial<RunData> = {

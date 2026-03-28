@@ -33,6 +33,7 @@ from app.schemas.backtests import (
 )
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+GLOBAL_PRESET_ACTOR_PREFIX = "preset:global:"
 
 
 def _parse_datetime(value: str | None):
@@ -65,12 +66,12 @@ def _to_backtest_out(run: BacktestRun) -> BacktestOut:
 
 
 def _get_actor_run(run_id: UUID, actor: ActorContext, db: Session) -> BacktestRun:
-    run = (
-        db.query(BacktestRun)
-        .filter(BacktestRun.run_id == run_id, BacktestRun.actor_key == actor.actor_key)
-        .first()
-    )
+    run = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
     if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.actor_key != actor.actor_key and not str(run.actor_key or "").startswith(
+        GLOBAL_PRESET_ACTOR_PREFIX
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return run
 

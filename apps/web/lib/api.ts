@@ -8,6 +8,13 @@ const API_BASE_URL = isServer
     // @ts-ignore
     : process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL
 
+function runApiFetch(input: string, init?: RequestInit): Promise<Response> {
+    return fetch(input, {
+        credentials: "include",
+        ...init,
+    })
+}
+
 export interface RunMetric {
     label: string
     value: string
@@ -237,7 +244,7 @@ function mapEquity(equity: RunDailyEquityOut[] | null): RunEquityPoint[] | undef
 
 export async function getRun(runId: string): Promise<RunData | null> {
     try {
-        const runRes = await fetch(`${API_BASE_URL}/runs/${runId}`, { cache: "no-store" })
+        const runRes = await runApiFetch(`${API_BASE_URL}/runs/${runId}`, { cache: "no-store" })
 
         if (!runRes.ok) {
             console.error(`Failed to fetch run ${runId}: ${runRes.status} ${runRes.statusText}`)
@@ -297,7 +304,7 @@ export async function getRunStatus(runId: string): Promise<RunStatusOut | null> 
 }
 
 export async function getRunMetrics(runId: string) {
-    const res = await fetch(`${API_BASE_URL}/runs/${runId}/metrics`, { cache: "no-store" });
+    const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/metrics`, { cache: "no-store" });
     if (!res.ok) return null;
     const data: RunMetricOut = await res.json();
     return {
@@ -312,7 +319,7 @@ export async function getRunMetrics(runId: string) {
 }
 
 export async function getRunEquity(runId: string) {
-    const res = await fetch(`${API_BASE_URL}/runs/${runId}/equity`, { cache: "no-store" });
+    const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/equity`, { cache: "no-store" });
     if (!res.ok) return null;
     const data: RunDailyEquityOut[] = await res.json();
     return mapEquity(data);
@@ -384,7 +391,7 @@ export async function createRun(config: any, client_idempotency_key?: string): P
     };
     const idempotencyKey = client_idempotency_key || buildIdempotencyKey("create-run", payload)
 
-    const res = await fetch(`${API_BASE_URL}/backtests`, {
+    const res = await runApiFetch(`${API_BASE_URL}/backtests`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -411,11 +418,12 @@ export async function createRunFromSnapshot(validConfig: any, client_idempotency
     };
     const idempotencyKey = client_idempotency_key || buildIdempotencyKey("retry-run", payload)
 
-    const res = await fetch(`${API_BASE_URL}/backtests`, {
+    const res = await runApiFetch(`${API_BASE_URL}/backtests`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Idempotency-Key': idempotencyKey,
+            'X-Reuse-Succeeded-Run': 'true',
         },
         body: JSON.stringify(payload)
     });
@@ -429,6 +437,21 @@ export async function createRunFromSnapshot(validConfig: any, client_idempotency
     return data.run_id;
 }
 
+export async function getOrCreatePlaygroundPresetRun(presetId: string): Promise<string> {
+    const res = await runApiFetch(`${API_BASE_URL}/playground/presets/${presetId}/run`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+    })
+    if (!res.ok) {
+        const err = await res.text()
+        throw new Error(`Failed to get preset run: ${err}`)
+    }
+    const data = await res.json()
+    return data.run_id
+}
+
 export async function getRunPositions(runId: string, date?: string, limit?: number): Promise<RunPositionOut[]> {
     try {
         const url = new URL(`${API_BASE_URL}/runs/${runId}/positions`)
@@ -438,7 +461,7 @@ export async function getRunPositions(runId: string, date?: string, limit?: numb
         if (limit) {
             url.searchParams.append("limit", limit.toString())
         }
-        const res = await fetch(url.toString(), { cache: "no-store" })
+        const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
             console.error(`Failed to fetch positions: ${res.status} ${res.statusText}`)
             return []
@@ -459,13 +482,7 @@ export async function getRunFills(runId: string, start?: string, end?: string, l
         if (end) {
             url.searchParams.append("end", end)
         }
-        if (limit !== undefined) {
-            url.searchParams.append("limit", limit.toString())
-        }
-        if (offset !== undefined) {
-            url.searchParams.append("offset", offset.toString())
-        }
-        const res = await fetch(url.toString(), { cache: "no-store" })
+        const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
             console.error(`Failed to fetch fills: ${res.status} ${res.statusText}`)
             return []
@@ -504,7 +521,7 @@ export async function searchAssets(query: string): Promise<AssetOut[]> {
     try {
         const url = new URL(`${API_BASE_URL}/assets`)
         url.searchParams.append("q", query)
-        const res = await fetch(url.toString())
+        const res = await runApiFetch(url.toString())
         if (!res.ok) {
             console.error(`Failed to fetch assets: ${res.status}`)
             return []

@@ -59,6 +59,27 @@ def _find_idempotent_run(
     return db.query(BacktestRun).filter(BacktestRun.run_id == row.run_id).first()
 
 
+def _find_reusable_run(
+    db: Session,
+    actor_key: str,
+    resolved_config: dict,
+    data_snapshot_id: str,
+    seed: int,
+) -> BacktestRun | None:
+    return (
+        db.query(BacktestRun)
+        .filter(
+            BacktestRun.actor_key == actor_key,
+            BacktestRun.config_snapshot == resolved_config,
+            BacktestRun.data_snapshot_id == data_snapshot_id,
+            BacktestRun.seed == seed,
+            BacktestRun.status.in_(("QUEUED", "RUNNING", "SUCCEEDED")),
+        )
+        .order_by(BacktestRun.created_at.desc())
+        .first()
+    )
+
+
 def _mark_stale_queued_runs(db: Session, stale_after_seconds: int) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
     stale_runs = (
@@ -91,6 +112,7 @@ def create_backtest(
     payload: BacktestCreate,
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    reuse_succeeded_run: bool = Header(default=False, alias="X-Reuse-Succeeded-Run"),
     actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> BacktestOut:
@@ -135,6 +157,21 @@ def create_backtest(
                 .delete(synchronize_session=False)
             )
             db.commit()
+
+    if reuse_succeeded_run:
+        reusable = _find_reusable_run(
+            db=db,
+            actor_key=actor.actor_key,
+            resolved_config=resolved_config,
+            data_snapshot_id=payload.data_snapshot_id,
+            seed=payload.seed,
+        )
+        if reusable:
+            if reusable.status in {"QUEUED", "RUNNING"}:
+                response.status_code = status.HTTP_202_ACCEPTED
+            else:
+                response.status_code = status.HTTP_200_OK
+            return _to_backtest_out(reusable)
 
     max_active_runs = (
         settings.max_active_runs_per_user

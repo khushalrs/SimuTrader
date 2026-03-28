@@ -7,9 +7,9 @@ import { TrendingUp, BarChart2, Zap, ArrowRight, Layers, Activity } from "lucide
 import Link from "next/link"
 
 import { presets, PresetConfig } from "@/config/presets"
-import { useState, useRef } from "react"
+import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { createRunFromSnapshot } from "@/lib/api"
+import { getOrCreatePlaygroundPresetRun, getRun } from "@/lib/api"
 import {
     Dialog,
     DialogContent,
@@ -25,21 +25,42 @@ export default function PlaygroundPage() {
     const [error, setError] = useState<string | null>(null)
     const [viewConfig, setViewConfig] = useState<PresetConfig | null>(null)
     const [copied, setCopied] = useState(false)
-    const idempotencyKeyMap = useRef<Record<string, string>>({})
+    const presetRunStorageKey = "playground_preset_runs_v1"
+
+    const readPresetRunMap = (): Record<string, string> => {
+        if (typeof window === "undefined") return {}
+        try {
+            const raw = window.localStorage.getItem(presetRunStorageKey)
+            if (!raw) return {}
+            const parsed = JSON.parse(raw)
+            if (parsed && typeof parsed === "object") return parsed
+        } catch {
+            // ignore malformed cache
+        }
+        return {}
+    }
+
+    const writePresetRun = (presetId: string, runId: string) => {
+        if (typeof window === "undefined") return
+        const current = readPresetRunMap()
+        current[presetId] = runId
+        window.localStorage.setItem(presetRunStorageKey, JSON.stringify(current))
+    }
 
     const handleRunPreset = async (preset: PresetConfig) => {
         try {
             setError(null)
             setPendingRunId(preset.id)
-            if (!idempotencyKeyMap.current[preset.id]) {
-                idempotencyKeyMap.current[preset.id] = crypto.randomUUID()
+            const existingRunId = readPresetRunMap()[preset.id]
+            if (existingRunId) {
+                const existingRun = await getRun(existingRunId)
+                if (existingRun && existingRun.status === "SUCCEEDED") {
+                    router.push(`/runs/${existingRunId}`)
+                    return
+                }
             }
-            const currentKey = idempotencyKeyMap.current[preset.id]
-            const runId = await createRunFromSnapshot(preset.config_snapshot, currentKey)
-            
-            // Rotate key after success
-            idempotencyKeyMap.current[preset.id] = crypto.randomUUID()
-            
+            const runId = await getOrCreatePlaygroundPresetRun(preset.id)
+            writePresetRun(preset.id, runId)
             router.push(`/runs/${runId}`)
         } catch (err: any) {
             setError(err.message || "Failed to create run")
