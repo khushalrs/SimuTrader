@@ -137,6 +137,58 @@ export interface RunFillOut {
     slippage: number
 }
 
+export interface RunTaxEventOut {
+    date: string
+    symbol: string
+    quantity: number
+    realized_pnl_base: number
+    holding_period_days: number
+    bucket: string
+    tax_rate: number
+    tax_due_base: number
+    meta?: Record<string, any>
+}
+
+export interface RunTaxesOut {
+    run_id: string
+    event_count: number
+    total_realized_pnl_base: number
+    total_tax_due_base: number
+    by_bucket_tax_due_base: Record<string, number>
+    events: RunTaxEventOut[]
+}
+
+export interface RunCompareMetricRowOut {
+    run_id: string
+    cagr?: number | null
+    volatility?: number | null
+    sharpe?: number | null
+    max_drawdown?: number | null
+    gross_return?: number | null
+    net_return?: number | null
+    fee_drag?: number | null
+    tax_drag?: number | null
+    borrow_drag?: number | null
+    margin_interest_drag?: number | null
+}
+
+export interface RunCompareSeriesPointOut {
+    date: string
+    value: number
+}
+
+export interface RunCompareSeriesOut {
+    run_id: string
+    points: RunCompareSeriesPointOut[]
+}
+
+export interface RunCompareOut {
+    base_run_id: string
+    run_ids: string[]
+    metric_rows: RunCompareMetricRowOut[]
+    equity_series: RunCompareSeriesOut[]
+}
+
 function formatPercent(value?: number | null): string {
     if (value === undefined || value === null) {
         return "N/A"
@@ -359,6 +411,18 @@ export function buildValidConfig(config: any) {
         strategy: config.strategy.type,
         strategy_params: cleanParams,
         base_currency: config.universe.base_currency,
+        execution: {
+            commission: {
+                model: "BPS",
+                bps: parseFloat(config.execution.commission.bps),
+                min_fee: parseFloat(config.execution.commission.min_fee || 0),
+            },
+            slippage: {
+                model: "BPS",
+                bps: parseFloat(config.execution.slippage.bps),
+            },
+            fill_price: config.execution.fill_price || "CLOSE",
+        },
         commission: {
             model: "BPS",
             bps: parseFloat(config.execution.commission.bps),
@@ -374,8 +438,12 @@ export function buildValidConfig(config: any) {
             calendars: config.universe.calendars
         },
         backtest: backtestObj,
+        financing: config.financing,
+        risk: config.risk,
+        tax: config.tax,
         data_policy: {
-            missing_bar: "FORWARD_FILL"
+            missing_bar: "FORWARD_FILL",
+            missing_fx: "FORWARD_FILL",
         }
     };
 }
@@ -470,6 +538,38 @@ export async function getRunPositions(runId: string, date?: string, limit?: numb
     } catch (e) {
         console.error("Error fetching positions:", e)
         return []
+    }
+}
+
+export async function getRunTaxes(runId: string): Promise<RunTaxesOut | null> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/backtests/${runId}/taxes`, { cache: "no-store" })
+        if (!res.ok) {
+            console.error(`Failed to fetch taxes: ${res.status} ${res.statusText}`)
+            return null
+        }
+        return await res.json()
+    } catch (e) {
+        console.error("Error fetching taxes:", e)
+        return null
+    }
+}
+
+export async function compareRuns(baseRunId: string, runIds: string[]): Promise<RunCompareOut | null> {
+    try {
+        const url = new URL(`${API_BASE_URL}/backtests/${baseRunId}/compare`)
+        if (runIds.length > 0) {
+            url.searchParams.append("run_ids", runIds.join(","))
+        }
+        const res = await runApiFetch(url.toString(), { cache: "no-store" })
+        if (!res.ok) {
+            console.error(`Failed to compare runs: ${res.status} ${res.statusText}`)
+            return null
+        }
+        return await res.json()
+    } catch (e) {
+        console.error("Error comparing runs:", e)
+        return null
     }
 }
 

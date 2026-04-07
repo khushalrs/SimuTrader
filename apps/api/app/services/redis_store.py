@@ -7,8 +7,17 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
-from redis import Redis
-from redis.exceptions import RedisError
+try:
+    from redis import Redis
+    from redis.exceptions import RedisError
+except ModuleNotFoundError:
+    class RedisError(Exception):
+        pass
+
+    class Redis:  # type: ignore[override]
+        @classmethod
+        def from_url(cls, *args, **kwargs):
+            raise RedisError("redis package is not installed")
 
 from app.models.backtests import BacktestRun
 from app.settings import get_settings

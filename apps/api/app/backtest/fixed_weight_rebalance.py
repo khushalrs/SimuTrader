@@ -24,12 +24,12 @@ def _normalize_weights(raw: Dict[str, Any]) -> Dict[str, float]:
     total = 0.0
     for symbol, weight in raw.items():
         weight_val = float(weight)
-        if weight_val <= 0:
-            raise ValueError(f"target weight for {symbol} must be > 0")
+        if abs(weight_val) <= 1e-12:
+            raise ValueError(f"target weight for {symbol} must be non-zero")
         weights[symbol] = weight_val
-        total += weight_val
+        total += abs(weight_val)
     if total <= 0:
-        raise ValueError("target_weights sum must be > 0")
+        raise ValueError("target_weights gross sum must be > 0")
     for symbol in weights:
         weights[symbol] = weights[symbol] / total
     return weights

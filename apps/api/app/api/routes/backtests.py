@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import logging
 from uuid import UUID, uuid4
 
@@ -9,15 +9,40 @@ from sqlalchemy.orm import Session
 
 from app.backtest import claim_run, execute_run
 from app.db import get_db
-from app.models.backtests import BacktestRequestIdempotency, BacktestRun
+from app.models.backtests import (
+    BacktestRequestIdempotency,
+    BacktestRun,
+    RunDailyEquity,
+    RunMetric,
+    RunTaxEvent,
+)
 from app.security import ActorContext, ActorTier, get_current_actor
 from app.services.redis_store import refresh_run_cache
-from app.schemas.backtests import BacktestCreate, BacktestOut
+from app.schemas.backtests import (
+    BacktestCreate,
+    BacktestOut,
+    RunCompareMetricRowOut,
+    RunCompareOut,
+    RunCompareSeriesOut,
+    RunNormalizedEquityPointOut,
+    RunTaxesOut,
+    RunTaxEventOut,
+)
 from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
 logger = logging.getLogger(__name__)
+GLOBAL_PRESET_ACTOR_PREFIX = "preset:global:"
+
+
+def _sanitize_user_string(value: str | None, *, max_len: int = 255) -> str | None:
+    if value is None:
+        return None
+    cleaned = "".join(ch for ch in str(value) if ord(ch) >= 32 or ch in "\t\r\n").strip()
+    if not cleaned:
+        return None
+    return cleaned[:max_len]
 
 
 def _to_backtest_out(run: BacktestRun) -> BacktestOut:
@@ -37,6 +62,36 @@ def _to_backtest_out(run: BacktestRun) -> BacktestOut:
         data_snapshot_id=run.data_snapshot_id,
         seed=run.seed,
     )
+
+
+def _get_actor_run(run_id: UUID, actor: ActorContext, db: Session) -> BacktestRun:
+    run = db.query(BacktestRun).filter(BacktestRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.actor_key != actor.actor_key and not str(run.actor_key or "").startswith(
+        GLOBAL_PRESET_ACTOR_PREFIX
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return run
+
+
+def _normalize_run_ids(run_ids_raw: str | None) -> list[UUID]:
+    if not run_ids_raw:
+        return []
+    values: list[UUID] = []
+    seen: set[UUID] = set()
+    for token in [part.strip() for part in run_ids_raw.split(",") if part.strip()]:
+        try:
+            parsed = UUID(token)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid run_id '{token}' in run_ids.",
+            ) from exc
+        if parsed not in seen:
+            seen.add(parsed)
+            values.append(parsed)
+    return values
 
 
 def _find_idempotent_run(
@@ -119,6 +174,14 @@ def create_backtest(
     settings = get_settings()
     now_utc = datetime.now(timezone.utc)
     clean_idempotency_key = (idempotency_key or "").strip() or None
+    payload.name = _sanitize_user_string(payload.name, max_len=255)
+    clean_data_snapshot_id = _sanitize_user_string(payload.data_snapshot_id, max_len=128)
+    if not clean_data_snapshot_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="data_snapshot_id must be a non-empty string.",
+        )
+    payload.data_snapshot_id = clean_data_snapshot_id
     _mark_stale_queued_runs(db, stale_after_seconds=settings.stale_queued_timeout_seconds)
 
     try:
@@ -191,6 +254,27 @@ def create_backtest(
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many active runs. Please wait for current runs to finish.",
+        )
+
+    rate_limit_count = (
+        settings.max_backtest_creates_per_window_user
+        if actor.tier == ActorTier.USER
+        else settings.max_backtest_creates_per_window_guest
+    )
+    window_start = now_utc - timedelta(seconds=settings.backtest_create_window_seconds)
+    recent_create_count = (
+        db.query(func.count(BacktestRun.run_id))
+        .filter(
+            BacktestRun.actor_key == actor.actor_key,
+            BacktestRun.created_at >= window_start,
+        )
+        .scalar()
+        or 0
+    )
+    if recent_create_count >= rate_limit_count:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many backtest creations in a short period. Please retry shortly.",
         )
 
     run = BacktestRun(
@@ -288,6 +372,148 @@ def create_backtest(
         return _to_backtest_out(run)
 
     return _to_backtest_out(execute_run(db, claimed_run))
+
+
+@router.get("", response_model=list[BacktestOut])
+def list_backtests(
+    status_filter: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[BacktestOut]:
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be 1..200")
+    if offset < 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="offset must be >= 0")
+    query = db.query(BacktestRun).filter(BacktestRun.actor_key == actor.actor_key)
+    if status_filter:
+        query = query.filter(BacktestRun.status == str(status_filter).upper())
+    runs = query.order_by(BacktestRun.created_at.desc()).offset(offset).limit(limit).all()
+    return [_to_backtest_out(run) for run in runs]
+
+
+@router.get("/{run_id}/taxes", response_model=RunTaxesOut)
+def get_backtest_taxes(
+    run_id: UUID,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = 1000,
+    offset: int = 0,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> RunTaxesOut:
+    _get_actor_run(run_id, actor, db)
+    if limit < 1 or limit > 5000:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be 1..5000")
+    if offset < 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="offset must be >= 0")
+    if start and end and end < start:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="end must be >= start")
+
+    query = db.query(RunTaxEvent).filter(RunTaxEvent.run_id == run_id)
+    if start:
+        query = query.filter(RunTaxEvent.date >= start)
+    if end:
+        query = query.filter(RunTaxEvent.date <= end)
+
+    all_rows = query.order_by(RunTaxEvent.date.asc(), RunTaxEvent.tax_event_id.asc()).all()
+    paged = all_rows[offset : offset + limit]
+
+    by_bucket: dict[str, float] = {}
+    total_realized = 0.0
+    total_tax_due = 0.0
+    for row in all_rows:
+        total_realized += float(row.realized_pnl_base or 0.0)
+        total_tax_due += float(row.tax_due_base or 0.0)
+        bucket = str(row.bucket or "UNKNOWN")
+        by_bucket[bucket] = by_bucket.get(bucket, 0.0) + float(row.tax_due_base or 0.0)
+
+    events = [
+        RunTaxEventOut(
+            date=row.date,
+            symbol=row.symbol,
+            quantity=row.quantity,
+            realized_pnl_base=row.realized_pnl_base,
+            holding_period_days=row.holding_period_days,
+            bucket=row.bucket,
+            tax_rate=row.tax_rate,
+            tax_due_base=row.tax_due_base,
+            meta=row.meta or {},
+        )
+        for row in paged
+    ]
+
+    return RunTaxesOut(
+        run_id=run_id,
+        event_count=len(all_rows),
+        total_realized_pnl_base=total_realized,
+        total_tax_due_base=total_tax_due,
+        by_bucket_tax_due_base=by_bucket,
+        events=events,
+    )
+
+
+@router.get("/{run_id}/compare", response_model=RunCompareOut)
+def compare_backtests(
+    run_id: UUID,
+    run_ids: str | None = None,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> RunCompareOut:
+    _get_actor_run(run_id, actor, db)
+    compare_ids = [run_id]
+    for parsed in _normalize_run_ids(run_ids):
+        if parsed not in compare_ids:
+            compare_ids.append(parsed)
+
+    authorized_runs: list[BacktestRun] = []
+    for rid in compare_ids:
+        authorized_runs.append(_get_actor_run(rid, actor, db))
+
+    metric_rows: list[RunCompareMetricRowOut] = []
+    equity_series: list[RunCompareSeriesOut] = []
+
+    for run_row in authorized_runs:
+        metrics = db.query(RunMetric).filter(RunMetric.run_id == run_row.run_id).first()
+        metric_rows.append(
+            RunCompareMetricRowOut(
+                run_id=run_row.run_id,
+                cagr=metrics.cagr if metrics else None,
+                volatility=metrics.volatility if metrics else None,
+                sharpe=metrics.sharpe if metrics else None,
+                max_drawdown=metrics.max_drawdown if metrics else None,
+                gross_return=metrics.gross_return if metrics else None,
+                net_return=metrics.net_return if metrics else None,
+                fee_drag=metrics.fee_drag if metrics else None,
+                tax_drag=metrics.tax_drag if metrics else None,
+                borrow_drag=metrics.borrow_drag if metrics else None,
+                margin_interest_drag=metrics.margin_interest_drag if metrics else None,
+            )
+        )
+
+        rows = (
+            db.query(RunDailyEquity)
+            .filter(RunDailyEquity.run_id == run_row.run_id)
+            .order_by(RunDailyEquity.date.asc())
+            .all()
+        )
+        points: list[RunNormalizedEquityPointOut] = []
+        base_equity = None
+        for row in rows:
+            value = float(row.equity_base or 0.0)
+            if base_equity is None and abs(value) > 1e-12:
+                base_equity = value
+            normalized = value / base_equity if base_equity else 0.0
+            points.append(RunNormalizedEquityPointOut(date=row.date, value=normalized))
+        equity_series.append(RunCompareSeriesOut(run_id=run_row.run_id, points=points))
+
+    return RunCompareOut(
+        base_run_id=run_id,
+        run_ids=compare_ids,
+        metric_rows=metric_rows,
+        equity_series=equity_series,
+    )
 
 
 @router.get("/{run_id}", response_model=BacktestOut)

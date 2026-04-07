@@ -21,6 +21,12 @@ class Settings:
     stale_queued_timeout_seconds: int
     max_active_runs_per_guest: int
     max_active_runs_per_user: int
+    max_backtest_creates_per_window_guest: int
+    max_backtest_creates_per_window_user: int
+    backtest_create_window_seconds: int
+    trusted_user_header_enabled: bool
+    guest_cookie_secure: bool
+    guest_cookie_samesite: str
     redis_cache_url: str
     redis_lock_url: str
     redis_cache_prefix: str
@@ -59,6 +65,12 @@ class Settings:
             raise RuntimeError("MAX_ACTIVE_RUNS_PER_GUEST must be > 0.")
         if self.max_active_runs_per_user <= 0:
             raise RuntimeError("MAX_ACTIVE_RUNS_PER_USER must be > 0.")
+        if self.max_backtest_creates_per_window_guest <= 0:
+            raise RuntimeError("MAX_BACKTEST_CREATES_PER_WINDOW_GUEST must be > 0.")
+        if self.max_backtest_creates_per_window_user <= 0:
+            raise RuntimeError("MAX_BACKTEST_CREATES_PER_WINDOW_USER must be > 0.")
+        if self.backtest_create_window_seconds <= 0:
+            raise RuntimeError("BACKTEST_CREATE_WINDOW_SECONDS must be > 0.")
         if not self.redis_cache_url:
             raise RuntimeError("REDIS_CACHE_URL must be set.")
         if not self.redis_lock_url:
@@ -71,6 +83,10 @@ class Settings:
             raise RuntimeError("TOP_HOLDINGS_CACHE_TTL_SECONDS must be > 0.")
         if self.redis_lock_timeout_seconds <= 0:
             raise RuntimeError("REDIS_LOCK_TIMEOUT_SECONDS must be > 0.")
+        if self.guest_cookie_samesite not in {"lax", "strict", "none"}:
+            raise RuntimeError(
+                "GUEST_COOKIE_SAMESITE must be one of: lax, strict, none."
+            )
 
 
 @lru_cache(maxsize=1)
@@ -88,6 +104,24 @@ def get_settings() -> Settings:
     )
     max_active_runs_per_guest = int(os.getenv("MAX_ACTIVE_RUNS_PER_GUEST", "5").strip())
     max_active_runs_per_user = int(os.getenv("MAX_ACTIVE_RUNS_PER_USER", "20").strip())
+    max_backtest_creates_per_window_guest = int(
+        os.getenv("MAX_BACKTEST_CREATES_PER_WINDOW_GUEST", "10").strip()
+    )
+    max_backtest_creates_per_window_user = int(
+        os.getenv("MAX_BACKTEST_CREATES_PER_WINDOW_USER", "30").strip()
+    )
+    backtest_create_window_seconds = int(
+        os.getenv("BACKTEST_CREATE_WINDOW_SECONDS", "60").strip()
+    )
+    trusted_user_header_enabled = _parse_bool(
+        os.getenv("TRUSTED_USER_HEADER_ENABLED"),
+        default=env in {"dev", "development", "test"},
+    )
+    guest_cookie_secure = _parse_bool(
+        os.getenv("GUEST_COOKIE_SECURE"),
+        default=env not in {"dev", "development", "test"},
+    )
+    guest_cookie_samesite = os.getenv("GUEST_COOKIE_SAMESITE", "lax").strip().lower()
     origins_env = os.getenv(
         "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
     )
@@ -115,6 +149,12 @@ def get_settings() -> Settings:
         stale_queued_timeout_seconds=stale_queued_timeout_seconds,
         max_active_runs_per_guest=max_active_runs_per_guest,
         max_active_runs_per_user=max_active_runs_per_user,
+        max_backtest_creates_per_window_guest=max_backtest_creates_per_window_guest,
+        max_backtest_creates_per_window_user=max_backtest_creates_per_window_user,
+        backtest_create_window_seconds=backtest_create_window_seconds,
+        trusted_user_header_enabled=trusted_user_header_enabled,
+        guest_cookie_secure=guest_cookie_secure,
+        guest_cookie_samesite=guest_cookie_samesite,
         redis_cache_url=redis_cache_url,
         redis_lock_url=redis_lock_url,
         redis_cache_prefix=redis_cache_prefix,

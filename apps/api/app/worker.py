@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from datetime import datetime, timedelta, timezone
 
 from celery import Celery
@@ -19,6 +20,8 @@ from app.services.redis_store import (
     try_acquire_run_lock,
 )
 from app.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 celery_app = Celery(
     "simutrader",
@@ -109,6 +112,7 @@ def execute_run_task(self, run_id: str) -> str:
     db = SessionLocal()
     settings = get_settings()
     lock_token = try_acquire_run_lock(run_id, settings.redis_lock_timeout_seconds)
+    claimed_run_uuid: UUID | None = None
     try:
         stale_timeout_seconds = settings.stale_run_timeout_seconds
         stale_queued_timeout_seconds = settings.stale_queued_timeout_seconds
@@ -125,6 +129,7 @@ def execute_run_task(self, run_id: str) -> str:
             if not exists:
                 return "MISSING"
             return "SKIPPED_ALREADY_CLAIMED"
+        claimed_run_uuid = run_uuid
         try:
             execute_run(db, run)
         except SoftTimeLimitExceeded:
@@ -146,6 +151,27 @@ def execute_run_task(self, run_id: str) -> str:
             delay_seconds = int(os.getenv("CELERY_TASK_RETRY_DELAY_SECONDS", "30"))
             raise self.retry(exc=exc, countdown=delay_seconds, max_retries=max_retries) from exc
         return run.status
+    except Exception:
+        if claimed_run_uuid is not None:
+            failed_run = db.query(BacktestRun).filter(BacktestRun.run_id == claimed_run_uuid).first()
+            if failed_run and failed_run.status == "RUNNING":
+                error_id = str(uuid4())
+                logger.exception(
+                    "Backtest worker failed unexpectedly",
+                    extra={"run_id": str(claimed_run_uuid), "error_id": error_id},
+                )
+                failed_run.status = "FAILED"
+                failed_run.error_code = "E_INTERNAL"
+                failed_run.error_message_public = (
+                    "The simulation failed unexpectedly. Please retry."
+                )
+                failed_run.error_retryable = True
+                failed_run.error_id = error_id
+                failed_run.finished_at = datetime.now(timezone.utc)
+                db.commit()
+                db.refresh(failed_run)
+                refresh_run_cache(failed_run)
+        raise
     finally:
         release_run_lock(run_id, lock_token)
         db.close()

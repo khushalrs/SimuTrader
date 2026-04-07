@@ -15,6 +15,7 @@ from app.models.backtests import (
     RunMetric,
     RunOrder,
     RunPosition,
+    RunTaxEvent,
 )
 
 
@@ -39,6 +40,8 @@ class _FakeQuery:
             self._session.position_rows = []
         elif self._model is RunFinancing:
             self._session.financing_rows = []
+        elif self._model is RunTaxEvent:
+            self._session.tax_rows = []
         return 0
 
 
@@ -50,6 +53,7 @@ class _FakeSession:
         self.fill_rows: list[RunFill] = []
         self.position_rows: list[RunPosition] = []
         self.financing_rows: list[RunFinancing] = []
+        self.tax_rows: list[RunTaxEvent] = []
 
     def query(self, model):
         return _FakeQuery(self, model)
@@ -68,6 +72,8 @@ class _FakeSession:
             self.position_rows.extend(records)
         elif isinstance(first, RunFinancing):
             self.financing_rows.extend(records)
+        elif isinstance(first, RunTaxEvent):
+            self.tax_rows.extend(records)
 
     def add(self, obj):
         if isinstance(obj, RunMetric):
@@ -243,6 +249,12 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert metric_meta["effective_start_date"] == start.isoformat()
     assert metric_meta["effective_end_date"] == end.isoformat()
     assert metric_meta["date_shift_warnings"] == []
+    assert metric_meta["run_id"] == str(run.run_id)
+    assert metric_meta["seed"] == 42
+    assert metric_meta["data_snapshot_id"] == "test_snapshot"
+    assert metric_meta["config_version"] is None
+    assert metric_meta["universe_summary"]["instrument_count"] == len(symbols)
+    assert set(metric_meta["universe_summary"]["symbols"]) == set(symbols)
 
 
 def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):

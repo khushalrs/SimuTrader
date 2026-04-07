@@ -43,7 +43,7 @@ export function StrategyBuilder() {
         tax: {
             regime: "US",
             us: { short_term_days: 365, short_rate: 0.30, long_rate: 0.15 },
-            india: { short_term_days: 365, short_rate: 0.15, long_rate: 0.10 },
+            india: { short_term_days: 365, short_rate: 0.20, long_rate: 0.125 },
             lot_method: "FIFO"
         },
         strategy: {

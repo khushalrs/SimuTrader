@@ -112,3 +112,57 @@ class RunCostsSummaryOut(BaseModel):
     commissions: float
     slippage: float
     total_costs: float
+
+
+class RunTaxEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    date: date
+    symbol: str
+    quantity: float
+    realized_pnl_base: float
+    holding_period_days: int
+    bucket: str
+    tax_rate: float
+    tax_due_base: float
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunTaxesOut(BaseModel):
+    run_id: UUID
+    event_count: int
+    total_realized_pnl_base: float
+    total_tax_due_base: float
+    by_bucket_tax_due_base: Dict[str, float] = Field(default_factory=dict)
+    events: list[RunTaxEventOut] = Field(default_factory=list)
+
+
+class RunCompareMetricRowOut(BaseModel):
+    run_id: UUID
+    cagr: Optional[float] = None
+    volatility: Optional[float] = None
+    sharpe: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    gross_return: Optional[float] = None
+    net_return: Optional[float] = None
+    fee_drag: Optional[float] = None
+    tax_drag: Optional[float] = None
+    borrow_drag: Optional[float] = None
+    margin_interest_drag: Optional[float] = None
+
+
+class RunNormalizedEquityPointOut(BaseModel):
+    date: date
+    value: float
+
+
+class RunCompareSeriesOut(BaseModel):
+    run_id: UUID
+    points: list[RunNormalizedEquityPointOut] = Field(default_factory=list)
+
+
+class RunCompareOut(BaseModel):
+    base_run_id: UUID
+    run_ids: list[UUID]
+    metric_rows: list[RunCompareMetricRowOut] = Field(default_factory=list)
+    equity_series: list[RunCompareSeriesOut] = Field(default_factory=list)
