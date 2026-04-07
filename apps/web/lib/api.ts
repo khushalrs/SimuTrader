@@ -335,6 +335,7 @@ export function buildValidConfig(config: any) {
         start_date: config.backtest.start_date,
         end_date: config.backtest.end_date,
         initial_cash: parseFloat(config.backtest.initial_cash),
+        cash_currency: config.backtest.cash_currency || "USD",
     };
 
     if (config.backtest.contributions?.enabled) {
@@ -376,7 +377,12 @@ export function buildValidConfig(config: any) {
         backtest: backtestObj,
         data_policy: {
             missing_bar: "FORWARD_FILL"
-        }
+        },
+        risk: config.risk ? {
+            max_position_weight: parseFloat(config.risk.max_position_weight),
+            max_gross_leverage: parseFloat(config.risk.max_gross_leverage),
+            stop_loss: config.risk.stop_loss
+        } : undefined
     };
 }
 

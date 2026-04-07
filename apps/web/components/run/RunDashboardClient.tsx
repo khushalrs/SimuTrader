@@ -22,7 +22,7 @@ export function RunDashboardClient({ runId }: { runId: string }) {
         runId ? `/runs/${runId}/status` : null,
         () => getRunStatus(runId),
         {
-            refreshInterval: (data) => {
+            refreshInterval: (data: any) => {
                 if (!data) return 1000;
                 if (data.status === "QUEUED" || data.status === "RUNNING") return 1000;
                 return 0;
@@ -31,14 +31,17 @@ export function RunDashboardClient({ runId }: { runId: string }) {
         }
     );
 
-    const isNotFound = statusData === null && !isStatusLoading;
-    const isPending = isStatusLoading || statusData?.status === "QUEUED" || statusData?.status === "RUNNING";
-    const status = statusData?.status || "QUEUED";
+    const { data: runSummaryData, isLoading: isRunSummaryLoading } = useSWR(
+        runId ? `/runs/${runId}` : null,
+        () => getRun(runId),
+        { revalidateOnFocus: false }
+    );
+
+    const isNotFound = (statusData === null && !isStatusLoading) && (runSummaryData === null && !isRunSummaryLoading);
+    const isPending = isStatusLoading || isRunSummaryLoading || statusData?.status === "QUEUED" || statusData?.status === "RUNNING";
+    const status = statusData?.status || runSummaryData?.status || "QUEUED";
     const isSucceeded = status === "SUCCEEDED";
     const isFailed = status === "FAILED";
-
-    const runDataSummary = runDataRaw;
-    const isSucceeded = runDataSummary.status === "SUCCEEDED";
 
     const { data: metricsData } = useSWR(
         isSucceeded ? `/runs/${runId}/metrics` : null,
