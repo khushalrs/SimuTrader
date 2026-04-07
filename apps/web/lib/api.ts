@@ -387,6 +387,7 @@ export function buildValidConfig(config: any) {
         start_date: config.backtest.start_date,
         end_date: config.backtest.end_date,
         initial_cash: parseFloat(config.backtest.initial_cash),
+        cash_currency: config.backtest.cash_currency || "USD",
     };
 
     if (config.backtest.contributions?.enabled) {

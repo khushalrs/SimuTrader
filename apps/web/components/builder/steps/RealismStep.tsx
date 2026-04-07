@@ -40,7 +40,12 @@ export function RealismStep({ config, updateConfig, nextStep, prevStep }: any) {
 
     return (
         <div className="p-6 flex flex-col h-full">
-            <h2 className="text-xl font-semibold mb-6">Realism Knobs</h2>
+            <div className="mb-6">
+                <h2 className="text-xl font-semibold">Realism Knobs</h2>
+                <div className="mt-4 p-3 bg-secondary/30 border border-border rounded-md text-sm text-muted-foreground">
+                    <strong>Note:</strong> Margin borrowing, short selling, and complex tax regimes are not yet supported by the backend backtest engine for custom strategies. These controls are temporarily disabled.
+                </div>
+            </div>
 
             <div className="space-y-8 flex-1">
 
@@ -78,11 +83,12 @@ export function RealismStep({ config, updateConfig, nextStep, prevStep }: any) {
                         <label className="flex items-center space-x-3 cursor-pointer">
                             <input
                                 type="checkbox"
-                                className="w-4 h-4 rounded border-input text-primary focus:ring-primary"
-                                checked={config.financing.margin.enabled}
+                                disabled
+                                className="w-4 h-4 rounded border-input text-primary focus:ring-primary opacity-50 cursor-not-allowed"
+                                checked={false}
                                 onChange={e => toggleMargin(e.target.checked)}
                             />
-                            <span className="text-sm font-medium">Enable Margin Borrowing</span>
+                            <span className="text-sm font-medium opacity-50">Enable Margin Borrowing (Coming Soon)</span>
                         </label>
                         {config.financing.margin.enabled && (
                             <div className="pl-7 grid grid-cols-2 gap-4">
@@ -112,11 +118,12 @@ export function RealismStep({ config, updateConfig, nextStep, prevStep }: any) {
                         <label className="flex items-center space-x-3 cursor-pointer mt-2">
                             <input
                                 type="checkbox"
-                                className="w-4 h-4 rounded border-input text-primary focus:ring-primary"
-                                checked={config.financing.shorting.enabled}
+                                disabled
+                                className="w-4 h-4 rounded border-input text-primary focus:ring-primary opacity-50 cursor-not-allowed"
+                                checked={false}
                                 onChange={e => toggleShorting(e.target.checked)}
                             />
-                            <span className="text-sm font-medium">Enable Shorting</span>
+                            <span className="text-sm font-medium opacity-50">Enable Shorting (Coming Soon)</span>
                         </label>
                         {config.financing.shorting.enabled && (
                             <div className="pl-7 grid grid-cols-2 gap-4">
@@ -141,13 +148,14 @@ export function RealismStep({ config, updateConfig, nextStep, prevStep }: any) {
                     <div className="space-y-2">
                         <label className="text-xs text-muted-foreground">Tax Regime</label>
                         <select
-                            className="flex h-9 w-full md:w-1/2 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            value={config.tax.regime}
+                            disabled
+                            className="flex h-9 w-full md:w-1/2 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring opacity-50 cursor-not-allowed"
+                            value={"NONE"}
                             onChange={e => setTaxRegime(e.target.value)}
                         >
                             <option value="US">United States (IRS FIFO)</option>
                             <option value="INDIA">India (Income Tax FIFO)</option>
-                            <option value="NONE">No Taxes (Tax Advantaged)</option>
+                            <option value="NONE">No Taxes (Tax Advantaged) - Default</option>
                         </select>
                     </div>
                 </div>
