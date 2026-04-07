@@ -37,7 +37,7 @@ def test_user_header_ignored_in_prod_by_default(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_user_header_allowed_when_explicitly_enabled(monkeypatch):
+def test_user_header_not_allowed_in_prod_even_if_enabled(monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setenv("ENV", "prod")
     monkeypatch.setenv("TRUSTED_USER_HEADER_ENABLED", "true")
@@ -45,6 +45,25 @@ def test_user_header_allowed_when_explicitly_enabled(monkeypatch):
     req = _request_with_headers([(b"x-user-id", b"user-42")])
     res = Response()
     actor = get_current_actor(req, res)
-    assert actor.tier == ActorTier.USER
-    assert actor.actor_key == "user:user-42"
+    assert actor.tier == ActorTier.GUEST
+    assert actor.actor_key.startswith("guest:")
+    get_settings.cache_clear()
+
+
+def test_user_header_requires_proxy_secret_when_configured(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.setenv("TRUSTED_USER_HEADER_ENABLED", "true")
+    monkeypatch.setenv("TRUSTED_USER_HEADER_PROXY_SECRET", "proxy-secret")
+
+    bad_req = _request_with_headers([(b"x-user-id", b"user-42")])
+    bad_actor = get_current_actor(bad_req, Response())
+    assert bad_actor.tier == ActorTier.GUEST
+
+    good_req = _request_with_headers(
+        [(b"x-user-id", b"user-42"), (b"x-trusted-proxy-secret", b"proxy-secret")]
+    )
+    good_actor = get_current_actor(good_req, Response())
+    assert good_actor.tier == ActorTier.USER
+    assert good_actor.actor_key == "user:user-42"
     get_settings.cache_clear()

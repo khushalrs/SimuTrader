@@ -34,6 +34,9 @@ from app.services.config_validation import validate_and_resolve_config
 router = APIRouter(prefix="/backtests", tags=["backtests"])
 logger = logging.getLogger(__name__)
 GLOBAL_PRESET_ACTOR_PREFIX = "preset:global:"
+MAX_COMPARE_RUNS = 5
+DEFAULT_COMPARE_MAX_POINTS = 300
+MAX_COMPARE_MAX_POINTS = 2000
 
 
 def _sanitize_user_string(value: str | None, *, max_len: int = 255) -> str | None:
@@ -411,23 +414,40 @@ def get_backtest_taxes(
     if start and end and end < start:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="end must be >= start")
 
-    query = db.query(RunTaxEvent).filter(RunTaxEvent.run_id == run_id)
-    if start:
-        query = query.filter(RunTaxEvent.date >= start)
-    if end:
-        query = query.filter(RunTaxEvent.date <= end)
+    def _tax_query():
+        q = db.query(RunTaxEvent).filter(RunTaxEvent.run_id == run_id)
+        if start:
+            q = q.filter(RunTaxEvent.date >= start)
+        if end:
+            q = q.filter(RunTaxEvent.date <= end)
+        return q
 
-    all_rows = query.order_by(RunTaxEvent.date.asc(), RunTaxEvent.tax_event_id.asc()).all()
-    paged = all_rows[offset : offset + limit]
+    event_count = (
+        _tax_query().with_entities(func.count(RunTaxEvent.tax_event_id)).scalar() or 0
+    )
+    total_realized, total_tax_due = _tax_query().with_entities(
+        func.coalesce(func.sum(RunTaxEvent.realized_pnl_base), 0.0),
+        func.coalesce(func.sum(RunTaxEvent.tax_due_base), 0.0),
+    ).first()
+    bucket_rows = (
+        _tax_query().with_entities(
+            RunTaxEvent.bucket,
+            func.coalesce(func.sum(RunTaxEvent.tax_due_base), 0.0),
+        )
+        .group_by(RunTaxEvent.bucket)
+        .all()
+    )
+    by_bucket = {
+        str(bucket or "UNKNOWN"): float(tax_due or 0.0)
+        for bucket, tax_due in bucket_rows
+    }
 
-    by_bucket: dict[str, float] = {}
-    total_realized = 0.0
-    total_tax_due = 0.0
-    for row in all_rows:
-        total_realized += float(row.realized_pnl_base or 0.0)
-        total_tax_due += float(row.tax_due_base or 0.0)
-        bucket = str(row.bucket or "UNKNOWN")
-        by_bucket[bucket] = by_bucket.get(bucket, 0.0) + float(row.tax_due_base or 0.0)
+    paged = (
+        _tax_query().order_by(RunTaxEvent.date.asc(), RunTaxEvent.tax_event_id.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
     events = [
         RunTaxEventOut(
@@ -446,9 +466,9 @@ def get_backtest_taxes(
 
     return RunTaxesOut(
         run_id=run_id,
-        event_count=len(all_rows),
-        total_realized_pnl_base=total_realized,
-        total_tax_due_base=total_tax_due,
+        event_count=int(event_count),
+        total_realized_pnl_base=float(total_realized or 0.0),
+        total_tax_due_base=float(total_tax_due or 0.0),
         by_bucket_tax_due_base=by_bucket,
         events=events,
     )
@@ -458,14 +478,29 @@ def get_backtest_taxes(
 def compare_backtests(
     run_id: UUID,
     run_ids: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    max_points: int = DEFAULT_COMPARE_MAX_POINTS,
     actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> RunCompareOut:
+    if start and end and end < start:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="end must be >= start")
+    if max_points < 10 or max_points > MAX_COMPARE_MAX_POINTS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"max_points must be 10..{MAX_COMPARE_MAX_POINTS}",
+        )
     _get_actor_run(run_id, actor, db)
     compare_ids = [run_id]
     for parsed in _normalize_run_ids(run_ids):
         if parsed not in compare_ids:
             compare_ids.append(parsed)
+    if len(compare_ids) > MAX_COMPARE_RUNS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"compare supports at most {MAX_COMPARE_RUNS} runs including base run.",
+        )
 
     authorized_runs: list[BacktestRun] = []
     for rid in compare_ids:
@@ -492,12 +527,12 @@ def compare_backtests(
             )
         )
 
-        rows = (
-            db.query(RunDailyEquity)
-            .filter(RunDailyEquity.run_id == run_row.run_id)
-            .order_by(RunDailyEquity.date.asc())
-            .all()
-        )
+        rows_query = db.query(RunDailyEquity).filter(RunDailyEquity.run_id == run_row.run_id)
+        if start:
+            rows_query = rows_query.filter(RunDailyEquity.date >= start)
+        if end:
+            rows_query = rows_query.filter(RunDailyEquity.date <= end)
+        rows = rows_query.order_by(RunDailyEquity.date.asc()).limit(max_points).all()
         points: list[RunNormalizedEquityPointOut] = []
         base_equity = None
         for row in rows:

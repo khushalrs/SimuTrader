@@ -16,6 +16,7 @@ class _FakeQuery:
     first_value: object | None = None
     _offset: int = 0
     _limit: int | None = None
+    _aggregate_mode: str | None = None
 
     def filter(self, *args, **kwargs):  # noqa: ANN002, ANN003
         return self
@@ -31,7 +32,29 @@ class _FakeQuery:
         self._limit = value
         return self
 
+    def with_entities(self, *entities):  # noqa: ANN002
+        text_blob = " ".join(str(entity) for entity in entities).lower()
+        if "count(" in text_blob:
+            self._aggregate_mode = "count"
+        elif "bucket" in text_blob and "sum(" in text_blob:
+            self._aggregate_mode = "bucket_sum"
+        elif "sum(" in text_blob:
+            self._aggregate_mode = "sum_pair"
+        return self
+
+    def group_by(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        return self
+
     def all(self):
+        if self._aggregate_mode == "bucket_sum":
+            bucket_totals: dict[str, float] = {}
+            for row in self.all_values or []:
+                bucket = str(getattr(row, "bucket", "UNKNOWN") or "UNKNOWN")
+                bucket_totals[bucket] = bucket_totals.get(bucket, 0.0) + float(
+                    getattr(row, "tax_due_base", 0.0) or 0.0
+                )
+            values = [(bucket, total) for bucket, total in bucket_totals.items()]
+            return values
         values = list(self.all_values or [])
         if self._offset:
             values = values[self._offset :]
@@ -40,7 +63,19 @@ class _FakeQuery:
         return values
 
     def first(self):
+        if self._aggregate_mode == "sum_pair":
+            total_realized = 0.0
+            total_tax = 0.0
+            for row in self.all_values or []:
+                total_realized += float(getattr(row, "realized_pnl_base", 0.0) or 0.0)
+                total_tax += float(getattr(row, "tax_due_base", 0.0) or 0.0)
+            return (total_realized, total_tax)
         return self.first_value
+
+    def scalar(self):
+        if self._aggregate_mode == "count":
+            return len(self.all_values or [])
+        return None
 
 
 class _FakeDB:
