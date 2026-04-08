@@ -9,6 +9,7 @@ import { CostsTab } from "@/components/run/CostsTab"
 import { PortfolioTab } from "@/components/run/PortfolioTab"
 import { FillsTab } from "@/components/run/FillsTab"
 import { ConfigTab } from "@/components/run/ConfigTab"
+import { TaxesTab } from "@/components/run/TaxesTab"
 import { InspectorPanel } from "@/components/run/InspectorPanel"
 import { RunHeader } from "@/components/run/RunHeader"
 import { KPIGrid } from "@/components/run/KPIGrid"
@@ -162,6 +163,7 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                             <TabsTrigger value="costs" disabled={isPending || isFailed}>Costs</TabsTrigger>
                             <TabsTrigger value="portfolio" disabled={isPending || isFailed}>Portfolio</TabsTrigger>
                             <TabsTrigger value="fills" disabled={isPending || isFailed}>Fills</TabsTrigger>
+                            <TabsTrigger value="taxes" disabled={isPending || isFailed}>Taxes</TabsTrigger>
                             <TabsTrigger value="configuration" disabled={isPending}>Configuration</TabsTrigger>
                         </TabsList>
                     </div>
@@ -188,6 +190,9 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                     </TabsContent>
                     <TabsContent value="fills" className="mt-0 min-h-[450px]">
                         <FillsTab runId={runData.id as string} baseCurrency={runData.baseCurrency || "USD"} status={status} />
+                    </TabsContent>
+                    <TabsContent value="taxes" className="mt-0 min-h-[450px]">
+                        <TaxesTab runId={runData.id as string} baseCurrency={runData.baseCurrency || "USD"} status={status} />
                     </TabsContent>
                     <TabsContent value="configuration" className="mt-0 min-h-[450px]">
                         <ConfigTab data={runData as RunData} />

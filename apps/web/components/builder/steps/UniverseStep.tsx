@@ -47,12 +47,6 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
         setError(null);
         setConflictAsset(null);
         const newAssetClass = type === "US" ? "US_EQUITY" : "IN_EQUITY";
-        const existingAssetClass = config.universe.instruments.length > 0 ? config.universe.instruments[0].asset_class : null;
-
-        if (existingAssetClass && existingAssetClass !== newAssetClass) {
-            setError(`Cannot mix different asset classes. Your universe already contains ${existingAssetClass} instruments.`);
-            return;
-        }
 
         let instruments: any[] = [];
         if (type === "US") {
@@ -76,12 +70,6 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
     const validateAndAddAsset = (asset: AssetOut) => {
         setError(null);
         setConflictAsset(null);
-        const existingAssetClass = config.universe.instruments.length > 0 ? config.universe.instruments[0].asset_class : null;
-
-        if (existingAssetClass && existingAssetClass !== asset.asset_class) {
-            setConflictAsset(asset);
-            return;
-        }
 
         executeAddAsset(asset);
     }
@@ -153,9 +141,6 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
                 <div className="space-y-2">
                     <div className="flex items-center justify-between">
                         <label className="text-sm font-medium">Instruments</label>
-                        <span className="text-xs text-muted-foreground bg-primary/10 text-primary px-2 py-1 rounded-md">
-                            Single asset class mode (no FX conversion yet)
-                        </span>
                     </div>
 
                     <div className="relative">
@@ -212,27 +197,7 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
                         )}
                     </div>
 
-                    {conflictAsset && (
-                        <div className="bg-amber-500/10 border border-amber-500/30 text-amber-500 text-sm rounded-md p-4 flex flex-col gap-3">
-                            <div className="flex items-start gap-2">
-                                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                                <div>
-                                    <p className="font-medium">Asset Class Conflict</p>
-                                    <p className="text-amber-500/80 mt-1">
-                                        You are trying to add a <strong>{conflictAsset.asset_class}</strong> instrument, but your universe currently contains <strong>{config.universe.instruments[0].asset_class}</strong> instruments. Mixing asset classes is not yet supported.
-                                    </p>
-                                </div>
-                            </div>
-                            <div className="flex gap-2 justify-end">
-                                <Button size="sm" variant="outline" className="border-amber-500/30 text-amber-500 hover:bg-amber-500/10" onClick={() => setConflictAsset(null)}>
-                                    Keep current class
-                                </Button>
-                                <Button size="sm" className="bg-amber-500 hover:bg-amber-600 text-white" onClick={handleClearAndSwitch}>
-                                    Clear existing & Switch
-                                </Button>
-                            </div>
-                        </div>
-                    )}
+                    {/* Conflict check removed */}
 
                     <div className="flex space-x-2 mt-2">
                         <Button type="button" variant="outline" size="sm" onClick={() => handleAddPreset("US")}>+ US Mega Cap</Button>

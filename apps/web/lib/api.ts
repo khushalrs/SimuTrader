@@ -1,12 +1,34 @@
 const DEFAULT_API_BASE_URL = "http://localhost:8000"
 
 const isServer = typeof window === "undefined"
-// @ts-ignore
-const API_BASE_URL = isServer
-    // @ts-ignore
-    ? process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL
-    // @ts-ignore
-    : process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL
+const isProd = process.env.NODE_ENV === "production"
+
+let rawApiBaseUrl = isServer
+    ? (process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL)
+    : process.env.NEXT_PUBLIC_API_BASE_URL
+
+if (isProd) {
+    if (!rawApiBaseUrl) {
+        throw new Error("Missing API_BASE_URL or NEXT_PUBLIC_API_BASE_URL in production environment.")
+    }
+    if (!rawApiBaseUrl.startsWith("https://")) {
+        throw new Error(`Production API base URL must use HTTPS. Received: ${rawApiBaseUrl}`)
+    }
+} else {
+    rawApiBaseUrl = rawApiBaseUrl || DEFAULT_API_BASE_URL
+}
+
+const API_BASE_URL = rawApiBaseUrl as string
+
+async function extractErrorMessage(res: Response, fallbackPrefix: string): Promise<string> {
+    try {
+        const errJson = await res.json();
+        const msg = errJson.error_message_public || errJson.detail || JSON.stringify(errJson);
+        return `${fallbackPrefix}: ${msg}`;
+    } catch {
+        return `${fallbackPrefix}: Server returned status ${res.status}`;
+    }
+}
 
 function runApiFetch(input: string, init?: RequestInit): Promise<Response> {
     return fetch(input, {
@@ -346,7 +368,7 @@ export async function getRun(runId: string): Promise<RunData | null> {
 
 export async function getRunStatus(runId: string): Promise<RunStatusOut | null> {
     try {
-        const res = await fetch(`${API_BASE_URL}/runs/${runId}/status`, { cache: "no-store" })
+        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/status`, { cache: "no-store" })
         if (!res.ok) return null
         return await res.json()
     } catch (e) {
@@ -470,8 +492,8 @@ export async function createRun(config: any, client_idempotency_key?: string): P
     });
 
     if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Failed to create run: ${err}`);
+        const err = await extractErrorMessage(res, "Failed to create run");
+        throw new Error(err);
     }
 
     const data = await res.json();
@@ -498,8 +520,8 @@ export async function createRunFromSnapshot(validConfig: any, client_idempotency
     });
 
     if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Failed to create retried run: ${err}`);
+        const err = await extractErrorMessage(res, "Failed to create retried run");
+        throw new Error(err);
     }
 
     const data = await res.json();
@@ -514,8 +536,8 @@ export async function getOrCreatePlaygroundPresetRun(presetId: string): Promise<
         },
     })
     if (!res.ok) {
-        const err = await res.text()
-        throw new Error(`Failed to get preset run: ${err}`)
+        const err = await extractErrorMessage(res, "Failed to get preset run");
+        throw new Error(err)
     }
     const data = await res.json()
     return data.run_id
@@ -599,7 +621,7 @@ export async function getRunTopHoldings(runId: string, limit: number = 5): Promi
     try {
         const url = new URL(`${API_BASE_URL}/runs/${runId}/top-holdings`)
         url.searchParams.append("limit", limit.toString())
-        const res = await fetch(url.toString(), { cache: "no-store" })
+        const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
             console.error(`Failed to fetch top holdings: ${res.status} ${res.statusText}`)
             return []
@@ -631,5 +653,65 @@ export async function searchAssets(query: string): Promise<AssetOut[]> {
     } catch (e) {
         console.error("Error searching assets", e)
         return []
+    }
+}
+
+export async function getRuns(): Promise<Partial<RunData>[]> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/backtests`, { cache: "no-store" })
+        if (!res.ok) {
+            console.error(`Failed to fetch runs: ${res.status} ${res.statusText}`)
+            return []
+        }
+        return await res.json()
+    } catch (e) {
+        console.error("Error fetching runs:", e)
+        return []
+    }
+}
+
+export interface StrategyCreate {
+    name: string;
+    description?: string;
+    config: any;
+}
+
+export interface StrategyOut {
+    strategy_id: string;
+    name: string;
+    description?: string;
+    config: any;
+    created_at: string;
+}
+
+export async function createStrategy(payload: StrategyCreate): Promise<StrategyOut> {
+    const res = await runApiFetch(`${API_BASE_URL}/strategies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        throw new Error(await extractErrorMessage(res, "Failed to create strategy"));
+    }
+    return await res.json();
+}
+
+export async function getStrategies(): Promise<StrategyOut[]> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/strategies`, { cache: "no-store" });
+        if (!res.ok) return [];
+        return await res.json();
+    } catch {
+        return [];
+    }
+}
+
+export async function getStrategy(id: string): Promise<StrategyOut | null> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/strategies/${id}`, { cache: "no-store" });
+        if (!res.ok) return null;
+        return await res.json();
+    } catch {
+        return null;
     }
 }
