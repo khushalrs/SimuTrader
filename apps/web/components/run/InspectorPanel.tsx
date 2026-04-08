@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency } from "@/lib/utils"
 import { useEffect, useState } from "react"
 import useSWR from "swr"
-import { RunPositionOut, getRunPositions } from "@/lib/api"
+import { RunPositionOut, getRunTopHoldings } from "@/lib/api"
 
 export function useDebounce<T>(value: T, delay: number): T {
     const [debouncedValue, setDebouncedValue] = useState<T>(value);
@@ -30,8 +30,8 @@ interface InspectorPanelProps {
 export function InspectorPanel({ runId, status, date, equity, baseCurrency }: InspectorPanelProps) {
     const debouncedDate = useDebounce(date, 200);
     const { data: topHoldings, isLoading } = useSWR(
-        status === "SUCCEEDED" ? `/runs/${runId}/positions?date=${debouncedDate}&limit=5` : null,
-        () => getRunPositions(runId, debouncedDate, 5),
+        status === "SUCCEEDED" ? `/runs/${runId}/top-holdings?limit=5` : null,
+        () => getRunTopHoldings(runId, 5),
         { revalidateOnFocus: false }
     );
     const holdings = topHoldings || [];

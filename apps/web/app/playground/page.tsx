@@ -64,8 +64,6 @@ export default function PlaygroundPage() {
             router.push(`/runs/${runId}`)
         } catch (err: any) {
             setError(err.message || "Failed to create run")
-            // Rotate key after failure
-            idempotencyKeyMap.current[preset.id] = crypto.randomUUID()
         } finally {
             setPendingRunId(null)
         }
