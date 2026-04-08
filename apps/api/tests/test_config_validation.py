@@ -53,3 +53,32 @@ def test_momentum_top_k_validation_remains_strict() -> None:
     }
     with pytest.raises(ValueError, match="top_k cannot exceed number of instruments in universe"):
         validate_and_resolve_config(config)
+
+
+def test_negative_amount_requires_shorting_enabled() -> None:
+    config = _base_config()
+    config["universe"]["instruments"][0]["amount"] = -1000
+    config["universe"]["instruments"][1]["amount"] = 2000
+    with pytest.raises(ValueError, match="negative amount allocations require"):
+        validate_and_resolve_config(config)
+
+
+def test_execution_block_maps_into_legacy_commission_fields() -> None:
+    config = _base_config()
+    config["execution"] = {
+        "commission": {"model": "BPS", "bps": 3, "min_fee": 1.5},
+        "slippage": {"model": "BPS", "bps": 7},
+        "fill_price": "CLOSE",
+    }
+    resolved = validate_and_resolve_config(config)
+    assert resolved["commission"]["bps"] == pytest.approx(3.0)
+    assert resolved["commission"]["min_fee_native"] == pytest.approx(1.5)
+    assert resolved["slippage"]["bps"] == pytest.approx(7.0)
+    assert resolved["fill_price_policy"] == "CLOSE"
+
+
+def test_config_sanitizes_control_characters() -> None:
+    config = _base_config()
+    config["universe"]["instruments"][0]["symbol"] = "AAPL\x00\x01"
+    resolved = validate_and_resolve_config(config)
+    assert resolved["universe"]["instruments"][0]["symbol"] == "AAPL"

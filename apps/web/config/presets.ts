@@ -22,7 +22,7 @@ export const presets: PresetConfig[] = [
             version: 1,
             strategy: "BUY_AND_HOLD",
             strategy_params: {
-                rebalance_frequency: "quarterly"
+                rebalance_frequency: "QUARTERLY"
             },
             base_currency: "USD",
             commission: {
@@ -71,7 +71,7 @@ export const presets: PresetConfig[] = [
             version: 1,
             strategy: "FIXED_WEIGHT_REBALANCE",
             strategy_params: {
-                rebalance_frequency: "monthly",
+                rebalance_frequency: "MONTHLY",
                 weights: {
                     "RELIANCE": 0.2,
                     "TCS": 0.2,
@@ -127,7 +127,7 @@ export const presets: PresetConfig[] = [
             version: 1,
             strategy: "MOMENTUM",
             strategy_params: {
-                rebalance_frequency: "monthly",
+                rebalance_frequency: "MONTHLY",
                 lookback_days: 126,
                 top_k: 2
             },
@@ -178,8 +178,8 @@ export const presets: PresetConfig[] = [
             version: 1,
             strategy: "MEAN_REVERSION",
             strategy_params: {
-                entry_z_score: -2.0,
-                exit_z_score: 0.0,
+                entry_threshold: 2.0,
+                exit_threshold: 0.0,
                 lookback_days: 20
             },
             base_currency: "USD",

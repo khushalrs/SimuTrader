@@ -52,7 +52,10 @@ The git worktree is currently clean.
 ### Backtests
 
 - `POST /backtests`
+- `GET /backtests`
 - `GET /backtests/{run_id}`
+- `GET /backtests/{run_id}/taxes`
+- `GET /backtests/{run_id}/compare?run_ids=<id1,id2,...>`
 
 Backtests can run in:
 
@@ -78,6 +81,43 @@ Persisted run data includes:
 - fills
 - positions
 - financing rows
+- tax events
+
+### Structured Error Contract
+
+Backtest public responses expose only structured error fields:
+
+- `error_code`
+- `error_message_public`
+- `error_retryable`
+- `error_id`
+
+Internal stack traces are not returned in API responses.
+
+### Compare & Tax Contracts
+
+`GET /backtests/{run_id}/taxes` returns:
+
+- `event_count`
+- `total_realized_pnl_base`
+- `total_tax_due_base`
+- `by_bucket_tax_due_base`
+- `events[]` with per-event realized P&L and tax details
+
+`GET /backtests/{run_id}/compare` returns:
+
+- `metric_rows[]` aligned by `run_id`
+- `equity_series[]` as normalized time series (`value` starts at `1.0` per run)
+
+### Explainability Metadata
+
+Run metric metadata includes reproducibility/explainability keys such as:
+
+- `run_id`
+- `seed`
+- `data_snapshot_id`
+- `config_version`
+- `universe_summary` (instrument count, symbols, asset classes)
 
 ### Assets
 
@@ -217,6 +257,56 @@ Backend tests are located in `apps/api/tests` and currently cover:
 - asset route behavior
 - run route behavior
 - backtest persistence and integration flows
+
+## Deterministic E2E Smoke Runner
+
+For backend runtime verification of strategy + policy behavior, use:
+
+```bash
+make smoke-backend
+```
+
+This runs `scripts/run_backend_smoke.sh`, which:
+
+1. starts `postgres`, `redis`, and `api`
+2. recreates `worker` with configurable concurrency
+3. runs `python -m app.scripts.e2e_smoke_runner` inside the API container
+
+Smoke scenarios include:
+
+- valid single-currency strategy runs (BUY_AND_HOLD, FIXED_WEIGHT_REBALANCE, DCA, MOMENTUM, MEAN_REVERSION)
+- valid mixed-currency run (BUY_AND_HOLD with explicit amounts + `initial_cash_by_currency`)
+- expected mixed-currency failure (DCA, which is currently single-currency only)
+
+The runner asserts:
+
+- terminal run states with long polling
+- expected status/error-code per scenario
+- tax endpoint shape (`/backtests/{run_id}/taxes`)
+- non-empty equity for succeeded runs
+- compare contract shape and normalized series (`/backtests/{run_id}/compare`)
+- run history visibility (`/backtests`)
+
+Useful overrides:
+
+```bash
+WORKER_CONCURRENCY=3 \
+SMOKE_EXECUTION_MODE=batch \
+SMOKE_BATCH_SIZE=3 \
+SMOKE_POLL_TIMEOUT_SECONDS=1200 \
+SMOKE_WINDOW_DAYS=10 \
+./scripts/run_backend_smoke.sh
+```
+
+Notes:
+
+- Default execution mode is `sequential` for deterministic queue behavior.
+- To speed up smoke in CI/local, increase `WORKER_CONCURRENCY` and use `batch` mode.
+
+## Strategy Docs
+
+- Runfile contract: [`docs/strategy_runfile_format.md`](docs/strategy_runfile_format.md)
+- Debug/testing reference: [`docs/strategy_debug_reference.md`](docs/strategy_debug_reference.md)
 
 ## Notes on Current Behavior
 

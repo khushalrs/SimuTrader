@@ -22,13 +22,27 @@ class BacktestOut(BaseModel):
     strategy_id: Optional[UUID] = None
     name: Optional[str] = None
     status: str
-    error: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message_public: Optional[str] = None
+    error_retryable: Optional[bool] = None
+    error_id: Optional[str] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     config_snapshot: Dict[str, Any]
     data_snapshot_id: str
     seed: int
+
+
+class BacktestStatusOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: UUID
+    status: str
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    error_code: Optional[str] = None
+    error_message_public: Optional[str] = None
 
 
 class RunDailyEquityOut(BaseModel):
@@ -98,3 +112,57 @@ class RunCostsSummaryOut(BaseModel):
     commissions: float
     slippage: float
     total_costs: float
+
+
+class RunTaxEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    date: date
+    symbol: str
+    quantity: float
+    realized_pnl_base: float
+    holding_period_days: int
+    bucket: str
+    tax_rate: float
+    tax_due_base: float
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunTaxesOut(BaseModel):
+    run_id: UUID
+    event_count: int
+    total_realized_pnl_base: float
+    total_tax_due_base: float
+    by_bucket_tax_due_base: Dict[str, float] = Field(default_factory=dict)
+    events: list[RunTaxEventOut] = Field(default_factory=list)
+
+
+class RunCompareMetricRowOut(BaseModel):
+    run_id: UUID
+    cagr: Optional[float] = None
+    volatility: Optional[float] = None
+    sharpe: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    gross_return: Optional[float] = None
+    net_return: Optional[float] = None
+    fee_drag: Optional[float] = None
+    tax_drag: Optional[float] = None
+    borrow_drag: Optional[float] = None
+    margin_interest_drag: Optional[float] = None
+
+
+class RunNormalizedEquityPointOut(BaseModel):
+    date: date
+    value: float
+
+
+class RunCompareSeriesOut(BaseModel):
+    run_id: UUID
+    points: list[RunNormalizedEquityPointOut] = Field(default_factory=list)
+
+
+class RunCompareOut(BaseModel):
+    base_run_id: UUID
+    run_ids: list[UUID]
+    metric_rows: list[RunCompareMetricRowOut] = Field(default_factory=list)
+    equity_series: list[RunCompareSeriesOut] = Field(default_factory=list)

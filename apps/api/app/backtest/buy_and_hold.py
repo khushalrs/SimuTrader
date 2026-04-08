@@ -77,15 +77,15 @@ def _extract_config(
 
         if amount is not None:
             amount_val = float(amount)
-            if amount_val <= 0:
-                raise ValueError(f"instrument '{symbol}' amount must be > 0")
+            if abs(amount_val) <= 1e-12:
+                raise ValueError(f"instrument '{symbol}' amount must be non-zero")
             parsed.append({"symbol": symbol, "asset_class": asset_class, "amount": amount_val})
             has_amount = True
         else:
             if weight is not None:
                 weight_val = float(weight)
-                if weight_val <= 0:
-                    raise ValueError(f"instrument '{symbol}' weight must be > 0")
+                if abs(weight_val) <= 1e-12:
+                    raise ValueError(f"instrument '{symbol}' weight must be non-zero")
                 parsed.append({"symbol": symbol, "asset_class": asset_class, "weight": weight_val})
                 has_weight = True
             else:
@@ -120,15 +120,15 @@ def _extract_config(
     if end_date < start_date:
         raise ValueError("end_date must be >= start_date")
 
-    if has_amount:
-        total_amount = sum(inst["amount"] for inst in parsed)
+    if has_amount and not initial_cash_by_currency:
+        total_amount = sum(max(inst["amount"], 0.0) for inst in parsed)
         if total_amount > initial_cash:
             raise ValueError(
                 f"total amount {total_amount:.2f} exceeds initial_cash {initial_cash:.2f}"
             )
     else:
         if has_weight:
-            weight_sum = sum(inst["weight"] for inst in parsed)
+            weight_sum = sum(abs(inst["weight"]) for inst in parsed)
             if weight_sum <= 0:
                 raise ValueError("weight sum must be > 0")
             for inst in parsed:

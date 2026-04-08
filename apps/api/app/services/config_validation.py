@@ -24,6 +24,36 @@ CONFIG_SCHEMA: Dict[str, Any] = {
             "default": {},
         },
         "base_currency": {"type": "string", "enum": ["USD", "INR"], "default": "USD"},
+        "execution": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "commission": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "model": {"type": "string", "enum": ["BPS"], "default": "BPS"},
+                        "bps": {"type": "number", "minimum": 0, "default": 0},
+                        "min_fee": {"type": "number", "minimum": 0, "default": 0},
+                    },
+                    "default": {"model": "BPS", "bps": 0, "min_fee": 0},
+                },
+                "slippage": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "model": {"type": "string", "enum": ["BPS"], "default": "BPS"},
+                        "bps": {"type": "number", "minimum": 0, "default": 0},
+                    },
+                    "default": {"model": "BPS", "bps": 0},
+                },
+                "fill_price": {
+                    "type": "string",
+                    "enum": ["CLOSE"],
+                    "default": "CLOSE",
+                },
+            },
+        },
         "commission": {
             "type": "object",
             "additionalProperties": False,
@@ -48,6 +78,49 @@ CONFIG_SCHEMA: Dict[str, Any] = {
             "enum": ["CLOSE"],
             "default": "CLOSE",
         },
+        "financing": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "margin": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": False},
+                        "max_leverage": {"type": "number", "exclusiveMinimum": 0, "default": 1.0},
+                        "daily_interest_bps": {"type": "number", "minimum": 0, "default": 0},
+                    },
+                    "default": {"enabled": False, "max_leverage": 1.0, "daily_interest_bps": 0},
+                },
+                "shorting": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": False},
+                        "borrow_fee_daily_bps": {"type": "number", "minimum": 0, "default": 0},
+                    },
+                    "default": {"enabled": False, "borrow_fee_daily_bps": 0},
+                },
+            },
+            "default": {
+                "margin": {"enabled": False, "max_leverage": 1.0, "daily_interest_bps": 0},
+                "shorting": {"enabled": False, "borrow_fee_daily_bps": 0},
+            },
+        },
+        "risk": {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {
+                "max_gross_leverage": {"type": "number", "exclusiveMinimum": 0, "default": 1.0},
+                "max_net_leverage": {"type": "number", "minimum": 0, "default": 1.0},
+            },
+            "default": {"max_gross_leverage": 1.0, "max_net_leverage": 1.0},
+        },
+        "tax": {
+            "type": "object",
+            "additionalProperties": True,
+            "default": {},
+        },
         "universe": {
             "type": "object",
             "additionalProperties": False,
@@ -64,8 +137,8 @@ CONFIG_SCHEMA: Dict[str, Any] = {
                                 "type": "string",
                                 "enum": ["US_EQUITY", "IN_EQUITY", "FX"],
                             },
-                            "amount": {"type": "number", "exclusiveMinimum": 0},
-                            "weight": {"type": "number", "exclusiveMinimum": 0},
+                            "amount": {"type": "number", "not": {"const": 0}},
+                            "weight": {"type": "number", "not": {"const": 0}},
                         },
                         "required": ["symbol", "asset_class"],
                         "allOf": [
@@ -125,13 +198,34 @@ CONFIG_SCHEMA: Dict[str, Any] = {
                     "type": "string",
                     "enum": ["FAIL", "FORWARD_FILL"],
                     "default": "FAIL",
-                }
+                },
+                "missing_fx": {
+                    "type": "string",
+                    "enum": ["FAIL", "FORWARD_FILL"],
+                    "default": "FORWARD_FILL",
+                },
             },
-            "default": {"missing_bar": "FAIL"},
+            "default": {"missing_bar": "FAIL", "missing_fx": "FORWARD_FILL"},
         },
     },
     "required": ["version", "universe", "backtest"],
 }
+
+
+def _sanitize_string(value: str) -> str:
+    # Remove control characters that can pollute logs/JSON and cap payload size.
+    cleaned = "".join(ch for ch in value if ord(ch) >= 32 or ch in "\t\r\n")
+    return cleaned.strip()[:1024]
+
+
+def _sanitize_recursive(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {_sanitize_recursive(k): _sanitize_recursive(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_recursive(item) for item in value]
+    if isinstance(value, str):
+        return _sanitize_string(value)
+    return value
 
 
 def _extend_with_default(validator_class):
@@ -158,6 +252,24 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("config_snapshot must be an object")
     config: Dict[str, Any] = copy.deepcopy(raw)
+
+    execution = config.get("execution")
+    if isinstance(execution, dict):
+        commission = execution.get("commission") or {}
+        slippage = execution.get("slippage") or {}
+        if "commission" not in config and isinstance(commission, dict):
+            config["commission"] = {
+                "model": commission.get("model", "BPS"),
+                "bps": commission.get("bps", 0),
+                "min_fee_native": commission.get("min_fee", commission.get("min_fee_native", 0)),
+            }
+        if "slippage" not in config and isinstance(slippage, dict):
+            config["slippage"] = {
+                "model": slippage.get("model", "BPS"),
+                "bps": slippage.get("bps", 0),
+            }
+        if "fill_price_policy" not in config and execution.get("fill_price"):
+            config["fill_price_policy"] = execution.get("fill_price")
 
     strategy = config.get("strategy")
     if isinstance(strategy, dict):
@@ -228,7 +340,7 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def validate_and_resolve_config(raw: Dict[str, Any]) -> Dict[str, Any]:
-    config = _normalize_config(raw)
+    config = _normalize_config(_sanitize_recursive(raw))
     validator_cls = _extend_with_default(Draft202012Validator)
     validator = validator_cls(CONFIG_SCHEMA, format_checker=FormatChecker())
     errors = sorted(validator.iter_errors(config), key=lambda err: list(err.absolute_path))
@@ -259,6 +371,10 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
 
 
     instruments = (config.get("universe") or {}).get("instruments") or []
+    financing = config.get("financing") or {}
+    shorting_enabled = bool((financing.get("shorting") or {}).get("enabled"))
+    margin_enabled = bool((financing.get("margin") or {}).get("enabled"))
+    risk = config.get("risk") or {}
     has_amount = any("amount" in inst for inst in instruments)
     has_weight = any("weight" in inst for inst in instruments)
     if has_amount and has_weight:
@@ -269,19 +385,47 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
             raise ValueError(
                 f"Invalid config: amount required for all instruments (missing: {missing})"
             )
+        negative_amount_symbols = [
+            str(inst.get("symbol")) for inst in instruments if float(inst.get("amount") or 0.0) < 0.0
+        ]
+        if negative_amount_symbols and not shorting_enabled:
+            raise ValueError(
+                "Invalid config: negative amount allocations require financing.shorting.enabled=true "
+                f"(symbols: {sorted(negative_amount_symbols)})"
+            )
     if has_weight:
         missing = [inst.get("symbol") for inst in instruments if "weight" not in inst]
         if missing:
             raise ValueError(
                 f"Invalid config: weight required for all instruments (missing: {missing})"
             )
+        negative_weight_symbols = [
+            str(inst.get("symbol")) for inst in instruments if float(inst.get("weight") or 0.0) < 0.0
+        ]
+        if negative_weight_symbols and not shorting_enabled:
+            raise ValueError(
+                "Invalid config: negative weights require financing.shorting.enabled=true "
+                f"(symbols: {sorted(negative_weight_symbols)})"
+            )
     if has_amount and "initial_cash_by_currency" not in backtest:
         initial_cash = float(backtest.get("initial_cash") or 0)
-        total_amount = sum(float(inst.get("amount") or 0) for inst in instruments)
+        total_amount = sum(max(float(inst.get("amount") or 0), 0.0) for inst in instruments)
         if total_amount > initial_cash:
             raise ValueError(
                 f"Invalid config: total amount {total_amount:.2f} exceeds initial_cash {initial_cash:.2f}"
             )
+
+    max_gross_leverage = float(
+        risk.get("max_gross_leverage", (financing.get("margin") or {}).get("max_leverage", 1.0))
+        or 1.0
+    )
+    max_net_leverage = float(risk.get("max_net_leverage", max_gross_leverage) or max_gross_leverage)
+    if max_gross_leverage > 1.0 and not margin_enabled:
+        raise ValueError(
+            "Invalid config: max_gross_leverage > 1 requires financing.margin.enabled=true"
+        )
+    if max_net_leverage > max_gross_leverage + 1e-12:
+        raise ValueError("Invalid config: max_net_leverage cannot exceed max_gross_leverage")
 
     strategy = str(config.get("strategy") or "BUY_AND_HOLD").upper()
     if strategy == "FIXED_WEIGHT_REBALANCE":
@@ -301,13 +445,13 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
                 raise ValueError(
                     f"Invalid config: target_weights for {symbol} must be numeric"
                 ) from exc
-            if weight_val <= 0:
+            if abs(weight_val) <= 1e-12:
                 raise ValueError(
-                    f"Invalid config: target_weights for {symbol} must be > 0"
+                    f"Invalid config: target_weights for {symbol} must be non-zero"
                 )
-            weight_sum += weight_val
+            weight_sum += abs(weight_val)
         if weight_sum <= 0:
-            raise ValueError("Invalid config: target_weights sum must be > 0")
+            raise ValueError("Invalid config: target_weights gross sum must be > 0")
 
         instrument_symbols = {str(inst.get("symbol")) for inst in instruments}
         weight_symbols = set(target_weights.keys())

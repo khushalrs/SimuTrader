@@ -1,6 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
+import { getStrategy } from "@/lib/api"
+import { SaveStrategyDialog } from "./SaveStrategyDialog"
 import { UniverseStep } from "./steps/UniverseStep"
 import { StrategyStep } from "./steps/StrategyStep"
 import { RealismStep } from "./steps/RealismStep"
@@ -43,7 +46,7 @@ export function StrategyBuilder() {
         tax: {
             regime: "US",
             us: { short_term_days: 365, short_rate: 0.30, long_rate: 0.15 },
-            india: { short_term_days: 365, short_rate: 0.15, long_rate: 0.10 },
+            india: { short_term_days: 365, short_rate: 0.20, long_rate: 0.125 },
             lot_method: "FIFO"
         },
         strategy: {
@@ -61,14 +64,30 @@ export function StrategyBuilder() {
     const prevStep = () => setCurrentStep(prev => Math.max(prev - 1, 1));
     const updateConfig = (updater: (prev: any) => any) => setConfig(updater);
 
+    const searchParams = useSearchParams();
+    const strategyId = searchParams.get('strategy_id');
+
+    useEffect(() => {
+        if (strategyId) {
+            getStrategy(strategyId).then(data => {
+                if (data && data.config) {
+                    setConfig(data.config);
+                }
+            });
+        }
+    }, [strategyId]);
+
     return (
         <div className="max-w-4xl mx-auto space-y-6">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight">Strategy Builder</h1>
                     <p className="text-muted-foreground mt-2">
                         Configure your universe, strategy, and risk parameters realistically.
                     </p>
+                </div>
+                <div className="flex items-center gap-3">
+                    <SaveStrategyDialog config={config} />
                 </div>
             </div>
 

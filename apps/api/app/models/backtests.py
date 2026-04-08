@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -27,6 +28,13 @@ class BacktestRun(Base):
     name = Column(String)
     status = Column(String, nullable=False)
     error = Column(Text)
+    error_code = Column(String)
+    error_message_public = Column(Text)
+    error_retryable = Column(Boolean)
+    error_id = Column(String)
+    actor_tier = Column(String, nullable=False, server_default=text("'guest'"))
+    actor_key = Column(String)
+    execution_task_id = Column(String)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     started_at = Column(DateTime(timezone=True))
     finished_at = Column(DateTime(timezone=True))
@@ -37,6 +45,25 @@ class BacktestRun(Base):
     __table_args__ = (
         Index("backtest_runs_status_idx", "status"),
         Index("backtest_runs_created_idx", "created_at"),
+        Index("backtest_runs_actor_status_idx", "actor_key", "status"),
+        Index("backtest_runs_actor_created_idx", "actor_key", "created_at"),
+        Index("backtest_runs_status_created_idx", "status", "created_at"),
+        Index("backtest_runs_execution_task_id_idx", "execution_task_id"),
+    )
+
+
+class BacktestRequestIdempotency(Base):
+    __tablename__ = "backtest_request_idempotency"
+
+    actor_key = Column(String, primary_key=True, nullable=False)
+    idempotency_key = Column(String, primary_key=True, nullable=False)
+    run_id = Column(UUID(as_uuid=True), ForeignKey("backtest_runs.run_id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("backtest_request_idempotency_expires_idx", "expires_at"),
+        Index("backtest_request_idempotency_actor_expires_idx", "actor_key", "expires_at"),
     )
 
 

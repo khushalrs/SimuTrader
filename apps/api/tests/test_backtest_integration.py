@@ -15,6 +15,7 @@ from app.models.backtests import (
     RunMetric,
     RunOrder,
     RunPosition,
+    RunTaxEvent,
 )
 
 
@@ -39,6 +40,8 @@ class _FakeQuery:
             self._session.position_rows = []
         elif self._model is RunFinancing:
             self._session.financing_rows = []
+        elif self._model is RunTaxEvent:
+            self._session.tax_rows = []
         return 0
 
 
@@ -50,6 +53,7 @@ class _FakeSession:
         self.fill_rows: list[RunFill] = []
         self.position_rows: list[RunPosition] = []
         self.financing_rows: list[RunFinancing] = []
+        self.tax_rows: list[RunTaxEvent] = []
 
     def query(self, model):
         return _FakeQuery(self, model)
@@ -68,6 +72,8 @@ class _FakeSession:
             self.position_rows.extend(records)
         elif isinstance(first, RunFinancing):
             self.financing_rows.extend(records)
+        elif isinstance(first, RunTaxEvent):
+            self.tax_rows.extend(records)
 
     def add(self, obj):
         if isinstance(obj, RunMetric):
@@ -243,6 +249,12 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert metric_meta["effective_start_date"] == start.isoformat()
     assert metric_meta["effective_end_date"] == end.isoformat()
     assert metric_meta["date_shift_warnings"] == []
+    assert metric_meta["run_id"] == str(run.run_id)
+    assert metric_meta["seed"] == 42
+    assert metric_meta["data_snapshot_id"] == "test_snapshot"
+    assert metric_meta["config_version"] is None
+    assert metric_meta["universe_summary"]["instrument_count"] == len(symbols)
+    assert set(metric_meta["universe_summary"]["symbols"]) == set(symbols)
 
 
 def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):
@@ -450,7 +462,14 @@ def test_buy_and_hold_missing_bars_fail_by_default(tmp_path, monkeypatch):
     execute_run(db, run)
 
     assert run.status == "FAILED"
-    assert run.error and "Missing bar" in run.error
+    assert run.error is None
+    assert run.error_code == "E_DATA_UNAVAILABLE"
+    assert (
+        run.error_message_public
+        == "Required market data was unavailable for this run."
+    )
+    assert run.error_retryable is True
+    assert run.error_id
 
 
 def test_buy_and_hold_weekend_boundary_records_effective_dates(tmp_path, monkeypatch):
@@ -534,7 +553,14 @@ def test_buy_and_hold_no_trading_days_in_range_returns_explicit_error(tmp_path, 
     execute_run(db, run)
 
     assert run.status == "FAILED"
-    assert run.error and run.error.startswith("E_NO_TRADING_DAYS_IN_RANGE:")
+    assert run.error is None
+    assert run.error_code == "E_NO_TRADING_DAYS"
+    assert (
+        run.error_message_public
+        == "No trading days were found in the selected range."
+    )
+    assert run.error_retryable is False
+    assert run.error_id
 
 
 def test_fixed_weight_rebalance_daily(tmp_path, monkeypatch):

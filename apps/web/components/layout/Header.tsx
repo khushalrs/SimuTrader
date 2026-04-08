@@ -11,7 +11,6 @@ const navItems = [
     { name: 'Build', href: '/build_page' },
     { name: 'Explore', href: '/explore' },
     { name: 'Compare', href: '/compare' },
-    { name: 'How it works', href: '/how-it-works' },
 ];
 
 export function Header() {

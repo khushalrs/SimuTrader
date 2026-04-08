@@ -5,7 +5,6 @@ from datetime import date, timedelta
 import json
 import logging
 from math import sqrt
-import os
 from statistics import median
 import time
 
@@ -13,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from app.data.duckdb import get_duckdb_conn
 from app.schemas.market import MarketBarOut, MarketCoverageOut, MarketSnapshotOut
+from app.settings import get_settings
 
 try:
     import redis
@@ -44,7 +44,7 @@ def _redis_cache() -> "redis.Redis | None":
         return None
     if _redis_client is not None:
         return _redis_client
-    redis_url = os.getenv("REDIS_URL")
+    redis_url = get_settings().redis_cache_url
     if not redis_url:
         return None
     try:
@@ -251,9 +251,10 @@ def _bars_cache_key(
     missing_bar: str,
     interval: str,
 ) -> str:
+    prefix = get_settings().redis_cache_prefix
     return ":".join(
         [
-            "bars",
+            f"{prefix}:bars",
             ",".join(sorted(symbols)),
             start_date or "default",
             end_date or "default",
@@ -266,7 +267,8 @@ def _bars_cache_key(
 
 
 def _snapshot_cache_key(symbols: list[str], end_date: str | None) -> str:
-    return ":".join(["snapshot", ",".join(sorted(symbols)), end_date or "default"])
+    prefix = get_settings().redis_cache_prefix
+    return ":".join([f"{prefix}:snapshot", ",".join(sorted(symbols)), end_date or "default"])
 
 
 def _downsample_rows(rows: list[MarketBarOut], max_points: int | None) -> list[MarketBarOut]:
