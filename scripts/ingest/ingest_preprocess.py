@@ -24,7 +24,8 @@ What this does
     processed/trading_calendars.parquet
     processed/calendar_days.parquet
 
-- Creates a DuckDB file with views over the Parquet lake:
+- Creates a DuckDB file with a materialized prices table plus views for
+  lighter metadata tables:
     processed/simutrader.duckdb
 
 Install
@@ -688,13 +689,18 @@ def build_duckdb(processed_root: Path) -> None:
 
     con = duckdb.connect(str(db_path))
 
+    # Materialize prices into DuckDB storage so runtime queries do not need to
+    # rescan the full partitioned parquet tree on every backtest.
+    con.execute("DROP VIEW IF EXISTS prices;")
+    con.execute("DROP TABLE IF EXISTS prices;")
     con.execute(
         f"""
-        CREATE OR REPLACE VIEW prices AS
+        CREATE TABLE prices AS
         SELECT *
         FROM read_parquet('{_q(prices_glob)}', hive_partitioning=1);
         """
     )
+    con.execute("ANALYZE prices;")
 
     assets_path = processed_root / "assets.parquet"
     if assets_path.exists():
