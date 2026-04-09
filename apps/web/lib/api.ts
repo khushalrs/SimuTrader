@@ -409,7 +409,7 @@ export function buildValidConfig(config: any) {
         start_date: config.backtest.start_date,
         end_date: config.backtest.end_date,
         initial_cash: parseFloat(config.backtest.initial_cash),
-        cash_currency: config.backtest.cash_currency || "USD",
+        // cash_currency is not accepted by the backend schema
     };
 
     if (config.backtest.contributions?.enabled) {
@@ -461,7 +461,14 @@ export function buildValidConfig(config: any) {
             calendars: config.universe.calendars
         },
         backtest: backtestObj,
-        financing: config.financing,
+        financing: config.financing ? {
+            ...config.financing,
+            shorting: config.financing.shorting ? {
+                enabled: config.financing.shorting.enabled,
+                borrow_fee_daily_bps: config.financing.shorting.borrow_fee_daily_bps,
+                // locate_required is not accepted by the backend schema
+            } : undefined,
+        } : undefined,
         risk: config.risk,
         tax: config.tax,
         data_policy: {
