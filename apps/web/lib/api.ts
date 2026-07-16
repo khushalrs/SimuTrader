@@ -496,10 +496,19 @@ export async function getRunEquity(runId: string) {
 }
 
 export function buildValidConfig(config: any) {
-    const instruments = config.universe.instruments.map((i: any) => ({
-        symbol: i.symbol,
-        asset_class: i.asset_class
-    }));
+    const instruments = config.universe.instruments.map((i: any) => {
+        const item: any = {
+            symbol: i.symbol,
+            asset_class: i.asset_class
+        };
+        if (i.weight !== undefined && i.weight !== null && i.weight !== "") {
+            item.weight = parseFloat(i.weight);
+        }
+        if (i.amount !== undefined && i.amount !== null && i.amount !== "") {
+            item.amount = parseFloat(i.amount);
+        }
+        return item;
+    });
 
     const backtestObj: any = {
         start_date: config.backtest.start_date,
@@ -520,8 +529,18 @@ export function buildValidConfig(config: any) {
 
     const cleanParams: any = {};
     for (const [key, value] of Object.entries(config.strategy.params || {})) {
-        if (value !== "" && value !== undefined && value !== null && !Number.isNaN(value)) {
-            cleanParams[key] = value;
+        if (value !== "" && value !== undefined && value !== null) {
+            if (typeof value === "object" && !Array.isArray(value)) {
+                const cleanSubObj: any = {};
+                for (const [subKey, subVal] of Object.entries(value || {})) {
+                    if (subVal !== "" && subVal !== undefined && subVal !== null) {
+                        cleanSubObj[subKey] = typeof subVal === "string" ? parseFloat(subVal) : subVal;
+                    }
+                }
+                cleanParams[key] = cleanSubObj;
+            } else if (!Number.isNaN(value)) {
+                cleanParams[key] = value;
+            }
         }
     }
 
@@ -821,5 +840,54 @@ export async function getStrategy(id: string): Promise<StrategyOut | null> {
         return await res.json();
     } catch {
         return null;
+    }
+}
+
+export interface PreflightResponse {
+    status: "green" | "yellow" | "red"
+    errors: string[]
+    warnings: string[]
+}
+
+export async function preflightBacktest(config: any): Promise<PreflightResponse> {
+    try {
+        const validConfig = buildValidConfig(config)
+        const payload = {
+            config_snapshot: validConfig,
+            data_snapshot_id: "default_snapshot_2026",
+            seed: 42
+        }
+        const res = await runApiFetch(`${API_BASE_URL}/backtests/preflight`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        })
+        if (!res.ok) {
+            return {
+                status: "red",
+                errors: [`Preflight request failed with status ${res.status}`],
+                warnings: []
+            }
+        }
+        const data = await res.json()
+        let status: "green" | "yellow" | "red" = "green"
+        if (!data.ok || (data.errors && data.errors.length > 0)) {
+            status = "red"
+        } else if (data.warnings && data.warnings.length > 0) {
+            status = "yellow"
+        }
+        return {
+            status,
+            errors: data.errors || [],
+            warnings: data.warnings || []
+        }
+    } catch (e: any) {
+        return {
+            status: "red",
+            errors: [e.message || "Failed to contact preflight validation engine"],
+            warnings: []
+        }
     }
 }

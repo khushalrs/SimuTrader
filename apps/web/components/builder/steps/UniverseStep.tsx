@@ -14,6 +14,65 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
     const [error, setError] = useState<string | null>(null)
     const [conflictAsset, setConflictAsset] = useState<AssetOut | null>(null)
 
+    const [allocationMode, setAllocationMode] = useState<string>("equal_weight")
+    const shortingEnabled = config.financing?.shorting?.enabled;
+
+    // Determine initial allocationMode from instruments when step loads
+    useEffect(() => {
+        const instruments = config.universe.instruments;
+        if (instruments.length > 0) {
+            if (instruments.some((i: any) => i.amount !== undefined)) {
+                setAllocationMode("custom_amount");
+            } else if (instruments.some((i: any) => i.weight !== undefined)) {
+                // If it is custom weights, they might not sum perfectly to 1 or have variations.
+                // Let's assume custom if they already have weights.
+                setAllocationMode("custom_weight");
+            } else {
+                setAllocationMode("equal_weight");
+            }
+        }
+    }, [config.universe.instruments]);
+
+    const handleAllocationModeChange = (mode: string) => {
+        setAllocationMode(mode);
+        updateConfig((prev: any) => {
+            const count = prev.universe.instruments.length;
+            const newInst = prev.universe.instruments.map((inst: any) => {
+                const cleaned = { symbol: inst.symbol, asset_class: inst.asset_class } as any;
+                if (mode === "custom_weight" || mode === "equal_weight") {
+                    cleaned.weight = count > 0 ? (1 / count).toFixed(4) : "1.0000";
+                } else if (mode === "custom_amount") {
+                    cleaned.amount = count > 0 ? Math.floor(parseFloat(prev.backtest.initial_cash) / count) : prev.backtest.initial_cash;
+                }
+                return cleaned;
+            });
+            return {
+                ...prev,
+                universe: { ...prev.universe, instruments: newInst }
+            };
+        });
+    }
+
+    const handleValChange = (index: number, field: "weight" | "amount", val: string) => {
+        let parsed = parseFloat(val);
+        if (!isNaN(parsed)) {
+            if (!shortingEnabled && parsed < 0) {
+                parsed = 0;
+            }
+        }
+        updateConfig((prev: any) => {
+            const newInst = [...prev.universe.instruments];
+            newInst[index] = {
+                ...newInst[index],
+                [field]: isNaN(parsed) ? "" : parsed
+            };
+            return {
+                ...prev,
+                universe: { ...prev.universe, instruments: newInst }
+            };
+        });
+    };
+
     // Debounce manual input
     useEffect(() => {
         const timer = setTimeout(() => {
@@ -46,25 +105,39 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
     const handleAddPreset = (type: string) => {
         setError(null);
         setConflictAsset(null);
-        const newAssetClass = type === "US" ? "US_EQUITY" : "IN_EQUITY";
 
-        let instruments: any[] = [];
+        let newInstruments: any[] = [];
         if (type === "US") {
-            instruments = [
+            newInstruments = [
                 { symbol: "AAPL", asset_class: "US_EQUITY" },
                 { symbol: "MSFT", asset_class: "US_EQUITY" },
                 { symbol: "GOOGL", asset_class: "US_EQUITY" }
             ]
         } else if (type === "IN") {
-            instruments = [
+            newInstruments = [
                 { symbol: "ALKEM", asset_class: "IN_EQUITY" },
                 { symbol: "MRPL", asset_class: "IN_EQUITY" }
             ]
         }
-        updateConfig((prev: any) => ({
-            ...prev,
-            universe: { ...prev.universe, instruments: [...prev.universe.instruments, ...instruments] }
-        }))
+
+        updateConfig((prev: any) => {
+            const nextInstruments = [...prev.universe.instruments, ...newInstruments];
+            const formatted = nextInstruments.map((inst: any) => {
+                const cleaned = { symbol: inst.symbol, asset_class: inst.asset_class } as any;
+                if (allocationMode === "custom_weight") {
+                    cleaned.weight = inst.weight !== undefined ? inst.weight : (1 / nextInstruments.length).toFixed(4);
+                } else if (allocationMode === "custom_amount") {
+                    cleaned.amount = inst.amount !== undefined ? inst.amount : Math.floor(parseFloat(prev.backtest.initial_cash) / nextInstruments.length);
+                } else if (allocationMode === "equal_weight") {
+                    cleaned.weight = (1 / nextInstruments.length).toFixed(4);
+                }
+                return cleaned;
+            });
+            return {
+                ...prev,
+                universe: { ...prev.universe, instruments: formatted }
+            }
+        });
     }
 
     const validateAndAddAsset = (asset: AssetOut) => {
@@ -77,11 +150,26 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
     const executeAddAsset = (asset: AssetOut, clearExisting: boolean = false) => {
         updateConfig((prev: any) => {
             const currentInstruments = clearExisting ? [] : prev.universe.instruments;
+            const newInstItem = { symbol: asset.symbol, asset_class: asset.asset_class } as any;
+            const nextInstruments = [...currentInstruments, newInstItem];
+            
+            const formattedInstruments = nextInstruments.map((inst: any) => {
+                const cleaned = { symbol: inst.symbol, asset_class: inst.asset_class } as any;
+                if (allocationMode === "custom_weight") {
+                    cleaned.weight = inst.weight !== undefined ? inst.weight : (1 / nextInstruments.length).toFixed(4);
+                } else if (allocationMode === "custom_amount") {
+                    cleaned.amount = inst.amount !== undefined ? inst.amount : Math.floor(parseFloat(prev.backtest.initial_cash) / nextInstruments.length);
+                } else if (allocationMode === "equal_weight") {
+                    cleaned.weight = (1 / nextInstruments.length).toFixed(4);
+                }
+                return cleaned;
+            });
+
             return {
                 ...prev,
                 universe: {
                     ...prev.universe,
-                    instruments: [...currentInstruments, { symbol: asset.symbol, asset_class: asset.asset_class }]
+                    instruments: formattedInstruments
                 }
             }
         })
@@ -90,33 +178,33 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
         setConflictAsset(null)
     }
 
-    const handleClearAndSwitch = () => {
-        if (conflictAsset) {
-            executeAddAsset(conflictAsset, true)
-        }
-    }
-
     const handleRemoveSymbol = (index: number) => {
         updateConfig((prev: any) => {
-            const newInst = [...prev.universe.instruments];
-            newInst.splice(index, 1);
+            const nextInstruments = [...prev.universe.instruments];
+            nextInstruments.splice(index, 1);
+            
+            const formatted = nextInstruments.map((inst: any) => {
+                const cleaned = { ...inst } as any;
+                if (allocationMode === "equal_weight") {
+                    cleaned.weight = nextInstruments.length > 0 ? (1 / nextInstruments.length).toFixed(4) : "1.0000";
+                }
+                return cleaned;
+            });
+            
             return {
                 ...prev,
-                universe: { ...prev.universe, instruments: newInst }
+                universe: { ...prev.universe, instruments: formatted }
             }
         });
     }
 
-    // Free text add
     const handleAddSymbolObj = (e: React.FormEvent) => {
         e.preventDefault()
         if (!symbolInput.trim()) return;
-        // Check if there's an exact match in results
         const exactMatch = results.find(r => r.symbol.toUpperCase() === symbolInput.trim().toUpperCase())
         if (exactMatch) {
             validateAndAddAsset(exactMatch)
         } else {
-            // Unrecognized text. We need backend confirmation.
             setError(`Unknown symbol: ${symbolInput.toUpperCase()}. Please select an instrument from the search results to ensure validity.`)
         }
     }
@@ -197,8 +285,6 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
                         )}
                     </div>
 
-                    {/* Conflict check removed */}
-
                     <div className="flex space-x-2 mt-2">
                         <Button type="button" variant="outline" size="sm" onClick={() => handleAddPreset("US")}>+ US Mega Cap</Button>
                         <Button type="button" variant="outline" size="sm" onClick={() => handleAddPreset("IN")}>+ India Top</Button>
@@ -209,22 +295,84 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
                             {error}
                         </div>
                     )}
+                </div>
 
-                    <div className="mt-4 border border-border rounded-md p-4 min-h-[120px] bg-muted/30">
+                <div className="space-y-4 pt-4 border-t border-border mt-4">
+                    <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium">Allocation Mode</label>
+                        <select
+                            className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            value={allocationMode}
+                            onChange={(e) => handleAllocationModeChange(e.target.value)}
+                        >
+                            <option value="equal_weight">Equal Weight</option>
+                            <option value="custom_weight">Custom Weight</option>
+                            <option value="custom_amount">Custom Amount</option>
+                        </select>
+                    </div>
+
+                    <div className="border border-border rounded-md overflow-hidden bg-muted/10 min-h-[120px]">
                         {config.universe.instruments.length === 0 ? (
-                            <p className="text-sm text-muted-foreground text-center pt-8">No instruments added yet.</p>
+                            <p className="text-sm text-muted-foreground text-center py-12">No instruments added yet.</p>
                         ) : (
-                            <div className="flex flex-wrap gap-2">
+                            <div className="divide-y divide-border">
                                 {config.universe.instruments.map((inst: any, idx: number) => (
-                                    <div key={idx} className="bg-background border border-border rounded-full px-3 py-1 flex items-center text-sm space-x-2 shadow-sm">
-                                        <span className="font-medium">{inst.symbol}</span>
-                                        <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{inst.asset_class}</span>
-                                        <button type="button" className="text-muted-foreground hover:text-destructive pl-1" onClick={() => handleRemoveSymbol(idx)}>×</button>
+                                    <div key={idx} className="flex items-center justify-between p-3 hover:bg-muted/30 transition-colors text-sm">
+                                        <div className="flex items-center space-x-3">
+                                            <span className="font-semibold text-foreground">{inst.symbol}</span>
+                                            <span className="text-xs text-muted-foreground bg-secondary/80 px-2 py-0.5 rounded-full">{inst.asset_class}</span>
+                                        </div>
+                                        
+                                        <div className="flex items-center space-x-3">
+                                            {allocationMode === "equal_weight" && (
+                                                <span className="text-xs font-mono bg-secondary px-2.5 py-1 rounded">
+                                                    {(100 / config.universe.instruments.length).toFixed(1)}%
+                                                </span>
+                                            )}
+                                            {allocationMode === "custom_weight" && (
+                                                <div className="flex items-center space-x-1.5">
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        placeholder="Weight"
+                                                        className="w-20 h-8 rounded border bg-background px-2 text-center text-xs focus:ring-1 focus:ring-primary focus:outline-none"
+                                                        value={inst.weight ?? ""}
+                                                        onChange={(e) => handleValChange(idx, "weight", e.target.value)}
+                                                    />
+                                                    <span className="text-xs text-muted-foreground">weight</span>
+                                                </div>
+                                            )}
+                                            {allocationMode === "custom_amount" && (
+                                                <div className="flex items-center space-x-1.5">
+                                                    <span className="text-xs text-muted-foreground">$</span>
+                                                    <input
+                                                        type="number"
+                                                        placeholder="Amount"
+                                                        className="w-24 h-8 rounded border bg-background px-2 text-center text-xs focus:ring-1 focus:ring-primary focus:outline-none"
+                                                        value={inst.amount ?? ""}
+                                                        onChange={(e) => handleValChange(idx, "amount", e.target.value)}
+                                                    />
+                                                </div>
+                                            )}
+                                            <button 
+                                                type="button" 
+                                                className="text-muted-foreground hover:text-destructive p-1 transition-colors ml-2" 
+                                                onClick={() => handleRemoveSymbol(idx)}
+                                            >
+                                                ×
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
                         )}
                     </div>
+                    {!shortingEnabled && config.universe.instruments.some((i: any) => parseFloat(i.weight || i.amount || 0) < 0) && (
+                        <div className="flex items-center space-x-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 p-2.5 rounded-md">
+                            <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+                            <span>Negative allocations require shorting enabled in Step 3 (Realism).</span>
+                        </div>
+                    )}
                 </div>
 
                 {/* Timeframe & Capital section */}
