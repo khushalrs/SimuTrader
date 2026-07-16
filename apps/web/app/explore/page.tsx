@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import dynamic from "next/dynamic";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LazyLoadWrapper } from "./LazyLoadWrapper";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 
 const TabSkeleton = () => <Skeleton className="h-[500px] w-full mt-4" />;
 
@@ -29,9 +30,11 @@ export default function ExplorePage() {
                 </TabsList>
                 
                 <TabsContent value="snapshot" className="space-y-4">
-                    <LazyLoadWrapper active={activeTab === "snapshot"}>
-                        <MarketSnapshot />
-                    </LazyLoadWrapper>
+                    <ErrorBoundary>
+                        <LazyLoadWrapper active={activeTab === "snapshot"}>
+                            <MarketSnapshot />
+                        </LazyLoadWrapper>
+                    </ErrorBoundary>
                 </TabsContent>
                 
                 <TabsContent value="search" className="space-y-4">
@@ -44,9 +47,11 @@ export default function ExplorePage() {
                         </CardHeader>
                         <CardContent>
                             <div className="min-h-[400px]">
-                                <LazyLoadWrapper active={activeTab === "search"}>
-                                    <AssetSearchSection />
-                                </LazyLoadWrapper>
+                                <ErrorBoundary>
+                                    <LazyLoadWrapper active={activeTab === "search"}>
+                                        <AssetSearchSection />
+                                    </LazyLoadWrapper>
+                                </ErrorBoundary>
                             </div>
                         </CardContent>
                     </Card>
@@ -62,9 +67,11 @@ export default function ExplorePage() {
                         </CardHeader>
                         <CardContent>
                             <div className="min-h-[400px]">
-                                <LazyLoadWrapper active={activeTab === "lab"}>
-                                    <MultiSymbolLab />
-                                </LazyLoadWrapper>
+                                <ErrorBoundary>
+                                    <LazyLoadWrapper active={activeTab === "lab"}>
+                                        <MultiSymbolLab />
+                                    </LazyLoadWrapper>
+                                </ErrorBoundary>
                             </div>
                         </CardContent>
                     </Card>

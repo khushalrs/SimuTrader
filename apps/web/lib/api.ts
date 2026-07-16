@@ -13,7 +13,10 @@ if (isProd) {
     if (!rawApiBaseUrl) {
         throw new Error("Missing API_BASE_URL or NEXT_PUBLIC_API_BASE_URL in production environment.")
     }
-    if (!rawApiBaseUrl.startsWith("https://")) {
+    const isLocal = rawApiBaseUrl.includes("localhost") || 
+                    rawApiBaseUrl.includes("127.0.0.1") || 
+                    rawApiBaseUrl.includes("host.docker.internal");
+    if (!rawApiBaseUrl.startsWith("https://") && !isLocal) {
         throw new Error(`Production API base URL must use HTTPS. Received: ${rawApiBaseUrl}`)
     }
 } else {
