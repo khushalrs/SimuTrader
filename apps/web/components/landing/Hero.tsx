@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { motion } from "framer-motion"
 import { Area, AreaChart, ResponsiveContainer, YAxis } from "recharts"
 import { Button } from "@/components/ui/button"
 
@@ -35,37 +34,31 @@ export function Hero() {
                 {/* Grid or background pattern could go here */}
             </div>
 
+            <style>{`
+                @keyframes fadeSlideUp {
+                    from { opacity: 0; transform: translateY(20px); }
+                    to   { opacity: 1; transform: translateY(0); }
+                }
+                .anim-fade-slide { animation: fadeSlideUp 0.5s ease both; }
+            `}</style>
             <div className="z-10 container flex flex-col items-center gap-6 text-center">
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.5 }}
-                >
+                <div className="anim-fade-slide" style={{ animationDelay: "0ms" }}>
                     <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
                         Backtesting that <span className="text-primary">respects reality.</span>
                     </h1>
-                </motion.div>
+                </div>
 
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.5, delay: 0.1 }}
-                >
+                <div className="anim-fade-slide" style={{ animationDelay: "100ms" }}>
                     <p className="max-w-[42rem] leading-normal text-muted-foreground sm:text-xl sm:leading-8">
                         Multi-asset simulation with frictions: fees, taxes, and trading calendars.
                         Run strategies across US, India, and FX.
                     </p>
-                </motion.div>
+                </div>
 
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.5, delay: 0.2 }}
-                    className="flex gap-4"
-                >
+                <div className="anim-fade-slide flex gap-4" style={{ animationDelay: "200ms" }}>
                     <Button size="lg">Run a demo</Button>
                     <Button size="lg" variant="outline">Build a strategy</Button>
-                </motion.div>
+                </div>
             </div>
 
             <div className="relative mt-16 w-full max-w-5xl px-4 lg:px-0">

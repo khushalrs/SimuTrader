@@ -2,7 +2,6 @@
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import { motion } from "framer-motion"
 import { TrendingUp, Activity, BarChart2, Zap } from "lucide-react"
 
 const stories = [
@@ -49,10 +48,7 @@ export function MarketStories() {
                     <Dialog key={story.title}>
                         <DialogTrigger asChild>
                             <div className="cursor-pointer">
-                                <motion.div
-                                    whileHover={{ scale: 1.05 }}
-                                    transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                                >
+                                <div className="transition-transform duration-300 hover:scale-105 h-full">
                                     <Card className="h-full transition-shadow hover:shadow-lg">
                                         <CardHeader>
                                             <story.icon className="h-8 w-8 text-primary mb-2" />
@@ -66,7 +62,7 @@ export function MarketStories() {
                                             </div>
                                         </CardContent>
                                     </Card>
-                                </motion.div>
+                                </div>
                             </div>
                         </DialogTrigger>
                         <DialogContent className="sm:max-w-[800px] h-[80vh] flex flex-col">

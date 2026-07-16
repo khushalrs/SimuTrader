@@ -2,7 +2,6 @@
 
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { motion } from "framer-motion"
 import { TrendingUp, BarChart2, Zap, ArrowRight, Layers, Activity } from "lucide-react"
 import Link from "next/link"
 
@@ -78,6 +77,13 @@ export default function PlaygroundPage() {
 
     return (
         <main className="container py-12">
+            <style>{`
+                @keyframes fadeSlideUp {
+                    from { opacity: 0; transform: translateY(20px); }
+                    to   { opacity: 1; transform: translateY(0); }
+                }
+                .anim-fade-slide { animation: fadeSlideUp 0.3s ease both; }
+            `}</style>
             <div className="mb-8">
                 <h1 className="text-3xl font-bold tracking-tight">Playground</h1>
                 <p className="text-muted-foreground mt-2">
@@ -87,11 +93,10 @@ export default function PlaygroundPage() {
 
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {presets.map((preset, index) => (
-                    <motion.div
+                    <div
                         key={preset.id}
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.3, delay: index * 0.1 }}
+                        className="anim-fade-slide"
+                        style={{ animationDelay: `${index * 100}ms` }}
                     >
                         <Card className="h-full flex flex-col hover:border-primary/50 transition-colors">
                             <CardHeader>
@@ -130,7 +135,7 @@ export default function PlaygroundPage() {
                                 </Button>
                             </CardFooter>
                         </Card>
-                    </motion.div>
+                    </div>
                 ))}
             </div>
 

@@ -1,7 +1,6 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
-import { motion } from "framer-motion"
 import Link from "next/link"
 
 const steps = [
@@ -30,6 +29,13 @@ const steps = [
 export function Timeline() {
     return (
         <section className="container py-24 bg-muted/30">
+            <style>{`
+                @keyframes fadeSlideUp {
+                    from { opacity: 0; transform: translateY(20px); }
+                    to   { opacity: 1; transform: translateY(0); }
+                }
+                .anim-fade-slide { animation: fadeSlideUp 0.5s ease both; }
+            `}</style>
             <div className="mb-12 text-center">
                 <h2 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">Turn stories into strategies</h2>
                 <p className="mt-4 text-lg text-muted-foreground">The journey from insight to execution.</p>
@@ -42,20 +48,17 @@ export function Timeline() {
                     <div className="hidden md:block absolute top-[24px] left-0 w-full h-0.5 bg-muted-foreground/20 -z-10" />
 
                     {steps.map((item, index) => (
-                        <motion.div
+                        <div
                             key={item.step}
-                            className="flex flex-col items-center text-center space-y-4"
-                            initial={{ opacity: 0, y: 20 }}
-                            whileInView={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.5, delay: index * 0.1 }}
-                            viewport={{ once: true }}
+                            className="flex flex-col items-center text-center space-y-4 anim-fade-slide"
+                            style={{ animationDelay: `${index * 100}ms` }}
                         >
                             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-background border-2 border-primary text-xl font-bold text-primary shadow-sm z-10">
                                 {item.step}
                             </div>
                             <h3 className="text-xl font-bold">{item.title}</h3>
                             <p className="text-sm text-muted-foreground">{item.description}</p>
-                        </motion.div>
+                        </div>
                     ))}
                 </div>
 
