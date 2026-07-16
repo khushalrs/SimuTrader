@@ -23,15 +23,19 @@ from app.services.redis_store import refresh_run_cache
 from app.schemas.backtests import (
     BacktestCreate,
     BacktestOut,
+    BacktestPreflightOut,
+    BacktestPreflightRequest,
     RunCompareMetricRowOut,
     RunCompareOut,
     RunCompareSeriesOut,
+    RunFillOut,
     RunNormalizedEquityPointOut,
     RunTaxesOut,
     RunTaxEventOut,
 )
 from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
+from app.services.preflight import run_preflight
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
 logger = logging.getLogger(__name__)
@@ -160,6 +164,15 @@ def _mark_stale_queued_runs(db: Session, stale_after_seconds: int) -> int:
         for stale_run in stale_runs:
             refresh_run_cache(stale_run)
     return len(stale_runs)
+
+
+@router.post("/preflight", response_model=BacktestPreflightOut)
+def preflight_backtest(payload: BacktestPreflightRequest | dict) -> BacktestPreflightOut:
+    raw_config = payload.config_snapshot if isinstance(payload, BacktestPreflightRequest) else payload
+    if isinstance(raw_config, dict) and "config_snapshot" in raw_config and "universe" not in raw_config:
+        nested = raw_config.get("config_snapshot")
+        raw_config = nested if isinstance(nested, dict) else raw_config
+    return BacktestPreflightOut.model_validate(run_preflight(raw_config))
 
 
 @router.post("", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
@@ -384,6 +397,29 @@ def list_backtests(
         query = query.filter(BacktestRun.status == str(status_filter).upper())
     runs = query.order_by(BacktestRun.created_at.desc()).offset(offset).limit(limit).all()
     return [_to_backtest_out(run) for run in runs]
+
+
+@router.get("/{run_id}/trades", response_model=list[RunFillOut])
+def get_backtest_trades(
+    run_id: UUID,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[RunFillOut]:
+    from app.api.routes.runs import get_run_fills
+
+    return get_run_fills(
+        run_id=run_id,
+        start=start,
+        end=end,
+        limit=limit,
+        offset=offset,
+        actor=actor,
+        db=db,
+    )
 
 
 @router.get("/{run_id}/taxes", response_model=RunTaxesOut)

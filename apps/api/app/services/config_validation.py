@@ -362,6 +362,14 @@ def _parse_date(value: Any, field_name: str) -> date:
         raise ValueError(f"Invalid {field_name} format: {value}") from exc
 
 
+def _implied_currency(asset_class: str) -> str | None:
+    if asset_class == "US_EQUITY":
+        return "USD"
+    if asset_class == "IN_EQUITY":
+        return "INR"
+    return None
+
+
 def _validate_cross_fields(config: Dict[str, Any]) -> None:
     backtest = config.get("backtest") or {}
     start_date = _parse_date(backtest.get("start_date"), "start_date")
@@ -375,6 +383,15 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
     shorting_enabled = bool((financing.get("shorting") or {}).get("enabled"))
     margin_enabled = bool((financing.get("margin") or {}).get("enabled"))
     risk = config.get("risk") or {}
+    strategy = str(config.get("strategy") or "BUY_AND_HOLD").upper()
+    implied_currencies = {
+        currency
+        for currency in (
+            _implied_currency(str(inst.get("asset_class") or "")) for inst in instruments
+        )
+        if currency is not None
+    }
+    mixed_currency_universe = len(implied_currencies) > 1
     has_amount = any("amount" in inst for inst in instruments)
     has_weight = any("weight" in inst for inst in instruments)
     if has_amount and has_weight:
@@ -414,6 +431,35 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
             raise ValueError(
                 f"Invalid config: total amount {total_amount:.2f} exceeds initial_cash {initial_cash:.2f}"
             )
+    if mixed_currency_universe:
+        if strategy == "MOMENTUM":
+            raise ValueError(
+                "Invalid config: MOMENTUM currently supports single-currency universes only. "
+                "Use only USD assets, only INR assets, or switch to BUY_AND_HOLD."
+            )
+        if strategy == "MEAN_REVERSION":
+            raise ValueError(
+                "Invalid config: MEAN_REVERSION currently supports single-currency universes only. "
+                "Use only USD assets, only INR assets, or switch to BUY_AND_HOLD."
+            )
+        if strategy == "DCA":
+            raise ValueError(
+                "Invalid config: DCA currently supports single-currency universes only."
+            )
+        if strategy == "FIXED_WEIGHT_REBALANCE":
+            raise ValueError(
+                "Invalid config: FIXED_WEIGHT_REBALANCE currently supports single-currency universes only. "
+                "Use BUY_AND_HOLD with explicit amount allocations for mixed-currency runs."
+            )
+        if strategy == "BUY_AND_HOLD":
+            if "initial_cash_by_currency" not in backtest:
+                raise ValueError(
+                    "Invalid config: initial_cash_by_currency is required when the universe spans multiple currencies."
+                )
+            if not has_amount:
+                raise ValueError(
+                    "Invalid config: mixed-currency BUY_AND_HOLD runs require explicit amount allocations for every instrument."
+                )
 
     max_gross_leverage = float(
         risk.get("max_gross_leverage", (financing.get("margin") or {}).get("max_leverage", 1.0))
@@ -427,7 +473,6 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
     if max_net_leverage > max_gross_leverage + 1e-12:
         raise ValueError("Invalid config: max_net_leverage cannot exceed max_gross_leverage")
 
-    strategy = str(config.get("strategy") or "BUY_AND_HOLD").upper()
     if strategy == "FIXED_WEIGHT_REBALANCE":
         params = config.get("strategy_params") or {}
         target_weights = params.get("target_weights") or {}

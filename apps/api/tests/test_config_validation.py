@@ -63,6 +63,35 @@ def test_negative_amount_requires_shorting_enabled() -> None:
         validate_and_resolve_config(config)
 
 
+def test_negative_weights_require_shorting_enabled() -> None:
+    config = _base_config()
+    config["universe"]["instruments"][0]["weight"] = -0.25
+    config["universe"]["instruments"][1]["weight"] = 0.75
+    with pytest.raises(ValueError, match="negative weights require"):
+        validate_and_resolve_config(config)
+
+
+def test_leverage_requires_margin_enabled() -> None:
+    config = _base_config()
+    config["risk"] = {"max_gross_leverage": 1.5, "max_net_leverage": 1.0}
+    with pytest.raises(ValueError, match="max_gross_leverage > 1 requires"):
+        validate_and_resolve_config(config)
+
+
+def test_mixed_currency_momentum_validation_uses_clean_message() -> None:
+    config = _base_config()
+    config["strategy"] = "MOMENTUM"
+    config["strategy_params"] = {
+        "lookback_days": 5,
+        "skip_days": 1,
+        "top_k": 1,
+        "weighting": "EQUAL",
+    }
+    config["universe"]["instruments"][1]["asset_class"] = "IN_EQUITY"
+    with pytest.raises(ValueError, match="MOMENTUM currently supports single-currency universes only"):
+        validate_and_resolve_config(config)
+
+
 def test_execution_block_maps_into_legacy_commission_fields() -> None:
     config = _base_config()
     config["execution"] = {
