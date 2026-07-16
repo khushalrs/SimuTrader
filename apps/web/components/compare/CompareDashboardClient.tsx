@@ -157,15 +157,16 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
                     <Card>
                         <CardHeader>
                             <CardTitle>Comparative Equity Overlay</CardTitle>
+                            <CardDescription>Performance comparison rebased to growth of $1 (Indexed Equity, Start = 1.00x)</CardDescription>
                         </CardHeader>
                         <CardContent>
                             <div className="h-[400px] w-full">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <LineChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
                                         <XAxis dataKey="date" tick={{fontSize: 12}} minTickGap={30} />
-                                        <YAxis tick={{fontSize: 12}} domain={['auto', 'auto']} tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`} />
+                                        <YAxis tick={{fontSize: 12}} domain={['auto', 'auto']} tickFormatter={(v) => `${parseFloat(v).toFixed(2)}x`} />
                                         <Tooltip 
-                                            formatter={(value: any, name: any) => [`$${value.toLocaleString()}`, name.split("-")[0]]}
+                                            formatter={(value: any, name: any) => [`Growth: ${parseFloat(value).toFixed(2)}x`, name.split("-")[0]]}
                                             labelStyle={{color: '#000'}} 
                                         />
                                         {activeIds.map((id, idx) => (

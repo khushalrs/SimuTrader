@@ -166,3 +166,13 @@ class RunCompareOut(BaseModel):
     run_ids: list[UUID]
     metric_rows: list[RunCompareMetricRowOut] = Field(default_factory=list)
     equity_series: list[RunCompareSeriesOut] = Field(default_factory=list)
+
+
+class PreflightRequest(BaseModel):
+    config_snapshot: Dict[str, Any]
+
+
+class PreflightOut(BaseModel):
+    status: str
+    errors: list[str]
+    warnings: list[str]
