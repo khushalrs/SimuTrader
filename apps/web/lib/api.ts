@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 const DEFAULT_API_BASE_URL = "http://localhost:8000"
 
 const isServer = typeof window === "undefined"
@@ -20,15 +22,92 @@ if (isProd) {
 
 const API_BASE_URL = rawApiBaseUrl as string
 
+// ---------------------------------------------------------------------------
+// Dev-only logger — silenced in production to prevent backend internals from
+// leaking into browser consoles or log aggregators.
+// ---------------------------------------------------------------------------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function devLog(...args: any[]): void {
+    if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.error(...args)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// extractErrorMessage — returns a safe, generic message for the UI in prod.
+// The raw backend detail is only logged in development.
+// ---------------------------------------------------------------------------
 async function extractErrorMessage(res: Response, fallbackPrefix: string): Promise<string> {
     try {
         const errJson = await res.json();
-        const msg = errJson.error_message_public || errJson.detail || JSON.stringify(errJson);
-        return `${fallbackPrefix}: ${msg}`;
+        const rawMsg = errJson.error_message_public || errJson.detail || JSON.stringify(errJson);
+        devLog(`[API] ${fallbackPrefix}:`, rawMsg)
+        if (isProd) {
+            return `${fallbackPrefix}: An unexpected error occurred. Please try again.`;
+        }
+        return `${fallbackPrefix}: ${rawMsg}`;
     } catch {
         return `${fallbackPrefix}: Server returned status ${res.status}`;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Zod schemas — validate the shapes of critical API responses at runtime.
+// Use .safeParse() so a malformed backend response degrades gracefully
+// instead of crashing the UI with an unhandled exception.
+// ---------------------------------------------------------------------------
+
+const BacktestOutSchema = z.object({
+    run_id: z.string(),
+    name: z.string().nullish(),
+    status: z.string(),
+    error_code: z.string().nullish(),
+    error_message_public: z.string().nullish(),
+    error_retryable: z.boolean().nullish(),
+    error_id: z.string().nullish(),
+    created_at: z.string(),
+    started_at: z.string().nullish(),
+    finished_at: z.string().nullish(),
+    data_snapshot_id: z.string(),
+    seed: z.number(),
+    config_snapshot: z.any().optional(),
+})
+
+const RunMetricOutSchema = z.object({
+    cagr: z.number().nullish(),
+    volatility: z.number().nullish(),
+    sharpe: z.number().nullish(),
+    sortino: z.number().nullish(),
+    max_drawdown: z.number().nullish(),
+    turnover: z.number().nullish(),
+    gross_return: z.number().nullish(),
+    net_return: z.number().nullish(),
+    fee_drag: z.number().nullish(),
+    tax_drag: z.number().nullish(),
+    borrow_drag: z.number().nullish(),
+    margin_interest_drag: z.number().nullish(),
+})
+
+const RunDailyEquityOutSchema = z.object({
+    date: z.string(),
+    equity_base: z.number(),
+    gross_exposure_base: z.number(),
+    net_exposure_base: z.number(),
+    drawdown: z.number(),
+    fees_cum_base: z.number(),
+    taxes_cum_base: z.number(),
+    borrow_fees_cum_base: z.number(),
+    margin_interest_cum_base: z.number(),
+})
+
+// The /backtests list returns BacktestOut-shaped objects. We keep the schema
+// permissive (passthrough) for extra fields the server may add.
+const RunListItemSchema = z.object({
+    run_id: z.string(),
+}).passthrough()
+
+const RunListSchema = z.array(RunListItemSchema)
 
 function runApiFetch(input: string, init?: RequestInit): Promise<Response> {
     return fetch(input, {
@@ -321,11 +400,16 @@ export async function getRun(runId: string): Promise<RunData | null> {
         const runRes = await runApiFetch(`${API_BASE_URL}/runs/${runId}`, { cache: "no-store" })
 
         if (!runRes.ok) {
-            console.error(`Failed to fetch run ${runId}: ${runRes.status} ${runRes.statusText}`)
+            devLog(`[API] Failed to fetch run ${runId}: ${runRes.status} ${runRes.statusText}`)
             return null
         }
 
-        const run: BacktestOut = await runRes.json()
+        const parsed = BacktestOutSchema.safeParse(await runRes.json())
+        if (!parsed.success) {
+            devLog("[API] getRun: unexpected response shape", parsed.error.format())
+            return null
+        }
+        const run: BacktestOut = parsed.data
 
         const title = run.name?.trim() || `Run ${run.run_id.slice(0, 8)}`
         const dateSource = run.finished_at || run.started_at || run.created_at
@@ -361,7 +445,7 @@ export async function getRun(runId: string): Promise<RunData | null> {
             effective_end_date: undefined,
         }
     } catch (error) {
-        console.error("Error fetching run:", error)
+        devLog("[API] Error fetching run:", error)
         return null
     }
 }
@@ -372,7 +456,7 @@ export async function getRunStatus(runId: string): Promise<RunStatusOut | null> 
         if (!res.ok) return null
         return await res.json()
     } catch (e) {
-        console.error("Error fetching run status:", e)
+        devLog("[API] Error fetching run status:", e)
         return null
     }
 }
@@ -380,7 +464,12 @@ export async function getRunStatus(runId: string): Promise<RunStatusOut | null> 
 export async function getRunMetrics(runId: string) {
     const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/metrics`, { cache: "no-store" });
     if (!res.ok) return null;
-    const data: RunMetricOut = await res.json();
+    const parsed = RunMetricOutSchema.safeParse(await res.json());
+    if (!parsed.success) {
+        devLog("[API] getRunMetrics: unexpected response shape", parsed.error.format())
+        return null
+    }
+    const data: RunMetricOut = parsed.data
     return {
         metrics: mapMetrics(data),
         costs: {
@@ -395,8 +484,12 @@ export async function getRunMetrics(runId: string) {
 export async function getRunEquity(runId: string) {
     const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/equity`, { cache: "no-store" });
     if (!res.ok) return null;
-    const data: RunDailyEquityOut[] = await res.json();
-    return mapEquity(data);
+    const parsed = z.array(RunDailyEquityOutSchema).safeParse(await res.json());
+    if (!parsed.success) {
+        devLog("[API] getRunEquity: unexpected response shape", parsed.error.format())
+        return null
+    }
+    return mapEquity(parsed.data);
 }
 
 export function buildValidConfig(config: any) {
@@ -561,12 +654,12 @@ export async function getRunPositions(runId: string, date?: string, limit?: numb
         }
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch positions: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch positions: ${res.status} ${res.statusText}`)
             return []
         }
         return await res.json()
     } catch (e) {
-        console.error("Error fetching positions:", e)
+        devLog("[API] Error fetching positions:", e)
         return []
     }
 }
@@ -575,12 +668,12 @@ export async function getRunTaxes(runId: string): Promise<RunTaxesOut | null> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/backtests/${runId}/taxes`, { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch taxes: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch taxes: ${res.status} ${res.statusText}`)
             return null
         }
         return await res.json()
     } catch (e) {
-        console.error("Error fetching taxes:", e)
+        devLog("[API] Error fetching taxes:", e)
         return null
     }
 }
@@ -593,12 +686,12 @@ export async function compareRuns(baseRunId: string, runIds: string[]): Promise<
         }
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to compare runs: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to compare runs: ${res.status} ${res.statusText}`)
             return null
         }
         return await res.json()
     } catch (e) {
-        console.error("Error comparing runs:", e)
+        devLog("[API] Error comparing runs:", e)
         return null
     }
 }
@@ -614,12 +707,12 @@ export async function getRunFills(runId: string, start?: string, end?: string, l
         }
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch fills: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch fills: ${res.status} ${res.statusText}`)
             return []
         }
         return await res.json()
     } catch (e) {
-        console.error("Error fetching fills:", e)
+        devLog("[API] Error fetching fills:", e)
         return []
     }
 }
@@ -630,12 +723,12 @@ export async function getRunTopHoldings(runId: string, limit: number = 5): Promi
         url.searchParams.append("limit", limit.toString())
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch top holdings: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch top holdings: ${res.status} ${res.statusText}`)
             return []
         }
         return await res.json()
     } catch (e) {
-        console.error("Error fetching top holdings:", e)
+        devLog("[API] Error fetching top holdings:", e)
         return []
     }
 }
@@ -653,12 +746,12 @@ export async function searchAssets(query: string): Promise<AssetOut[]> {
         url.searchParams.append("q", query)
         const res = await runApiFetch(url.toString())
         if (!res.ok) {
-            console.error(`Failed to fetch assets: ${res.status}`)
+            devLog(`[API] Failed to fetch assets: ${res.status}`)
             return []
         }
         return await res.json()
     } catch (e) {
-        console.error("Error searching assets", e)
+        devLog("[API] Error searching assets", e)
         return []
     }
 }
@@ -667,12 +760,17 @@ export async function getRuns(): Promise<Partial<RunData>[]> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/backtests`, { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch runs: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch runs: ${res.status} ${res.statusText}`)
             return []
         }
-        return await res.json()
+        const parsed = RunListSchema.safeParse(await res.json())
+        if (!parsed.success) {
+            devLog("[API] getRuns: unexpected response shape", parsed.error.format())
+            return []
+        }
+        return parsed.data as Partial<RunData>[]
     } catch (e) {
-        console.error("Error fetching runs:", e)
+        devLog("[API] Error fetching runs:", e)
         return []
     }
 }

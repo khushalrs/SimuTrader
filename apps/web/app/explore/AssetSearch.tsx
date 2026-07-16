@@ -15,6 +15,7 @@ export function AssetSearch({ onSelectAsset, placeholder = "Search instruments (
     const [debouncedInput, setDebouncedInput] = useState("");
     const [results, setResults] = useState<AssetOut[]>([]);
     const [isSearching, setIsSearching] = useState(false);
+    const [hasSearchError, setHasSearchError] = useState(false);
     const [showDropdown, setShowDropdown] = useState(false);
 
     // Debounce
@@ -30,17 +31,22 @@ export function AssetSearch({ onSelectAsset, placeholder = "Search instruments (
         if (!debouncedInput.trim()) {
             setResults([]);
             setIsSearching(false);
+            setHasSearchError(false);
             return;
         }
         let active = true;
         setIsSearching(true);
+        setHasSearchError(false);
         searchAssets(debouncedInput.trim()).then(res => {
             if (active) {
                 setResults(res);
                 setIsSearching(false);
             }
         }).catch(() => {
-            if (active) setIsSearching(false);
+            if (active) {
+                setIsSearching(false);
+                setHasSearchError(true);
+            }
         });
 
         return () => { active = false; };
@@ -78,6 +84,10 @@ export function AssetSearch({ onSelectAsset, placeholder = "Search instruments (
                     {isSearching ? (
                         <div className="p-4 flex items-center justify-center text-muted-foreground text-sm">
                             <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Searching...
+                        </div>
+                    ) : hasSearchError ? (
+                        <div className="p-4 text-destructive text-sm text-center">
+                            Search failed — please try again.
                         </div>
                     ) : results.length > 0 ? (
                         <ul className="py-1 text-sm">
