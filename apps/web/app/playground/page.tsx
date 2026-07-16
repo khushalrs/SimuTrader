@@ -77,13 +77,6 @@ export default function PlaygroundPage() {
 
     return (
         <main className="container py-12">
-            <style>{`
-                @keyframes fadeSlideUp {
-                    from { opacity: 0; transform: translateY(20px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                .anim-fade-slide { animation: fadeSlideUp 0.3s ease both; }
-            `}</style>
             <div className="mb-8">
                 <h1 className="text-3xl font-bold tracking-tight">Playground</h1>
                 <p className="text-muted-foreground mt-2">

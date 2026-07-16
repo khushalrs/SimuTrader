@@ -34,13 +34,6 @@ export function Hero() {
                 {/* Grid or background pattern could go here */}
             </div>
 
-            <style>{`
-                @keyframes fadeSlideUp {
-                    from { opacity: 0; transform: translateY(20px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                .anim-fade-slide { animation: fadeSlideUp 0.5s ease both; }
-            `}</style>
             <div className="z-10 container flex flex-col items-center gap-6 text-center">
                 <div className="anim-fade-slide" style={{ animationDelay: "0ms" }}>
                     <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">

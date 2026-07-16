@@ -29,13 +29,6 @@ const steps = [
 export function Timeline() {
     return (
         <section className="container py-24 bg-muted/30">
-            <style>{`
-                @keyframes fadeSlideUp {
-                    from { opacity: 0; transform: translateY(20px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                .anim-fade-slide { animation: fadeSlideUp 0.5s ease both; }
-            `}</style>
             <div className="mb-12 text-center">
                 <h2 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">Turn stories into strategies</h2>
                 <p className="mt-4 text-lg text-muted-foreground">The journey from insight to execution.</p>
