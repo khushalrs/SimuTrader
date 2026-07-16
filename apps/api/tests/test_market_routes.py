@@ -8,6 +8,7 @@ import duckdb
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from app.security.rate_limit import clear_memory_rate_limits
 
 MARKET_ROUTE_FILE = Path(__file__).resolve().parents[1] / "app" / "api" / "routes" / "market.py"
 _market_spec = importlib.util.spec_from_file_location("isolated_market_route", MARKET_ROUTE_FILE)
@@ -152,7 +153,7 @@ def _clear_market_caches() -> None:
     _market_module.get_settings.cache_clear()
     _market_module._bars_cache.clear()
     _market_module._snapshot_cache.clear()
-    _market_module._market_rate_limits.clear()
+    clear_memory_rate_limits()
     _market_module._redis_client = None
 
 
@@ -166,10 +167,10 @@ def test_market_symbols_reject_invalid_characters(monkeypatch):
     assert "invalid symbol" in res.json()["detail"]
 
 
-def test_market_rate_limit_uses_backtest_window_settings(monkeypatch):
+def test_market_rate_limit_uses_market_window_settings(monkeypatch):
     monkeypatch.setenv("REDIS_CACHE_URL", "")
-    monkeypatch.setenv("MAX_BACKTEST_CREATES_PER_WINDOW_GUEST", "1")
-    monkeypatch.setenv("BACKTEST_CREATE_WINDOW_SECONDS", "60")
+    monkeypatch.setenv("MAX_MARKET_REQUESTS_PER_WINDOW_GUEST", "1")
+    monkeypatch.setenv("MARKET_REQUEST_WINDOW_SECONDS", "60")
     _clear_market_caches()
     actor = _market_module.ActorContext(
         tier=_market_module.ActorTier.GUEST,
@@ -181,6 +182,7 @@ def test_market_rate_limit_uses_backtest_window_settings(monkeypatch):
         _market_module._enforce_market_rate_limit(actor, "snapshot")
 
     assert exc_info.value.status_code == 429
+    assert exc_info.value.headers["Retry-After"] == "60"
 
 
 def test_market_bars_returns_rows_within_bounds(tmp_path, monkeypatch):

@@ -17,6 +17,8 @@ from app.models.backtests import (
     RunTaxEvent,
 )
 from app.security import ActorContext, ActorTier, get_current_actor
+from app.security.rate_limit import enforce_fixed_window_rate_limit, rate_limit_exceeded
+from app.security.sanitize import sanitize_ascii_printable
 from app.services.redis_store import refresh_run_cache
 from app.schemas.backtests import (
     BacktestCreate,
@@ -40,12 +42,7 @@ MAX_COMPARE_MAX_POINTS = 2000
 
 
 def _sanitize_user_string(value: str | None, *, max_len: int = 255) -> str | None:
-    if value is None:
-        return None
-    cleaned = "".join(ch for ch in str(value) if 32 <= ord(ch) <= 126).strip()
-    if not cleaned:
-        return None
-    return cleaned[:max_len]
+    return sanitize_ascii_printable(value, max_len=max_len)
 
 
 def _to_backtest_out(run: BacktestRun) -> BacktestOut:
@@ -254,31 +251,24 @@ def create_backtest(
         or 0
     )
     if active_run_count >= max_active_runs:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        raise rate_limit_exceeded(
             detail="Too many active runs. Please wait for current runs to finish.",
+            retry_after_seconds=settings.backtest_create_window_seconds,
         )
 
-    rate_limit_count = (
+    create_rate_limit = (
         settings.max_backtest_creates_per_window_user
         if actor.tier == ActorTier.USER
         else settings.max_backtest_creates_per_window_guest
     )
-    window_start = now_utc - timedelta(seconds=settings.backtest_create_window_seconds)
-    recent_create_count = (
-        db.query(func.count(BacktestRun.run_id))
-        .filter(
-            BacktestRun.actor_key == actor.actor_key,
-            BacktestRun.created_at >= window_start,
-        )
-        .scalar()
-        or 0
+    enforce_fixed_window_rate_limit(
+        key=f"backtest:create:{actor.tier.value}:{actor.actor_key}",
+        limit=create_rate_limit,
+        window_seconds=settings.backtest_create_window_seconds,
+        redis_url=settings.redis_cache_url,
+        redis_prefix=settings.redis_cache_prefix,
+        detail="Too many backtest creations in a short period. Please retry shortly.",
     )
-    if recent_create_count >= rate_limit_count:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many backtest creations in a short period. Please retry shortly.",
-        )
 
     run = BacktestRun(
         strategy_id=payload.strategy_id,

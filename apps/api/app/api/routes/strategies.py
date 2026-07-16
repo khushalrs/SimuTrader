@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.strategies import Strategy
 from app.security import ActorContext, get_current_actor
+from app.security.sanitize import sanitize_ascii_printable
 from app.schemas.strategies import StrategyCreate, StrategyOut
 from app.services.config_validation import validate_and_resolve_config
 
@@ -18,12 +19,7 @@ MAX_CONFIG_BYTES = 250_000
 
 
 def _sanitize_user_string(value: str | None, *, max_len: int) -> str | None:
-    if value is None:
-        return None
-    cleaned = "".join(ch for ch in str(value) if ord(ch) >= 32 or ch in "\t\r\n").strip()
-    if not cleaned:
-        return None
-    return cleaned[:max_len]
+    return sanitize_ascii_printable(value, max_len=max_len)
 
 
 @router.post("", response_model=StrategyOut, status_code=status.HTTP_201_CREATED)

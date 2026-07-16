@@ -32,6 +32,9 @@ class Settings:
     max_backtest_creates_per_window_guest: int
     max_backtest_creates_per_window_user: int
     backtest_create_window_seconds: int
+    max_market_requests_per_window_guest: int
+    max_market_requests_per_window_user: int
+    market_request_window_seconds: int
     trusted_user_header_requested: bool
     trusted_user_header_enabled: bool
     trusted_user_header_proxy_secret: str
@@ -86,6 +89,12 @@ class Settings:
             raise RuntimeError("MAX_BACKTEST_CREATES_PER_WINDOW_USER must be > 0.")
         if self.backtest_create_window_seconds <= 0:
             raise RuntimeError("BACKTEST_CREATE_WINDOW_SECONDS must be > 0.")
+        if self.max_market_requests_per_window_guest <= 0:
+            raise RuntimeError("MAX_MARKET_REQUESTS_PER_WINDOW_GUEST must be > 0.")
+        if self.max_market_requests_per_window_user <= 0:
+            raise RuntimeError("MAX_MARKET_REQUESTS_PER_WINDOW_USER must be > 0.")
+        if self.market_request_window_seconds <= 0:
+            raise RuntimeError("MARKET_REQUEST_WINDOW_SECONDS must be > 0.")
         if not self.is_dev_env and self.trusted_user_header_requested:
             raise RuntimeError(
                 "TRUSTED_USER_HEADER_ENABLED must be false outside dev/test environments."
@@ -146,6 +155,15 @@ def get_settings() -> Settings:
     backtest_create_window_seconds = int(
         os.getenv("BACKTEST_CREATE_WINDOW_SECONDS", "60").strip()
     )
+    max_market_requests_per_window_guest = int(
+        os.getenv("MAX_MARKET_REQUESTS_PER_WINDOW_GUEST", "120").strip()
+    )
+    max_market_requests_per_window_user = int(
+        os.getenv("MAX_MARKET_REQUESTS_PER_WINDOW_USER", "600").strip()
+    )
+    market_request_window_seconds = int(
+        os.getenv("MARKET_REQUEST_WINDOW_SECONDS", "60").strip()
+    )
     trusted_user_header_requested = _parse_bool(
         os.getenv("TRUSTED_USER_HEADER_ENABLED"),
         default=env in {"dev", "development", "test"},
@@ -202,6 +220,9 @@ def get_settings() -> Settings:
         max_backtest_creates_per_window_guest=max_backtest_creates_per_window_guest,
         max_backtest_creates_per_window_user=max_backtest_creates_per_window_user,
         backtest_create_window_seconds=backtest_create_window_seconds,
+        max_market_requests_per_window_guest=max_market_requests_per_window_guest,
+        max_market_requests_per_window_user=max_market_requests_per_window_user,
+        market_request_window_seconds=market_request_window_seconds,
         trusted_user_header_requested=trusted_user_header_requested,
         trusted_user_header_enabled=trusted_user_header_enabled,
         trusted_user_header_proxy_secret=trusted_user_header_proxy_secret,

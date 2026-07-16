@@ -51,6 +51,16 @@ def test_settings_reject_trusted_user_header_in_prod(monkeypatch):
         settings.validate()
 
 
+def test_settings_reject_invalid_market_rate_limit(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.setenv("MAX_MARKET_REQUESTS_PER_WINDOW_GUEST", "0")
+
+    settings = get_settings()
+    with pytest.raises(RuntimeError, match="MAX_MARKET_REQUESTS_PER_WINDOW_GUEST"):
+        settings.validate()
+
+
 def test_settings_reject_cors_wildcard_with_credentials(monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setenv("ENV", "dev")
