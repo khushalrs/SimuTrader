@@ -1,13 +1,40 @@
 version: "3.9"
 
 services:
+  api:
+    profiles: [backend, dev]
+    build:
+      context: ./apps/api
+    env_file:
+      - ./apps/api/.env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./apps/api/app:/app/app
+      - ./data:/app/data
+
+  worker:
+    profiles: [backend, dev]
+    build:
+      context: ./apps/api
+    env_file:
+      - ./apps/api/.env
+    command:
+      - sh
+      - -lc
+      - celery -A app.worker.celery_app worker --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-1}
+    volumes:
+      - ./apps/api/app:/app/app
+      - ./data:/app/data
+
   web:
+    profiles: [frontend, dev]
     build:
       context: ./apps/web
     env_file:
       - ./apps/web/.env.local
     ports:
-      - "${WEB_PORT}:3000"
+      - "${WEB_PORT:-3000}:3000"
     volumes:
       - ./apps/web:/app
       - /app/node_modules
