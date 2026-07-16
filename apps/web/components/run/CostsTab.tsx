@@ -22,12 +22,14 @@ interface CostsTabProps {
 export function CostsTab({ data, status }: CostsTabProps) {
     const [fills, setFills] = useState<RunFillOut[]>([]);
     const [isLoadingFills, setIsLoadingFills] = useState(true);
+    const [fillsError, setFillsError] = useState(false);
 
     useEffect(() => {
         setIsLoadingFills(true);
+        setFillsError(false);
         getRunFills(data.id)
             .then(res => setFills(res))
-            .catch(err => console.error(err))
+            .catch(() => setFillsError(true))
             .finally(() => setIsLoadingFills(false));
     }, [data.id, status]);
 
@@ -190,6 +192,12 @@ export function CostsTab({ data, status }: CostsTabProps) {
                                     <tr>
                                         <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
                                             Loading trades...
+                                        </td>
+                                    </tr>
+                                ) : fillsError ? (
+                                    <tr>
+                                        <td colSpan={7} className="px-4 py-8 text-center text-destructive">
+                                            Failed to load trades. Please refresh and try again.
                                         </td>
                                     </tr>
                                 ) : fills.length === 0 ? (
