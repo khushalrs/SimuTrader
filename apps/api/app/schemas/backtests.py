@@ -15,6 +15,28 @@ class BacktestCreate(BaseModel):
     seed: int = Field(default=42, ge=0)
 
 
+class BacktestPreflightRequest(BaseModel):
+    config_snapshot: Dict[str, Any]
+
+
+class BacktestPreflightCoverageOut(BaseModel):
+    symbol: str
+    currency: Optional[str] = None
+    first_date: Optional[date] = None
+    last_date: Optional[date] = None
+    rows: int
+
+
+class BacktestPreflightOut(BaseModel):
+    ok: bool
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    data_coverage: list[BacktestPreflightCoverageOut] = Field(default_factory=list)
+    required_fx_pairs: list[str] = Field(default_factory=list)
+    effective_start_date: Optional[date] = None
+    effective_end_date: Optional[date] = None
+
+
 class BacktestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

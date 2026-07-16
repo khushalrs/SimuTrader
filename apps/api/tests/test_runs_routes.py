@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from app.api.routes.backtests import get_backtest_trades
 from app.api.routes.runs import get_run_fills, get_run_positions
 from app.security import ActorContext, ActorTier
 from app.models.backtests import BacktestRun, RunDailyEquity, RunFill, RunOrder, RunPosition
@@ -164,3 +165,28 @@ def test_get_run_fills_maps_side_from_orders():
     assert len(result) == 1
     assert result[0].side == "BUY"
     assert result[0].price == 150.0
+
+
+def test_get_backtest_trades_alias_maps_to_fills():
+    order_id = uuid4()
+    db = _FakeDB(
+        run_exists=True,
+        fills=[
+            SimpleNamespace(
+                order_id=order_id,
+                date=date(2024, 1, 3),
+                symbol="MSFT",
+                qty=2.0,
+                price_native=150.0,
+                notional_native=300.0,
+                commission_native=1.2,
+                slippage_native=0.3,
+            )
+        ],
+        order_sides=[(order_id, "BUY")],
+    )
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+    result = get_backtest_trades(run_id=uuid4(), actor=actor, db=db)
+    assert len(result) == 1
+    assert result[0].symbol == "MSFT"
+    assert result[0].side == "BUY"

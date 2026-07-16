@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from app.data.duckdb import get_duckdb_conn
 from app.schemas.market import MarketBarOut, MarketCoverageOut, MarketSnapshotOut
 from app.security import ActorContext, ActorTier, get_current_actor
+from app.security.rate_limit import enforce_fixed_window_rate_limit
 from app.settings import get_settings
 
 try:
@@ -38,7 +39,6 @@ BARS_TTL_SECONDS = 900.0
 
 _snapshot_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
 _bars_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
-_market_rate_limits: OrderedDict[str, tuple[float, int]] = OrderedDict()
 _redis_client = None
 
 
@@ -80,47 +80,18 @@ def _parse_symbols(symbols: str) -> list[str]:
 def _enforce_market_rate_limit(actor: ActorContext, endpoint: str) -> None:
     settings = get_settings()
     limit = (
-        settings.max_backtest_creates_per_window_user
+        settings.max_market_requests_per_window_user
         if actor.tier == ActorTier.USER
-        else settings.max_backtest_creates_per_window_guest
+        else settings.max_market_requests_per_window_guest
     )
-    window_seconds = settings.backtest_create_window_seconds
-    redis_key = (
-        f"{settings.redis_cache_prefix}:rate:market:{endpoint}:"
-        f"{actor.tier.value}:{actor.actor_key}"
+    enforce_fixed_window_rate_limit(
+        key=f"market:{endpoint}:{actor.tier.value}:{actor.actor_key}",
+        limit=limit,
+        window_seconds=settings.market_request_window_seconds,
+        redis_url=settings.redis_cache_url,
+        redis_prefix=settings.redis_cache_prefix,
+        detail="Too many market data requests in a short period. Please retry shortly.",
     )
-    client = _redis_cache()
-    if client is not None:
-        try:
-            count = int(client.incr(redis_key))
-            if count == 1:
-                client.expire(redis_key, window_seconds)
-            if count > limit:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Too many market data requests in a short period. Please retry shortly.",
-                )
-            return
-        except HTTPException:
-            raise
-        except Exception:
-            logger.exception("Market rate limit Redis check failed")
-
-    now = time.monotonic()
-    expires_at, count = _market_rate_limits.get(redis_key, (0.0, 0))
-    if now >= expires_at:
-        expires_at = now + window_seconds
-        count = 0
-    count += 1
-    _market_rate_limits[redis_key] = (expires_at, count)
-    _market_rate_limits.move_to_end(redis_key)
-    while len(_market_rate_limits) > MAX_CACHE_KEYS:
-        _market_rate_limits.popitem(last=False)
-    if count > limit:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many market data requests in a short period. Please retry shortly.",
-        )
 
 
 def _parse_fields(fields: str | None) -> list[str]:
