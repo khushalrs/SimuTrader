@@ -5,13 +5,15 @@ from datetime import date, timedelta
 import json
 import logging
 from math import sqrt
+import re
 from statistics import median
 import time
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.data.duckdb import get_duckdb_conn
 from app.schemas.market import MarketBarOut, MarketCoverageOut, MarketSnapshotOut
+from app.security import ActorContext, ActorTier, get_current_actor
 from app.settings import get_settings
 
 try:
@@ -30,11 +32,13 @@ ALLOWED_FIELDS = {"open", "high", "low", "close", "volume"}
 ALLOWED_CALENDARS = {"GLOBAL", "US", "IN", "FX"}
 ALLOWED_MISSING = {"RAW", "FORWARD_FILL", "DROP"}
 ALLOWED_INTERVALS = {"1d", "1w"}
+SYMBOL_RE = re.compile(r"[A-Z0-9.\-]{1,20}")
 SNAPSHOT_TTL_SECONDS = 900.0
 BARS_TTL_SECONDS = 900.0
 
 _snapshot_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
 _bars_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+_market_rate_limits: OrderedDict[str, tuple[float, int]] = OrderedDict()
 _redis_client = None
 
 
@@ -64,7 +68,59 @@ def _parse_symbols(symbols: str) -> list[str]:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"symbols supports at most {MAX_SYMBOLS} values",
         )
+    for symbol in parsed:
+        if SYMBOL_RE.fullmatch(symbol) is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"invalid symbol: {symbol}",
+            )
     return parsed
+
+
+def _enforce_market_rate_limit(actor: ActorContext, endpoint: str) -> None:
+    settings = get_settings()
+    limit = (
+        settings.max_backtest_creates_per_window_user
+        if actor.tier == ActorTier.USER
+        else settings.max_backtest_creates_per_window_guest
+    )
+    window_seconds = settings.backtest_create_window_seconds
+    redis_key = (
+        f"{settings.redis_cache_prefix}:rate:market:{endpoint}:"
+        f"{actor.tier.value}:{actor.actor_key}"
+    )
+    client = _redis_cache()
+    if client is not None:
+        try:
+            count = int(client.incr(redis_key))
+            if count == 1:
+                client.expire(redis_key, window_seconds)
+            if count > limit:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many market data requests in a short period. Please retry shortly.",
+                )
+            return
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Market rate limit Redis check failed")
+
+    now = time.monotonic()
+    expires_at, count = _market_rate_limits.get(redis_key, (0.0, 0))
+    if now >= expires_at:
+        expires_at = now + window_seconds
+        count = 0
+    count += 1
+    _market_rate_limits[redis_key] = (expires_at, count)
+    _market_rate_limits.move_to_end(redis_key)
+    while len(_market_rate_limits) > MAX_CACHE_KEYS:
+        _market_rate_limits.popitem(last=False)
+    if count > limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many market data requests in a short period. Please retry shortly.",
+        )
 
 
 def _parse_fields(fields: str | None) -> list[str]:
@@ -427,8 +483,10 @@ def get_market_bars(
     missing_bar: str | None = Query(default=None),
     interval: str | None = Query(default=None),
     max_points: int | None = Query(default=None, ge=2, le=5000),
+    actor: ActorContext = Depends(get_current_actor),
 ) -> list[MarketBarOut]:
     route_started = time.perf_counter()
+    _enforce_market_rate_limit(actor, "bars")
     _cache_header(response, "public, max-age=60, stale-while-revalidate=300")
     parsed_symbols = _parse_symbols(symbols)
     parsed_fields = _parse_fields(fields)
@@ -552,7 +610,9 @@ def get_market_coverage(
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     calendar: str | None = Query(default=None),
+    actor: ActorContext = Depends(get_current_actor),
 ) -> list[MarketCoverageOut]:
+    _enforce_market_rate_limit(actor, "coverage")
     parsed_symbols = _parse_symbols(symbols)
     parsed_calendar = _parse_calendar(calendar)
 
@@ -603,8 +663,10 @@ def get_market_snapshot(
     response: Response,
     symbols: str = Query(...),
     end_date: date | None = Query(default=None),
+    actor: ActorContext = Depends(get_current_actor),
 ) -> list[MarketSnapshotOut]:
     route_started = time.perf_counter()
+    _enforce_market_rate_limit(actor, "snapshot")
     _cache_header(response, "public, max-age=30, stale-while-revalidate=300")
     parsed_symbols = _parse_symbols(symbols)
     request_cache_key = _snapshot_cache_key(

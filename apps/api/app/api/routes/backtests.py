@@ -42,7 +42,7 @@ MAX_COMPARE_MAX_POINTS = 2000
 def _sanitize_user_string(value: str | None, *, max_len: int = 255) -> str | None:
     if value is None:
         return None
-    cleaned = "".join(ch for ch in str(value) if ord(ch) >= 32 or ch in "\t\r\n").strip()
+    cleaned = "".join(ch for ch in str(value) if 32 <= ord(ch) <= 126).strip()
     if not cleaned:
         return None
     return cleaned[:max_len]

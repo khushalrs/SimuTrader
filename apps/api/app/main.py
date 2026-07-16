@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 @app.on_event("startup")
 def _validate_runtime_settings() -> None:
     settings.validate()

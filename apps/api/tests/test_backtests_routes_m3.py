@@ -10,6 +10,10 @@ from app.models.backtests import BacktestRun, RunDailyEquity, RunMetric, RunTaxE
 from app.security import ActorContext, ActorTier
 
 
+def test_sanitize_user_string_keeps_ascii_printable_only():
+    assert backtests_routes._sanitize_user_string(" Alpha\t\nBeta\u202e ") == "AlphaBeta"
+
+
 @dataclass
 class _FakeQuery:
     all_values: list | None = None

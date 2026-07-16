@@ -235,7 +235,7 @@ def get_run_fills(
     start: date | None = None,
     end: date | None = None,
     limit: int = Query(default=200, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0, le=100000),
+    offset: int = Query(default=0, ge=0, le=5000),
     actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> list[RunFillOut]:

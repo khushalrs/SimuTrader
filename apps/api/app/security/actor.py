@@ -65,10 +65,6 @@ def get_current_actor(request: Request, response: Response) -> ActorContext:
                 user_key = _clean_user_id(request.headers.get("X-User-Id"))
                 if user_key:
                     return ActorContext(tier=ActorTier.USER, actor_key=f"user:{user_key}")
-        else:
-            user_key = _clean_user_id(request.headers.get("X-User-Id"))
-            if user_key:
-                return ActorContext(tier=ActorTier.USER, actor_key=f"user:{user_key}")
 
     guest_id = _decode_guest_cookie_value(
         request.cookies.get(GUEST_COOKIE_NAME), settings.guest_cookie_signing_secret

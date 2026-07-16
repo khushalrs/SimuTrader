@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -148,9 +149,38 @@ def _client() -> TestClient:
 
 
 def _clear_market_caches() -> None:
+    _market_module.get_settings.cache_clear()
     _market_module._bars_cache.clear()
     _market_module._snapshot_cache.clear()
+    _market_module._market_rate_limits.clear()
     _market_module._redis_client = None
+
+
+def test_market_symbols_reject_invalid_characters(monkeypatch):
+    monkeypatch.setenv("REDIS_CACHE_URL", "")
+    _clear_market_caches()
+
+    client = _client()
+    res = client.get("/market/snapshot", params={"symbols": "SPY;DROP"})
+    assert res.status_code == 400
+    assert "invalid symbol" in res.json()["detail"]
+
+
+def test_market_rate_limit_uses_backtest_window_settings(monkeypatch):
+    monkeypatch.setenv("REDIS_CACHE_URL", "")
+    monkeypatch.setenv("MAX_BACKTEST_CREATES_PER_WINDOW_GUEST", "1")
+    monkeypatch.setenv("BACKTEST_CREATE_WINDOW_SECONDS", "60")
+    _clear_market_caches()
+    actor = _market_module.ActorContext(
+        tier=_market_module.ActorTier.GUEST,
+        actor_key="guest:test",
+    )
+
+    _market_module._enforce_market_rate_limit(actor, "snapshot")
+    with pytest.raises(_market_module.HTTPException) as exc_info:
+        _market_module._enforce_market_rate_limit(actor, "snapshot")
+
+    assert exc_info.value.status_code == 429
 
 
 def test_market_bars_returns_rows_within_bounds(tmp_path, monkeypatch):
