@@ -38,7 +38,7 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
     const [comparisonRuns, setComparisonRuns] = useState<string[]>([]);
     const [runSelectorOpen, setRunSelectorOpen] = useState(false);
 
-    const { data: compareData, isLoading } = useSWR(
+    const { data: compareData, isLoading, error: compareError } = useSWR(
         baseRun ? `/compare/${baseRun}?others=${comparisonRuns.join(',')}` : null,
         () => compareRuns(baseRun, comparisonRuns),
         { revalidateOnFocus: false }
@@ -146,6 +146,11 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
             ) : isLoading ? (
                 <Card className="min-h-[500px] flex items-center justify-center">
                     <Loader2 className="w-8 h-8 animate-spin text-primary opacity-50" />
+                </Card>
+            ) : compareError ? (
+                <Card className="min-h-[300px] flex flex-col items-center justify-center gap-2 text-destructive">
+                    <p className="font-semibold">Failed to load comparison data.</p>
+                    <p className="text-sm text-muted-foreground">Please check your connection and try again.</p>
                 </Card>
             ) : compareData ? (
                 <div className="space-y-6">

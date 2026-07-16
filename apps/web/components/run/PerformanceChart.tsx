@@ -10,20 +10,8 @@ import {
     CartesianGrid
 } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 import { formatCurrency } from "@/lib/utils"
-
-const DEFAULT_DATA = [
-    { date: "Jan 01", value: 100 },
-    { date: "Jan 08", value: 102 },
-    { date: "Jan 15", value: 105 },
-    { date: "Jan 22", value: 103 },
-    { date: "Jan 29", value: 107 },
-    { date: "Feb 05", value: 106 },
-    { date: "Feb 12", value: 110 },
-    { date: "Feb 19", value: 115 },
-    { date: "Feb 26", value: 114 },
-    { date: "Mar 05", value: 118 },
-]
 
 interface PerformanceChartProps {
     data?: { date: string; value: number }[]
@@ -32,10 +20,8 @@ interface PerformanceChartProps {
 }
 
 export function PerformanceChart({ data, baseCurrency, onHover }: PerformanceChartProps) {
-    const chartData = data && data.length > 0 ? data : DEFAULT_DATA
-
     return (
-        <Card className="col-span-3">
+        <Card>
             <CardHeader>
                 <CardTitle>Equity Curve</CardTitle>
                 <CardDescription>
@@ -43,60 +29,64 @@ export function PerformanceChart({ data, baseCurrency, onHover }: PerformanceCha
                 </CardDescription>
             </CardHeader>
             <CardContent className="pl-2">
-                <div className="h-[350px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart
-                            data={chartData}
-                            onMouseMove={(state: any) => {
-                                if (state.isTooltipActive && state.activePayload && state.activePayload.length > 0) {
-                                    onHover?.(state.activePayload[0].payload)
-                                }
-                            }}
-                            onMouseLeave={() => onHover?.(null)}
-                        >
-                            <defs>
-                                <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                                    <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                                </linearGradient>
-                            </defs>
-                            <XAxis
-                                dataKey="date"
-                                stroke="#888888"
-                                fontSize={12}
-                                tickLine={false}
-                                axisLine={false}
-                            />
-                            <YAxis
-                                stroke="#888888"
-                                fontSize={12}
-                                tickLine={false}
-                                axisLine={false}
-                                tickFormatter={(value) => {
-                                    if (Math.abs(value) >= 1000000) {
-                                        return formatCurrency(value / 1000000, baseCurrency, true) + 'M';
+                {!data || data.length === 0 ? (
+                    <Skeleton className="h-[350px] w-full" />
+                ) : (
+                    <div className="h-[350px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart
+                                data={data}
+                                onMouseMove={(state: any) => {
+                                    if (state.isTooltipActive && state.activePayload && state.activePayload.length > 0) {
+                                        onHover?.(state.activePayload[0].payload)
                                     }
-                                    return formatCurrency(value, baseCurrency, true);
                                 }}
-                                domain={['auto', 'auto']}
-                                width={80}
-                            />
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                            <Tooltip
-                                contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))' }}
-                                itemStyle={{ color: 'hsl(var(--foreground))' }}
-                            />
-                            <Area
-                                type="monotone"
-                                dataKey="value"
-                                stroke="hsl(var(--primary))"
-                                fillOpacity={1}
-                                fill="url(#colorEquity)"
-                                strokeWidth={2}
-                            />
-                        </AreaChart>
-                    </ResponsiveContainer>
-                </div>
+                                onMouseLeave={() => onHover?.(null)}
+                            >
+                                <defs>
+                                    <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                                        <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                                    </linearGradient>
+                                </defs>
+                                <XAxis
+                                    dataKey="date"
+                                    stroke="#888888"
+                                    fontSize={12}
+                                    tickLine={false}
+                                    axisLine={false}
+                                />
+                                <YAxis
+                                    stroke="#888888"
+                                    fontSize={12}
+                                    tickLine={false}
+                                    axisLine={false}
+                                    tickFormatter={(value) => {
+                                        if (Math.abs(value) >= 1000000) {
+                                            return formatCurrency(value / 1000000, baseCurrency, true) + 'M';
+                                        }
+                                        return formatCurrency(value, baseCurrency, true);
+                                    }}
+                                    domain={['auto', 'auto']}
+                                    width={80}
+                                />
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                                <Tooltip
+                                    contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))' }}
+                                    itemStyle={{ color: 'hsl(var(--foreground))' }}
+                                />
+                                <Area
+                                    type="monotone"
+                                    dataKey="value"
+                                    stroke="hsl(var(--primary))"
+                                    fillOpacity={1}
+                                    fill="url(#colorEquity)"
+                                    strokeWidth={2}
+                                />
+                            </AreaChart>
+                        </ResponsiveContainer>
+                    </div>
+                )}
             </CardContent>
         </Card>
     )
