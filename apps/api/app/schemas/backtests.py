@@ -136,6 +136,18 @@ class RunCostsSummaryOut(BaseModel):
     total_costs: float
 
 
+class RunExplainOut(BaseModel):
+    gross_return: Optional[float] = None
+    net_return: Optional[float] = None
+    total_drag: Optional[float] = None
+    drag_breakdown: Dict[str, float] = Field(default_factory=dict)
+    dominant_drag: Optional[str] = None
+    trade_count: int
+    turnover: Optional[float] = None
+    tax_regime: str
+    summary: str
+
+
 class RunTaxEventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -161,6 +173,12 @@ class RunTaxesOut(BaseModel):
 
 class RunCompareMetricRowOut(BaseModel):
     run_id: UUID
+    name: Optional[str] = None
+    strategy_type: Optional[str] = None
+    tax_regime: Optional[str] = None
+    base_currency: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     cagr: Optional[float] = None
     volatility: Optional[float] = None
     sharpe: Optional[float] = None
@@ -171,6 +189,7 @@ class RunCompareMetricRowOut(BaseModel):
     tax_drag: Optional[float] = None
     borrow_drag: Optional[float] = None
     margin_interest_drag: Optional[float] = None
+    delta_vs_base: Dict[str, Optional[float]] = Field(default_factory=dict)
 
 
 class RunNormalizedEquityPointOut(BaseModel):

@@ -3,12 +3,25 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import duckdb
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes.backtests import router as backtests_router
 from app.api.routes.capabilities import router as capabilities_router
+from app.security import ActorContext, ActorTier, get_current_actor
+from app.security.rate_limit import clear_memory_rate_limits
 from app.services.preflight import run_preflight
+from app.settings import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_and_rate_limits():
+    get_settings.cache_clear()
+    clear_memory_rate_limits()
+    yield
+    get_settings.cache_clear()
+    clear_memory_rate_limits()
 
 
 def _seed_mixed_duckdb(path: str, *, include_fx: bool = True) -> None:
@@ -104,6 +117,7 @@ def test_backtest_preflight_route_accepts_raw_config(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "mixed_route.duckdb"
     _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
     monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    monkeypatch.setenv("REDIS_CACHE_URL", "")
     app = FastAPI()
     app.include_router(backtests_router)
     client = TestClient(app)
@@ -114,6 +128,27 @@ def test_backtest_preflight_route_accepts_raw_config(tmp_path, monkeypatch):
     payload = res.json()
     assert payload["ok"] is True
     assert payload["required_fx_pairs"] == ["USDINR"]
+
+
+def test_backtest_preflight_route_is_rate_limited(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "mixed_route_limited.duckdb"
+    _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    monkeypatch.setenv("REDIS_CACHE_URL", "")
+    monkeypatch.setenv("MAX_MARKET_REQUESTS_PER_WINDOW_GUEST", "1")
+    monkeypatch.setenv("MARKET_REQUEST_WINDOW_SECONDS", "60")
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:preflight-test")
+    app = FastAPI()
+    app.include_router(backtests_router)
+    app.dependency_overrides[get_current_actor] = lambda: actor
+    client = TestClient(app)
+
+    first = client.post("/backtests/preflight", json=_mixed_buy_and_hold_config())
+    second = client.post("/backtests/preflight", json=_mixed_buy_and_hold_config())
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.headers["Retry-After"] == "60"
 
 
 def test_mixed_us_india_momentum_preflight_fails_cleanly():

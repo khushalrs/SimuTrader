@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 import logging
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -66,6 +66,51 @@ def _to_backtest_out(run: BacktestRun) -> BacktestOut:
         data_snapshot_id=run.data_snapshot_id,
         seed=run.seed,
     )
+
+
+def _compare_config_info(run: BacktestRun) -> dict:
+    config = getattr(run, "config_snapshot", None) or {}
+    strategy = config.get("strategy") or "BUY_AND_HOLD"
+    if isinstance(strategy, dict):
+        strategy_type = str(strategy.get("type") or "BUY_AND_HOLD").upper()
+    else:
+        strategy_type = str(strategy).upper()
+    backtest = config.get("backtest") or {}
+    meta = getattr(run, "metrics_meta", {}) or {}
+    return {
+        "name": getattr(run, "name", None),
+        "strategy_type": strategy_type,
+        "tax_regime": str((config.get("tax") or {}).get("regime") or "NONE").upper(),
+        "base_currency": str(config.get("base_currency") or "USD").upper(),
+        "start_date": meta.get("effective_start_date") or backtest.get("start_date"),
+        "end_date": meta.get("effective_end_date") or backtest.get("end_date"),
+    }
+
+
+def _metric_float(metrics, field: str) -> float | None:
+    value = getattr(metrics, field, None) if metrics is not None else None
+    return None if value is None else float(value)
+
+
+def _delta_vs_base(metrics, base_metrics) -> dict[str, float | None]:
+    fields = (
+        "cagr",
+        "volatility",
+        "sharpe",
+        "max_drawdown",
+        "gross_return",
+        "net_return",
+        "fee_drag",
+        "tax_drag",
+        "borrow_drag",
+        "margin_interest_drag",
+    )
+    deltas: dict[str, float | None] = {}
+    for field in fields:
+        value = _metric_float(metrics, field)
+        base_value = _metric_float(base_metrics, field)
+        deltas[field] = None if value is None or base_value is None else value - base_value
+    return deltas
 
 
 def _get_actor_run(run_id: UUID, actor: ActorContext, db: Session) -> BacktestRun:
@@ -167,7 +212,24 @@ def _mark_stale_queued_runs(db: Session, stale_after_seconds: int) -> int:
 
 
 @router.post("/preflight", response_model=BacktestPreflightOut)
-def preflight_backtest(payload: BacktestPreflightRequest | dict) -> BacktestPreflightOut:
+def preflight_backtest(
+    payload: BacktestPreflightRequest | dict,
+    actor: ActorContext = Depends(get_current_actor),
+) -> BacktestPreflightOut:
+    settings = get_settings()
+    preflight_rate_limit = (
+        settings.max_market_requests_per_window_user
+        if actor.tier == ActorTier.USER
+        else settings.max_market_requests_per_window_guest
+    )
+    enforce_fixed_window_rate_limit(
+        key=f"backtest:preflight:{actor.tier.value}:{actor.actor_key}",
+        limit=preflight_rate_limit,
+        window_seconds=settings.market_request_window_seconds,
+        redis_url=settings.redis_cache_url,
+        redis_prefix=settings.redis_cache_prefix,
+        detail="Too many preflight requests in a short period. Please retry shortly.",
+    )
     raw_config = payload.config_snapshot if isinstance(payload, BacktestPreflightRequest) else payload
     if isinstance(raw_config, dict) and "config_snapshot" in raw_config and "universe" not in raw_config:
         nested = raw_config.get("config_snapshot")
@@ -404,12 +466,27 @@ def get_backtest_trades(
     run_id: UUID,
     start: date | None = None,
     end: date | None = None,
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0, le=5000),
     actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> list[RunFillOut]:
     from app.api.routes.runs import get_run_fills
+
+    if not isinstance(limit, int):
+        limit = int(getattr(limit, "default", 200))
+    if not isinstance(offset, int):
+        offset = int(getattr(offset, "default", 0))
+    if limit < 1 or limit > 1000:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="limit must be 1..1000",
+        )
+    if offset < 0 or offset > 5000:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="offset must be 0..5000",
+        )
 
     return get_run_fills(
         run_id=run_id,
@@ -535,11 +612,25 @@ def compare_backtests(
     metric_rows: list[RunCompareMetricRowOut] = []
     equity_series: list[RunCompareSeriesOut] = []
 
+    metrics_by_run: dict[UUID, RunMetric | None] = {}
     for run_row in authorized_runs:
         metrics = db.query(RunMetric).filter(RunMetric.run_id == run_row.run_id).first()
+        metrics_by_run[run_row.run_id] = metrics
+        setattr(run_row, "metrics_meta", getattr(metrics, "meta", {}) if metrics else {})
+
+    base_metrics = metrics_by_run.get(run_id)
+    for run_row in authorized_runs:
+        metrics = metrics_by_run.get(run_row.run_id)
+        info = _compare_config_info(run_row)
         metric_rows.append(
             RunCompareMetricRowOut(
                 run_id=run_row.run_id,
+                name=info["name"],
+                strategy_type=info["strategy_type"],
+                tax_regime=info["tax_regime"],
+                base_currency=info["base_currency"],
+                start_date=info["start_date"],
+                end_date=info["end_date"],
                 cagr=metrics.cagr if metrics else None,
                 volatility=metrics.volatility if metrics else None,
                 sharpe=metrics.sharpe if metrics else None,
@@ -550,6 +641,7 @@ def compare_backtests(
                 tax_drag=metrics.tax_drag if metrics else None,
                 borrow_drag=metrics.borrow_drag if metrics else None,
                 margin_interest_drag=metrics.margin_interest_drag if metrics else None,
+                delta_vs_base=_delta_vs_base(metrics, base_metrics),
             )
         )
 
