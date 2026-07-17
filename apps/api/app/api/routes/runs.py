@@ -164,7 +164,35 @@ def get_run_metrics(
     metrics = db.query(RunMetric).filter(RunMetric.run_id == run_id).first()
     if not metrics:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Metrics not found")
-    return metrics
+    
+    # Generate dynamic natural language explanation based on drags
+    net_ret = metrics.net_return or 0.0
+    fee_drag = metrics.fee_drag or 0.0
+    tax_drag = metrics.tax_drag or 0.0
+    borrow_drag = metrics.borrow_drag or 0.0
+    margin_drag = metrics.margin_interest_drag or 0.0
+
+    drags = [
+        ("transaction fees", fee_drag),
+        ("tax liabilities", tax_drag),
+        ("short borrow fees", borrow_drag),
+        ("margin financing interest charges", margin_drag),
+    ]
+    largest_name, largest_val = max(drags, key=lambda x: x[1])
+
+    if net_ret > 0:
+        performance = f"positive net return of +{net_ret*100:.1f}%"
+    else:
+        performance = f"net loss of {net_ret*100:.1f}%"
+
+    if largest_val > 0.001:
+        explanation_str = f"Your {performance} was achieved after overcoming a gross-to-net drag, led primarily by {largest_name} (-{largest_val*100:.1f}%)."
+    else:
+        explanation_str = f"Your strategy achieved a {performance} with minimal cost drag from transaction fees, taxes, or financing friction."
+
+    out = RunMetricOut.model_validate(metrics)
+    out.explanation = explanation_str
+    return out
 
 
 @router.get("/{run_id}/positions", response_model=list[RunPositionOut])

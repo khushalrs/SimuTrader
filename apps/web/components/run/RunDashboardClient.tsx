@@ -3,6 +3,7 @@
 import { useState } from "react"
 import useSWR from "swr";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { PerformanceChart } from "@/components/run/PerformanceChart"
 import { RiskTab } from "@/components/run/RiskTab"
 import { CostsTab } from "@/components/run/CostsTab"
@@ -61,6 +62,7 @@ export function RunDashboardClient({ runId }: { runId: string }) {
         id: runId,
         status: status,
         metrics: metricsData?.metrics || runSummaryData?.metrics || [],
+        explanation: metricsData?.explanation,
         costs: metricsData?.costs || runSummaryData?.costs,
         equity: equityDataList || runSummaryData?.equity || [],
         error_code: statusData?.error_code || runSummaryData?.error_code,
@@ -155,8 +157,61 @@ export function RunDashboardClient({ runId }: { runId: string }) {
 
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 min-h-[500px] pb-10">
                 <div className="lg:col-span-3 space-y-4">
-                <Tabs defaultValue="performance" className="w-full">
-                    <div className="flex items-center justify-between mb-4">
+                    {isSucceeded && metricsData && (
+                        <Card className="border border-border bg-card shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom duration-300">
+                            <CardHeader className="pb-3 bg-muted/40 border-b border-border/50">
+                                <CardTitle className="text-xs font-semibold tracking-wider uppercase text-muted-foreground">Why this result?</CardTitle>
+                            </CardHeader>
+                            <CardContent className="pt-4 space-y-4">
+                                <div className="grid grid-cols-3 sm:grid-cols-6 gap-4 text-center">
+                                    <div className="p-2 bg-secondary/10 rounded-md">
+                                        <span className="text-[10px] text-muted-foreground block mb-0.5">Gross Return</span>
+                                        <span className="text-sm font-bold text-foreground font-mono">
+                                            {runData.costs?.gross_return !== undefined && runData.costs?.gross_return !== null ? (runData.costs.gross_return >= 0 ? "+" : "") + (runData.costs.gross_return * 100).toFixed(1) + "%" : "N/A"}
+                                        </span>
+                                    </div>
+                                    <div className="p-2 bg-amber-500/5 border border-amber-500/10 rounded-md">
+                                        <span className="text-[10px] text-muted-foreground block mb-0.5">Fees</span>
+                                        <span className="text-sm font-bold text-amber-600 dark:text-amber-400 font-mono">
+                                            {runData.costs?.fee_drag !== undefined && runData.costs?.fee_drag !== null ? "-" + (runData.costs.fee_drag * 100).toFixed(1) + "%" : "0.0%"}
+                                        </span>
+                                    </div>
+                                    <div className="p-2 bg-red-500/5 border border-red-500/10 rounded-md">
+                                        <span className="text-[10px] text-muted-foreground block mb-0.5">Taxes</span>
+                                        <span className="text-sm font-bold text-red-600 dark:text-red-400 font-mono">
+                                            {runData.costs?.tax_drag !== undefined && runData.costs?.tax_drag !== null ? "-" + (runData.costs.tax_drag * 100).toFixed(1) + "%" : "0.0%"}
+                                        </span>
+                                    </div>
+                                    <div className="p-2 bg-orange-500/5 border border-orange-500/10 rounded-md">
+                                        <span className="text-[10px] text-muted-foreground block mb-0.5">Borrow Fees</span>
+                                        <span className="text-sm font-bold text-orange-600 dark:text-orange-400 font-mono">
+                                            {runData.costs?.borrow_drag !== undefined && runData.costs?.borrow_drag !== null ? "-" + (runData.costs.borrow_drag * 100).toFixed(1) + "%" : "0.0%"}
+                                        </span>
+                                    </div>
+                                    <div className="p-2 bg-yellow-500/5 border border-yellow-500/10 rounded-md">
+                                        <span className="text-[10px] text-muted-foreground block mb-0.5">Margin Interest</span>
+                                        <span className="text-sm font-bold text-yellow-600 dark:text-yellow-400 font-mono">
+                                            {runData.costs?.margin_interest_drag !== undefined && runData.costs?.margin_interest_drag !== null ? "-" + (runData.costs.margin_interest_drag * 100).toFixed(1) + "%" : "0.0%"}
+                                        </span>
+                                    </div>
+                                    <div className="p-2 bg-emerald-500/5 border border-emerald-500/10 rounded-md">
+                                        <span className="text-[10px] text-muted-foreground block mb-0.5">Net Return</span>
+                                        <span className={`text-sm font-extrabold font-mono ${(runData.costs?.net_return ?? 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600"}`}>
+                                            {runData.costs?.net_return !== undefined && runData.costs?.net_return !== null ? (runData.costs.net_return >= 0 ? "+" : "") + (runData.costs.net_return * 100).toFixed(1) + "%" : "N/A"}
+                                        </span>
+                                    </div>
+                                </div>
+                                {runData.explanation && (
+                                    <div className="p-3 bg-primary/5 border border-primary/10 rounded-md text-xs sm:text-sm text-foreground/90 font-medium leading-relaxed">
+                                        💡 <span className="italic">{runData.explanation}</span>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    <Tabs defaultValue="performance" className="w-full">
+                        <div className="flex items-center justify-between mb-4">
                         <TabsList>
                             <TabsTrigger value="performance">Performance</TabsTrigger>
                             <TabsTrigger value="risk" disabled={isPending || isFailed}>Risk</TabsTrigger>

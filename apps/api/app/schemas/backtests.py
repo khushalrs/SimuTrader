@@ -102,6 +102,7 @@ class RunMetricOut(BaseModel):
     tax_drag: Optional[float] = None
     borrow_drag: Optional[float] = None
     margin_interest_drag: Optional[float] = None
+    explanation: Optional[str] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
