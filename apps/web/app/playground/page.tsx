@@ -3,7 +3,7 @@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { TrendingUp, BarChart2, Zap, ArrowRight, Layers, Activity } from "lucide-react"
-import Link from "next/link"
+import { Badge } from "@/components/ui/badge"
 
 import { presets, PresetConfig } from "@/config/presets"
 import { useState } from "react"
@@ -78,40 +78,62 @@ export default function PlaygroundPage() {
     return (
         <main className="container py-12">
             <div className="mb-8">
-                <h1 className="text-3xl font-bold tracking-tight">Playground</h1>
+                <h1 className="text-3xl font-bold tracking-tight">Simulation Playground</h1>
                 <p className="text-muted-foreground mt-2">
-                    Select a preset strategy to run a simulation instantly. No configuration required.
+                    Quickly launch pre-configured strategy demos. Investigate capital constraints, fees, and cross-border taxes.
                 </p>
             </div>
 
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-2">
                 {presets.map((preset, index) => (
                     <div
                         key={preset.id}
                         className="anim-fade-slide"
                         style={{ animationDelay: `${index * 100}ms` }}
                     >
-                        <Card className="h-full flex flex-col hover:border-primary/50 transition-colors">
-                            <CardHeader>
-                                <div className={`mb-2 w-10 h-10 rounded-lg bg-muted flex items-center justify-center ${preset.color}`}>
-                                    <preset.icon className="w-6 h-6" />
+                        <Card className="h-full flex flex-col hover:border-primary/50 border-border bg-card shadow-sm transition-all hover:shadow-md">
+                            <CardHeader className="pb-3">
+                                <div className="flex items-center justify-between">
+                                    <div className={`w-9 h-9 rounded-lg bg-muted flex items-center justify-center ${preset.color}`}>
+                                        <preset.icon className="w-5 h-5" />
+                                    </div>
+                                    <Badge variant="secondary" className="text-[10px] px-2.5 py-0.5">{preset.universe}</Badge>
                                 </div>
-                                <CardTitle>{preset.title}</CardTitle>
-                                <CardDescription>{preset.universe}</CardDescription>
+                                <CardTitle className="text-base font-bold mt-3 leading-tight">{preset.title}</CardTitle>
+                                <p className="text-xs text-muted-foreground pt-1">{preset.behavior}</p>
                             </CardHeader>
-                            <CardContent className="flex-1">
-                                <p className="text-sm text-muted-foreground">{preset.behavior}</p>
+                            
+                            <CardContent className="flex-1 space-y-4 text-xs border-t pt-4">
+                                <div className="space-y-1">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">What it demonstrates</span>
+                                    <span className="text-foreground leading-relaxed font-medium">{preset.whatItDemonstrates}</span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3 bg-muted/30 p-2.5 rounded border">
+                                    <div>
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block">Asset Universe</span>
+                                        <span className="text-[11px] font-medium text-foreground truncate block" title={preset.universeDetails}>{preset.universeDetails}</span>
+                                    </div>
+                                    <div>
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block">Realism Settings</span>
+                                        <span className="text-[11px] font-medium text-foreground truncate block" title={preset.realismSettings}>{preset.realismSettings}</span>
+                                    </div>
+                                </div>
+                                <div className="space-y-1 bg-primary/[0.02] border border-primary/10 p-2.5 rounded">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-primary block">Expected Insight</span>
+                                    <span className="text-foreground/90 font-semibold leading-relaxed block">{preset.expectedInsight}</span>
+                                </div>
                             </CardContent>
-                            <CardFooter className="flex justify-between gap-2">
+
+                            <CardFooter className="flex justify-between gap-2 border-t pt-4 bg-muted/10">
                                 <Button
                                     variant="outline"
-                                    className="w-full"
+                                    className="w-full text-xs"
                                     onClick={() => setViewConfig(preset)}
                                 >
                                     View Config
                                 </Button>
                                 <Button
-                                    className="w-full"
+                                    className="w-full text-xs"
                                     disabled={pendingRunId === preset.id}
                                     onClick={() => handleRunPreset(preset)}
                                 >
@@ -122,7 +144,7 @@ export default function PlaygroundPage() {
                                         </>
                                     ) : (
                                         <>
-                                            Run <ArrowRight className="ml-2 h-4 w-4" />
+                                            Run Strategy <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
                                         </>
                                     )}
                                 </Button>

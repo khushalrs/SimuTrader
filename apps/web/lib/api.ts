@@ -90,6 +90,7 @@ const RunMetricOutSchema = z.object({
     tax_drag: z.number().nullish(),
     borrow_drag: z.number().nullish(),
     margin_interest_drag: z.number().nullish(),
+    explanation: z.string().nullish(),
 })
 
 const RunDailyEquityOutSchema = z.object({
@@ -144,12 +145,15 @@ export interface RunData {
     date: string
     tags: string[]
     metrics: RunMetric[]
+    explanation?: string | null
     equity?: RunEquityPoint[]
     costs?: {
         fee_drag?: number | null
         tax_drag?: number | null
         borrow_drag?: number | null
         margin_interest_drag?: number | null
+        gross_return?: number | null
+        net_return?: number | null
     }
     config_snapshot?: any
     requested_start_date?: string
@@ -206,6 +210,7 @@ interface RunMetricOut {
     tax_drag?: number | null
     borrow_drag?: number | null
     margin_interest_drag?: number | null
+    explanation?: string | null
 }
 
 interface RunDailyEquityOut {
@@ -475,11 +480,14 @@ export async function getRunMetrics(runId: string) {
     const data: RunMetricOut = parsed.data
     return {
         metrics: mapMetrics(data),
+        explanation: data.explanation,
         costs: {
             fee_drag: data.fee_drag,
             tax_drag: data.tax_drag,
             borrow_drag: data.borrow_drag,
             margin_interest_drag: data.margin_interest_drag,
+            gross_return: data.gross_return,
+            net_return: data.net_return,
         }
     };
 }

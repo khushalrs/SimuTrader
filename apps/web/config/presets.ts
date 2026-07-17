@@ -7,6 +7,11 @@ export interface PresetConfig {
     behavior: string
     icon: any
     color: string
+    whatItDemonstrates: string
+    universeDetails: string
+    strategyType: string
+    realismSettings: string
+    expectedInsight: string
     config_snapshot: any
 }
 
@@ -14,10 +19,15 @@ export const presets: PresetConfig[] = [
     {
         id: "buy-hold-us",
         title: "Buy & Hold — US Mega Cap",
-        universe: "S&P 500 Top 50",
+        universe: "S&P 500 Top 5",
         behavior: "Passive indexing with quarterly rebalancing.",
         icon: TrendingUp,
         color: "text-blue-500",
+        whatItDemonstrates: "Passive equity compounding and quarterly rebalancing rules.",
+        universeDetails: "US Equities: AAPL, MSFT, GOOGL, AMZN, META",
+        strategyType: "BUY_AND_HOLD (Equal Weight initial)",
+        realismSettings: "US Taxes (30% ST, 15% LT), 5bps commission, 2bps slippage",
+        expectedInsight: "Highlights long term compound interest curves under moderate friction.",
         config_snapshot: {
             version: 1,
             strategy: "BUY_AND_HOLD",
@@ -62,11 +72,16 @@ export const presets: PresetConfig[] = [
     },
     {
         id: "equal-weight-in",
-        title: "Equal Weight — India Top 10",
-        universe: "NIFTY 50 Top 10",
-        behavior: "Contrarian rebalancing to equal weights.",
+        title: "Tax Regime Comparison",
+        universe: "India Listed Top 5",
+        behavior: "Contrarian rebalancing under India listed equity tax rules.",
         icon: Layers,
         color: "text-orange-500",
+        whatItDemonstrates: "How identical trades generate different net returns under US vs India tax parameters.",
+        universeDetails: "India Equities: RELIANCE, TCS, HDFCBANK, ICICIBANK, INFY",
+        strategyType: "FIXED_WEIGHT_REBALANCE (20% Target weight, Monthly)",
+        realismSettings: "India Taxes (20% ST, 12.5% LT), 20bps commission, 5bps slippage",
+        expectedInsight: "Demonstrates listed equity capital gains efficiency post-July 2024 tax codes.",
         config_snapshot: {
             version: 1,
             strategy: "FIXED_WEIGHT_REBALANCE",
@@ -118,11 +133,16 @@ export const presets: PresetConfig[] = [
     },
     {
         id: "momentum",
-        title: "Momentum — Top K Monthly",
-        universe: "Nasdaq 100",
-        behavior: "Aggressive rotation into winners.",
+        title: "Momentum — Nasdaq Rotator",
+        universe: "Nasdaq High Beta Tech",
+        behavior: "Aggressive re-allocation into top performers.",
         icon: Zap,
         color: "text-yellow-500",
+        whatItDemonstrates: "Lookback-driven momentum rotation under strict commission friction.",
+        universeDetails: "US Equities: NVDA, AMD, TSLA, NFLX, QQQ",
+        strategyType: "MOMENTUM (Top 2 winners, skip 21 days, Monthly rebalance)",
+        realismSettings: "US Taxes, 5bps commission, 5bps slippage, margin enabled",
+        expectedInsight: "Shows how high turnover generates high transaction cost drag.",
         config_snapshot: {
             version: 1,
             strategy: "MOMENTUM",
@@ -169,11 +189,16 @@ export const presets: PresetConfig[] = [
     },
     {
         id: "mean-reversion",
-        title: "Mean Reversion — Conservative",
-        universe: "Russell 2000",
-        behavior: "Buying dips, selling rips.",
+        title: "Mean Reversion — Small Cap Dip Buyer",
+        universe: "Small Cap & Growth ETFs",
+        behavior: "Counter-trend dip buying and mean reversion exit.",
         icon: Activity,
         color: "text-green-500",
+        whatItDemonstrates: "Short term Z-score reversal entries and trade-holding limit exits.",
+        universeDetails: "US ETFs: IWM, ARKK, XBI",
+        strategyType: "MEAN_REVERSION (Z-Score entry at 2.0, 5-day holding lock)",
+        realismSettings: "US Taxes, 5bps commission, 2bps slippage",
+        expectedInsight: "Exposes the interaction of short-term tax rates on high-velocity strategy gains.",
         config_snapshot: {
             version: 1,
             strategy: "MEAN_REVERSION",
