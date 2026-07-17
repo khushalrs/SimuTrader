@@ -6,12 +6,15 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
-from app.api.routes.backtests import get_backtest_trades
-from app.api.routes.runs import get_run_fills, get_run_positions
+from app.api.routes.backtests import get_backtest_trades, router as backtests_router
+from app.api.routes.runs import explain_run, get_run_costs_summary, get_run_fills, get_run_positions
+from app.db import get_db
 from app.security import ActorContext, ActorTier
-from app.models.backtests import BacktestRun, RunDailyEquity, RunFill, RunOrder, RunPosition
+from app.security import get_current_actor
+from app.models.backtests import BacktestRun, RunDailyEquity, RunFill, RunMetric, RunOrder, RunPosition, RunTaxEvent
 
 
 @dataclass
@@ -37,9 +40,13 @@ class _FakeQuery:
         return self
 
     def first(self):
+        if self.first_value is None and self.all_values:
+            return self.all_values[0]
         return self.first_value
 
     def scalar(self):
+        if self.scalar_value is None and self.all_values is not None:
+            return len(self.all_values)
         return self.scalar_value
 
     def all(self):
@@ -61,6 +68,9 @@ class _FakeDB:
         equity_base: float | None = None,
         fills: list | None = None,
         order_sides: list[tuple] | None = None,
+        metrics: object | None = None,
+        equity_rows: list | None = None,
+        tax_rows: list | None = None,
     ):
         self.run_exists = run_exists
         self.latest_position_date = latest_position_date
@@ -68,23 +78,39 @@ class _FakeDB:
         self.equity_base = equity_base
         self.fills = fills or []
         self.order_sides = order_sides or []
+        self.metrics = metrics
+        self.equity_rows = equity_rows or []
+        self.tax_rows = tax_rows or []
 
     def query(self, *entities):
         if len(entities) == 1:
             entity = entities[0]
+            if "count(" in str(entity):
+                return _FakeQuery(all_values=self.fills)
             if entity is BacktestRun.run_id:
                 return _FakeQuery(first_value=(uuid4(),) if self.run_exists else None)
             if entity is BacktestRun:
                 run_obj = (
-                    SimpleNamespace(run_id=uuid4(), actor_key="guest:test", status="SUCCEEDED")
+                    SimpleNamespace(
+                        run_id=uuid4(),
+                        actor_key="guest:test",
+                        status="SUCCEEDED",
+                        config_snapshot={"tax": {"regime": "US"}},
+                    )
                     if self.run_exists
                     else None
                 )
                 return _FakeQuery(first_value=run_obj)
+            if entity is RunMetric:
+                return _FakeQuery(first_value=self.metrics)
             if entity is RunPosition:
                 return _FakeQuery(all_values=self.positions)
             if entity is RunFill:
                 return _FakeQuery(all_values=self.fills)
+            if entity is RunDailyEquity:
+                return _FakeQuery(all_values=self.equity_rows)
+            if entity is RunTaxEvent:
+                return _FakeQuery(all_values=self.tax_rows)
             if entity is RunDailyEquity.equity_base:
                 first_value = None if self.equity_base is None else (self.equity_base,)
                 return _FakeQuery(first_value=first_value)
@@ -92,6 +118,10 @@ class _FakeDB:
                 return _FakeQuery(scalar_value=self.latest_position_date)
         if len(entities) == 2 and entities[0] is RunOrder.order_id and entities[1] is RunOrder.side:
             return _FakeQuery(all_values=self.order_sides)
+        if len(entities) == 2:
+            commissions = sum(float(getattr(fill, "commission_native", 0.0) or 0.0) for fill in self.fills)
+            slippage = sum(float(getattr(fill, "slippage_native", 0.0) or 0.0) for fill in self.fills)
+            return _FakeQuery(first_value=(commissions, slippage))
         raise AssertionError(f"Unexpected query entities: {entities}")
 
 
@@ -190,3 +220,90 @@ def test_get_backtest_trades_alias_maps_to_fills():
     assert len(result) == 1
     assert result[0].symbol == "MSFT"
     assert result[0].side == "BUY"
+
+
+def test_get_backtest_trades_rejects_unbounded_pagination():
+    app = FastAPI()
+    app.include_router(backtests_router)
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+
+    def _override_get_db():
+        yield _FakeDB(run_exists=True)
+
+    app.dependency_overrides[get_current_actor] = lambda: actor
+    app.dependency_overrides[get_db] = _override_get_db
+    client = TestClient(app)
+    run_id = uuid4()
+
+    limit_res = client.get(f"/backtests/{run_id}/trades", params={"limit": "100000000"})
+    offset_res = client.get(f"/backtests/{run_id}/trades", params={"offset": "-5"})
+
+    assert limit_res.status_code == 422
+    assert offset_res.status_code == 422
+
+
+def test_cost_summary_uses_persisted_cumulative_costs():
+    latest = date(2024, 1, 5)
+    db = _FakeDB(
+        fills=[
+            SimpleNamespace(
+                order_id=None,
+                date=date(2024, 1, 3),
+                symbol="MSFT",
+                qty=2.0,
+                price_native=150.0,
+                notional_native=300.0,
+                commission_native=1.2,
+                slippage_native=0.3,
+            )
+        ],
+        equity_rows=[
+            SimpleNamespace(
+                date=latest,
+                fees_cum_base=9.5,
+            )
+        ],
+    )
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+
+    result = get_run_costs_summary(run_id=uuid4(), actor=actor, db=db)
+
+    assert result.commissions == pytest.approx(1.2)
+    assert result.slippage == pytest.approx(0.3)
+    assert result.total_costs == pytest.approx(9.5)
+
+
+def test_explanation_endpoint_returns_stable_keys():
+    db = _FakeDB(
+        metrics=SimpleNamespace(
+            turnover=1.8,
+            gross_return=0.42,
+            net_return=0.35,
+            fee_drag=0.01,
+            tax_drag=0.04,
+            borrow_drag=0.01,
+            margin_interest_drag=0.01,
+        ),
+        fills=[SimpleNamespace(fill_id=uuid4()), SimpleNamespace(fill_id=uuid4())],
+    )
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+
+    result = explain_run(run_id=uuid4(), actor=actor, db=db)
+    payload = result.model_dump()
+
+    assert set(payload) == {
+        "gross_return",
+        "net_return",
+        "total_drag",
+        "drag_breakdown",
+        "dominant_drag",
+        "trade_count",
+        "turnover",
+        "tax_regime",
+        "summary",
+    }
+    assert result.total_drag == pytest.approx(-0.07)
+    assert result.drag_breakdown["taxes"] == pytest.approx(-0.04)
+    assert result.dominant_drag == "taxes"
+    assert result.trade_count == 2
+    assert result.tax_regime == "US"

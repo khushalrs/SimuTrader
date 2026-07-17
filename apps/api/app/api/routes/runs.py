@@ -1,7 +1,10 @@
+import csv
+import io
 from datetime import date, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -13,6 +16,7 @@ from app.models.backtests import (
     RunMetric,
     RunOrder,
     RunPosition,
+    RunTaxEvent,
 )
 from app.security import ActorContext, get_current_actor
 from app.services.redis_store import (
@@ -27,6 +31,7 @@ from app.schemas.backtests import (
     BacktestStatusOut,
     RunCostsSummaryOut,
     RunDailyEquityOut,
+    RunExplainOut,
     RunFillOut,
     RunMetricOut,
     RunPositionOut,
@@ -78,6 +83,107 @@ def _get_actor_run(run_id: UUID, actor: ActorContext, db: Session) -> BacktestRu
 
 def _is_terminal_status(status_value: str) -> bool:
     return status_value in {"SUCCEEDED", "FAILED", "ENQUEUE_FAILED"}
+
+
+def _strategy_type(config: dict | None) -> str:
+    strategy = (config or {}).get("strategy") or "BUY_AND_HOLD"
+    if isinstance(strategy, dict):
+        return str(strategy.get("type") or "BUY_AND_HOLD").upper()
+    return str(strategy).upper()
+
+
+def _tax_regime(config: dict | None) -> str:
+    return str(((config or {}).get("tax") or {}).get("regime") or "NONE").upper()
+
+
+def _metric_value(metrics: RunMetric | None, field: str) -> float | None:
+    value = getattr(metrics, field, None) if metrics is not None else None
+    return None if value is None else float(value)
+
+
+def _latest_equity(run_id: UUID, db: Session) -> RunDailyEquity | None:
+    return (
+        db.query(RunDailyEquity)
+        .filter(RunDailyEquity.run_id == run_id)
+        .order_by(RunDailyEquity.date.desc())
+        .first()
+    )
+
+
+def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
+    metrics = db.query(RunMetric).filter(RunMetric.run_id == run.run_id).first()
+    if not metrics:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Metrics not found")
+
+    gross_return = _metric_value(metrics, "gross_return")
+    net_return = _metric_value(metrics, "net_return")
+    total_drag = (
+        net_return - gross_return
+        if gross_return is not None and net_return is not None
+        else None
+    )
+    drag_breakdown = {
+        "fees": -abs(float(metrics.fee_drag or 0.0)),
+        "taxes": -abs(float(metrics.tax_drag or 0.0)),
+        "borrow": -abs(float(metrics.borrow_drag or 0.0)),
+        "margin_interest": -abs(float(metrics.margin_interest_drag or 0.0)),
+    }
+    dominant_drag = max(drag_breakdown, key=lambda key: abs(drag_breakdown[key]))
+    if abs(drag_breakdown[dominant_drag]) <= 1e-12:
+        dominant_drag = None
+
+    trade_count = (
+        db.query(func.count(RunFill.fill_id))
+        .filter(RunFill.run_id == run.run_id)
+        .scalar()
+        or 0
+    )
+    tax_regime = _tax_regime(run.config_snapshot)
+
+    def pct(value: float | None) -> str:
+        return "unknown" if value is None else f"{value * 100:.0f}%"
+
+    if dominant_drag:
+        summary = (
+            f"The run earned {pct(gross_return)} gross and {pct(net_return)} net. "
+            f"{dominant_drag.replace('_', ' ').capitalize()} were the largest drag."
+        )
+    else:
+        summary = f"The run earned {pct(gross_return)} gross and {pct(net_return)} net."
+
+    return RunExplainOut(
+        gross_return=gross_return,
+        net_return=net_return,
+        total_drag=total_drag,
+        drag_breakdown=drag_breakdown,
+        dominant_drag=dominant_drag,
+        trade_count=int(trade_count),
+        turnover=_metric_value(metrics, "turnover"),
+        tax_regime=tax_regime,
+        summary=summary,
+    )
+
+
+def _csv_response(filename: str, headers: list[str], rows: list[list[object]]) -> StreamingResponse:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _tax_summary(run_id: UUID, db: Session) -> dict:
+    rows = db.query(RunTaxEvent).filter(RunTaxEvent.run_id == run_id).all()
+    return {
+        "event_count": len(rows),
+        "total_realized_pnl_base": sum(float(row.realized_pnl_base or 0.0) for row in rows),
+        "total_tax_due_base": sum(float(row.tax_due_base or 0.0) for row in rows),
+    }
 
 
 @router.get("/{run_id}", response_model=BacktestOut)
@@ -165,6 +271,18 @@ def get_run_metrics(
     if not metrics:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Metrics not found")
     return metrics
+
+
+@router.get("/{run_id}/explain", response_model=RunExplainOut)
+def explain_run(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> RunExplainOut:
+    run = _get_actor_run(run_id, actor, db)
+    if not _is_terminal_status(run.status):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run is not complete")
+    return _run_explanation(run, db)
 
 
 @router.get("/{run_id}/positions", response_model=list[RunPositionOut])
@@ -304,20 +422,176 @@ def get_run_costs_summary(
             detail="end must be >= start",
         )
 
-    rows = db.query(
+    fill_rows = db.query(
         func.coalesce(func.sum(RunFill.commission_native), 0.0),
         func.coalesce(func.sum(RunFill.slippage_native), 0.0),
     ).filter(RunFill.run_id == run_id)
     if start:
-        rows = rows.filter(RunFill.date >= start)
+        fill_rows = fill_rows.filter(RunFill.date >= start)
     if end:
-        rows = rows.filter(RunFill.date <= end)
-    commissions, slippage = rows.first()
+        fill_rows = fill_rows.filter(RunFill.date <= end)
+    commissions, slippage = fill_rows.first()
+
+    equity_rows = db.query(RunDailyEquity).filter(RunDailyEquity.run_id == run_id)
+    if start:
+        equity_rows = equity_rows.filter(RunDailyEquity.date >= start)
+    if end:
+        equity_rows = equity_rows.filter(RunDailyEquity.date <= end)
+    latest_equity = equity_rows.order_by(RunDailyEquity.date.desc()).first()
+    total_costs = float(latest_equity.fees_cum_base if latest_equity else 0.0)
     return RunCostsSummaryOut(
         commissions=float(commissions or 0.0),
         slippage=float(slippage or 0.0),
-        total_costs=float((commissions or 0.0) + (slippage or 0.0)),
+        total_costs=total_costs,
     )
+
+
+@router.get("/{run_id}/export/equity.csv")
+def export_run_equity_csv(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _get_actor_run(run_id, actor, db)
+    rows = (
+        db.query(RunDailyEquity)
+        .filter(RunDailyEquity.run_id == run_id)
+        .order_by(RunDailyEquity.date.asc())
+        .all()
+    )
+    return _csv_response(
+        "equity.csv",
+        [
+            "date",
+            "equity_base",
+            "cash_base",
+            "gross_exposure_base",
+            "net_exposure_base",
+            "drawdown",
+            "fees_cum_base",
+            "taxes_cum_base",
+            "borrow_fees_cum_base",
+            "margin_interest_cum_base",
+        ],
+        [
+            [
+                row.date,
+                row.equity_base,
+                row.cash_base,
+                row.gross_exposure_base,
+                row.net_exposure_base,
+                row.drawdown,
+                row.fees_cum_base,
+                row.taxes_cum_base,
+                row.borrow_fees_cum_base,
+                row.margin_interest_cum_base,
+            ]
+            for row in rows
+        ],
+    )
+
+
+@router.get("/{run_id}/export/fills.csv")
+def export_run_fills_csv(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _get_actor_run(run_id, actor, db)
+    fills = (
+        db.query(RunFill)
+        .filter(RunFill.run_id == run_id)
+        .order_by(RunFill.date.asc())
+        .all()
+    )
+    order_ids = {fill.order_id for fill in fills if fill.order_id is not None}
+    side_lookup: dict[UUID, str] = {}
+    if order_ids:
+        side_rows = (
+            db.query(RunOrder.order_id, RunOrder.side)
+            .filter(RunOrder.order_id.in_(order_ids))
+            .all()
+        )
+        side_lookup = {order_id: side for order_id, side in side_rows}
+    return _csv_response(
+        "fills.csv",
+        ["date", "symbol", "side", "qty", "price", "notional", "commission", "slippage"],
+        [
+            [
+                row.date,
+                row.symbol,
+                side_lookup.get(row.order_id) if row.order_id else None,
+                row.qty,
+                row.price_native,
+                row.notional_native,
+                row.commission_native,
+                row.slippage_native,
+            ]
+            for row in fills
+        ],
+    )
+
+
+@router.get("/{run_id}/export/taxes.csv")
+def export_run_taxes_csv(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _get_actor_run(run_id, actor, db)
+    rows = (
+        db.query(RunTaxEvent)
+        .filter(RunTaxEvent.run_id == run_id)
+        .order_by(RunTaxEvent.date.asc(), RunTaxEvent.tax_event_id.asc())
+        .all()
+    )
+    return _csv_response(
+        "taxes.csv",
+        [
+            "date",
+            "symbol",
+            "quantity",
+            "realized_pnl_base",
+            "holding_period_days",
+            "bucket",
+            "tax_rate",
+            "tax_due_base",
+        ],
+        [
+            [
+                row.date,
+                row.symbol,
+                row.quantity,
+                row.realized_pnl_base,
+                row.holding_period_days,
+                row.bucket,
+                row.tax_rate,
+                row.tax_due_base,
+            ]
+            for row in rows
+        ],
+    )
+
+
+@router.get("/{run_id}/report.json")
+def get_run_report_json(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    run = _get_actor_run(run_id, actor, db)
+    metrics = db.query(RunMetric).filter(RunMetric.run_id == run_id).first()
+    latest_equity = _latest_equity(run_id, db)
+    return {
+        "run": _to_backtest_out(run).model_dump(mode="json"),
+        "metrics": RunMetricOut.model_validate(metrics).model_dump(mode="json") if metrics else None,
+        "explanation": _run_explanation(run, db).model_dump(mode="json") if metrics else None,
+        "costs": get_run_costs_summary(run_id=run_id, actor=actor, db=db).model_dump(mode="json"),
+        "taxes": _tax_summary(run_id, db),
+        "latest_equity": RunDailyEquityOut.model_validate(latest_equity).model_dump(mode="json")
+        if latest_equity
+        else None,
+    }
 
 
 @router.get("/{run_id}/top-holdings", response_model=list[RunPositionOut])
