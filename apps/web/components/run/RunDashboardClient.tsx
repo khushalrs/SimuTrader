@@ -13,6 +13,8 @@ import { PortfolioTab } from "@/components/run/PortfolioTab"
 import { FillsTab } from "@/components/run/FillsTab"
 import { ConfigTab } from "@/components/run/ConfigTab"
 import { TaxesTab } from "@/components/run/TaxesTab"
+import { ExposureTab } from "@/components/run/ExposureTab"
+import { TradeAnalyticsTab } from "@/components/run/TradeAnalyticsTab"
 import { InspectorPanel } from "@/components/run/InspectorPanel"
 import { RunHeader } from "@/components/run/RunHeader"
 import { KPIGrid } from "@/components/run/KPIGrid"
@@ -199,6 +201,8 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                                 <TabsTrigger value="performance">Performance</TabsTrigger>
                                 <TabsTrigger value="explain" disabled={isPending || isFailed}>Explain</TabsTrigger>
                                 <TabsTrigger value="risk" disabled={isPending || isFailed}>Risk</TabsTrigger>
+                                <TabsTrigger value="exposure" disabled={isPending || isFailed}>Exposure</TabsTrigger>
+                                <TabsTrigger value="trades" disabled={isPending || isFailed}>Trade Analytics</TabsTrigger>
                                 <TabsTrigger value="costs" disabled={isPending || isFailed}>Costs</TabsTrigger>
                                 <TabsTrigger value="portfolio" disabled={isPending || isFailed}>Portfolio</TabsTrigger>
                                 <TabsTrigger value="fills" disabled={isPending || isFailed}>Fills</TabsTrigger>
@@ -223,6 +227,12 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                         </TabsContent>
                         <TabsContent value="risk" className="mt-0 min-h-[450px]">
                             <RiskTab equity={runData.equity} />
+                        </TabsContent>
+                        <TabsContent value="exposure" className="mt-0 min-h-[450px]">
+                            <ExposureTab runId={runData.id as string} />
+                        </TabsContent>
+                        <TabsContent value="trades" className="mt-0 min-h-[450px]">
+                            <TradeAnalyticsTab runId={runData.id as string} baseCurrency={runData.baseCurrency || "USD"} />
                         </TabsContent>
                         <TabsContent value="costs" className="mt-0 min-h-[450px]">
                             <CostsTab data={runData as RunData} status={status} />

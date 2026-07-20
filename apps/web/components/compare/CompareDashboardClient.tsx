@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { compareRuns, type CompareMetricKey, type RunCompareMetricRowOut } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -34,8 +35,20 @@ function formatPercent(value?: number | null): string {
 }
 
 export function CompareDashboardClient({ availableRuns }: { availableRuns: any[] }) {
-    const [baseRun, setBaseRun] = useState<string>("");
-    const [comparisonRuns, setComparisonRuns] = useState<string[]>([]);
+    const searchParams = useSearchParams()
+    const [baseRun, setBaseRun] = useState<string>("")
+    const [comparisonRuns, setComparisonRuns] = useState<string[]>([])
+    
+    useEffect(() => {
+        const baseParam = searchParams.get("base")
+        const runsParam = searchParams.get("runs")
+        if (baseParam) {
+            setBaseRun(baseParam)
+        }
+        if (runsParam) {
+            setComparisonRuns(runsParam.split(",").filter(Boolean))
+        }
+    }, [searchParams])
     const [runSelectorOpen, setRunSelectorOpen] = useState(false);
     const [chartMode, setChartMode] = useState<"indexed" | "drawdown">("indexed");
 

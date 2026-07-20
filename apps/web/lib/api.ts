@@ -1309,3 +1309,16 @@ export async function getMarketSnapshot(
         return []
     }
 }
+
+export async function createRunScenario(runId: string, overrides: any): Promise<any> {
+    const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/scenario`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrides)
+    });
+    if (!res.ok) {
+        const err = await extractErrorMessage(res, "Failed to create scenario");
+        throw new Error(err);
+    }
+    return await res.json();
+}
