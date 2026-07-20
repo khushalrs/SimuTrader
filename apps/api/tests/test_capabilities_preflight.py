@@ -96,6 +96,62 @@ def test_capabilities_returns_strategy_matrix():
     assert payload["strategies"]["BUY_AND_HOLD"]["supports_mixed_currency"] is True
     assert payload["strategies"]["MOMENTUM"]["supports_mixed_currency"] is True
     assert payload["strategies"]["MOMENTUM"]["allocation_modes"] == ["equal"]
+    assert payload["strategies"]["MOMENTUM"]["required_params"] == [
+        "lookback_days",
+        "top_k",
+    ]
+
+
+def test_strategy_schemas_exposes_runtime_parameter_contracts():
+    app = FastAPI()
+    app.include_router(capabilities_router)
+    client = TestClient(app)
+
+    res = client.get("/strategy-schemas")
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert set(payload) == {
+        "BUY_AND_HOLD",
+        "FIXED_WEIGHT_REBALANCE",
+        "DCA",
+        "MOMENTUM",
+        "MEAN_REVERSION",
+    }
+    for schema in payload.values():
+        assert set(schema["required_params"] + schema["optional_params"]) == set(
+            schema["param_types"]
+        )
+        assert set(schema["defaults"]).issubset(schema["optional_params"])
+        assert schema["description"]
+    momentum = payload["MOMENTUM"]
+    assert momentum["defaults"] == {
+        "skip_days": 1,
+        "rebalance_frequency": "MONTHLY",
+        "weighting": "EQUAL",
+    }
+    assert momentum["param_types"]["lookback_days"] == {
+        "type": "integer",
+        "min": 1,
+    }
+    assert momentum["param_types"]["top_k"]["min"] == 1
+    assert momentum["supported_allocation_modes"] == ["equal"]
+    assert momentum["supported_asset_classes"] == ["US_EQUITY", "IN_EQUITY"]
+    assert momentum["supports_shorting"] is False
+    assert momentum["supports_margin"] is True
+    assert momentum["supports_mixed_currency"] is True
+
+    fixed = payload["FIXED_WEIGHT_REBALANCE"]
+    assert fixed["required_params"] == ["target_weights"]
+    assert fixed["param_types"]["drift_threshold"] == {
+        "type": "number",
+        "min": 0.0,
+        "max": 1.0,
+    }
+
+    mean_reversion = payload["MEAN_REVERSION"]
+    assert mean_reversion["defaults"] == {"rebalance_frequency": "DAILY"}
+    assert mean_reversion["param_types"]["hold_days"]["min"] == 1
 
 
 def test_mixed_us_india_buy_and_hold_preflights_cleanly(tmp_path, monkeypatch):

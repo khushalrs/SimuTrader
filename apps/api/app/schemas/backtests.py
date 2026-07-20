@@ -15,6 +15,15 @@ class BacktestCreate(BaseModel):
     seed: int = Field(default=42, ge=0)
 
 
+class RunCloneRequest(BaseModel):
+    name: Optional[str] = None
+
+
+class RunScenarioRequest(BaseModel):
+    name: Optional[str] = None
+    patch: Dict[str, Any]
+
+
 class BacktestPreflightRequest(BaseModel):
     config_snapshot: Dict[str, Any]
 

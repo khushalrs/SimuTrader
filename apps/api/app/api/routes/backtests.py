@@ -237,34 +237,31 @@ def preflight_backtest(
     return BacktestPreflightOut.model_validate(run_preflight(raw_config))
 
 
-@router.post("", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
-def create_backtest(
-    payload: BacktestCreate,
+def _dispatch_run(
+    db: Session,
+    config: dict,
+    actor: ActorContext,
+    name: str | None,
+    *,
     response: Response,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    reuse_succeeded_run: bool = Header(default=False, alias="X-Reuse-Succeeded-Run"),
-    actor: ActorContext = Depends(get_current_actor),
-    db: Session = Depends(get_db),
+    idempotency_key: str | None = None,
+    reuse_succeeded_run: bool = False,
+    data_snapshot_id: str,
+    seed: int = 42,
+    strategy_id: UUID | None = None,
 ) -> BacktestOut:
     settings = get_settings()
     now_utc = datetime.now(timezone.utc)
     clean_idempotency_key = (idempotency_key or "").strip() or None
-    payload.name = _sanitize_user_string(payload.name, max_len=255)
-    clean_data_snapshot_id = _sanitize_user_string(payload.data_snapshot_id, max_len=128)
+    clean_name = _sanitize_user_string(name, max_len=255)
+    clean_data_snapshot_id = _sanitize_user_string(data_snapshot_id, max_len=128)
     if not clean_data_snapshot_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="data_snapshot_id must be a non-empty string.",
         )
-    payload.data_snapshot_id = clean_data_snapshot_id
     _mark_stale_queued_runs(db, stale_after_seconds=settings.stale_queued_timeout_seconds)
-
-    try:
-        resolved_config = validate_and_resolve_config(payload.config_snapshot)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+    resolved_config = config
 
     if clean_idempotency_key:
         # Allow key reuse after dedupe expiry.
@@ -301,8 +298,8 @@ def create_backtest(
             db=db,
             actor_key=actor.actor_key,
             resolved_config=resolved_config,
-            data_snapshot_id=payload.data_snapshot_id,
-            seed=payload.seed,
+            data_snapshot_id=clean_data_snapshot_id,
+            seed=seed,
         )
         if reusable:
             if reusable.status in {"QUEUED", "RUNNING"}:
@@ -346,14 +343,14 @@ def create_backtest(
     )
 
     run = BacktestRun(
-        strategy_id=payload.strategy_id,
-        name=payload.name,
+        strategy_id=strategy_id,
+        name=clean_name,
         status="QUEUED",
         actor_tier=actor.tier.value,
         actor_key=actor.actor_key,
         config_snapshot=resolved_config,
-        data_snapshot_id=payload.data_snapshot_id,
-        seed=payload.seed,
+        data_snapshot_id=clean_data_snapshot_id,
+        seed=seed,
     )
     db.add(run)
     db.flush()
@@ -440,6 +437,35 @@ def create_backtest(
         return _to_backtest_out(run)
 
     return _to_backtest_out(execute_run(db, claimed_run))
+
+
+@router.post("", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
+def create_backtest(
+    payload: BacktestCreate,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    reuse_succeeded_run: bool = Header(default=False, alias="X-Reuse-Succeeded-Run"),
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> BacktestOut:
+    try:
+        resolved_config = validate_and_resolve_config(payload.config_snapshot)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return _dispatch_run(
+        db,
+        resolved_config,
+        actor,
+        payload.name,
+        response=response,
+        idempotency_key=idempotency_key,
+        reuse_succeeded_run=reuse_succeeded_run,
+        data_snapshot_id=payload.data_snapshot_id,
+        seed=payload.seed,
+        strategy_id=payload.strategy_id,
+    )
 
 
 @router.get("", response_model=list[BacktestOut])

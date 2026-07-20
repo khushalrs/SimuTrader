@@ -3,7 +3,7 @@ import io
 from datetime import date, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -40,7 +40,10 @@ from app.schemas.backtests import (
     RunFillOut,
     RunMetricOut,
     RunPositionOut,
+    RunCloneRequest,
+    RunScenarioRequest,
 )
+from app.services.scenario import build_clone_config, build_scenario_config
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 GLOBAL_PRESET_ACTOR_PREFIX = "preset:global:"
@@ -612,6 +615,96 @@ def explain_run(
     if not _is_terminal_status(run.status):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run is not complete")
     return _run_explanation(run, db)
+
+
+def _dispatch_derived_run(
+    *,
+    parent: BacktestRun,
+    config: dict,
+    actor: ActorContext,
+    name: str | None,
+    response: Response,
+    idempotency_key: str | None,
+    reuse_succeeded_run: bool,
+    db: Session,
+) -> BacktestOut:
+    # Lazy import avoids coupling the two route modules during router initialization.
+    from app.api.routes.backtests import _dispatch_run
+
+    return _dispatch_run(
+        db,
+        config,
+        actor,
+        name,
+        response=response,
+        idempotency_key=idempotency_key,
+        reuse_succeeded_run=reuse_succeeded_run,
+        data_snapshot_id=parent.data_snapshot_id,
+        seed=parent.seed,
+        strategy_id=parent.strategy_id,
+    )
+
+
+@router.post("/{run_id}/clone", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
+def clone_run(
+    run_id: UUID,
+    response: Response,
+    payload: RunCloneRequest | None = None,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    reuse_succeeded_run: bool = Header(default=False, alias="X-Reuse-Succeeded-Run"),
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> BacktestOut:
+    parent = _get_actor_run(run_id, actor, db)
+    try:
+        config = build_clone_config(parent.config_snapshot or {}, parent.run_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    name = (payload.name if payload else None) or f"{parent.name or 'Run'} (Clone)"
+    return _dispatch_derived_run(
+        parent=parent,
+        config=config,
+        actor=actor,
+        name=name,
+        response=response,
+        idempotency_key=idempotency_key,
+        reuse_succeeded_run=reuse_succeeded_run,
+        db=db,
+    )
+
+
+@router.post("/{run_id}/scenario", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
+def create_run_scenario(
+    run_id: UUID,
+    payload: RunScenarioRequest,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    reuse_succeeded_run: bool = Header(default=False, alias="X-Reuse-Succeeded-Run"),
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> BacktestOut:
+    parent = _get_actor_run(run_id, actor, db)
+    try:
+        config = build_scenario_config(
+            parent.config_snapshot or {}, parent.run_id, payload.patch
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    name = payload.name or f"{parent.name or 'Run'} (Scenario)"
+    return _dispatch_derived_run(
+        parent=parent,
+        config=config,
+        actor=actor,
+        name=name,
+        response=response,
+        idempotency_key=idempotency_key,
+        reuse_succeeded_run=reuse_succeeded_run,
+        db=db,
+    )
 
 
 @router.get("/{run_id}/positions", response_model=list[RunPositionOut])
