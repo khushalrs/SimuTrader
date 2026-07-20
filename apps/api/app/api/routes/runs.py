@@ -18,8 +18,9 @@ from app.models.backtests import (
     RunPosition,
     RunTaxEvent,
 )
+from app.models.assets import Asset
 from app.security import ActorContext, get_current_actor
-from app.services.config_validation import _implied_currency
+from app.services.capabilities import country_for_asset_class, currency_for_asset_class
 from app.services.redis_store import (
     get_cached_run_status,
     get_cached_top_holdings,
@@ -33,6 +34,8 @@ from app.schemas.backtests import (
     RunCostsSummaryOut,
     RunDailyEquityOut,
     RunExplainOut,
+    RunExposureBreakdownOut,
+    RunExposurePointOut,
     RunFillOut,
     RunMetricOut,
     RunPositionOut,
@@ -135,7 +138,10 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
 
     trade_count = (
         db.query(func.count(RunFill.fill_id))
-        .filter(RunFill.run_id == run.run_id)
+        .filter(
+            RunFill.run_id == run.run_id,
+            func.coalesce(RunFill.meta["kind"].astext, "") != "FX_SWEEP",
+        )
         .scalar()
         or 0
     )
@@ -259,6 +265,139 @@ def get_run_equity(
         .all()
     )
     return rows
+
+
+def _add_exposure(
+    breakdowns: dict[str, RunExposureBreakdownOut],
+    key: str,
+    *,
+    qty: float,
+    market_value_base: float,
+) -> None:
+    breakdown = breakdowns.setdefault(
+        key,
+        RunExposureBreakdownOut(
+            long_base=0.0,
+            short_base=0.0,
+            gross_base=0.0,
+            net_base=0.0,
+        ),
+    )
+    magnitude = abs(market_value_base)
+    if qty > 0.0:
+        breakdown.long_base += magnitude
+    elif qty < 0.0:
+        breakdown.short_base += magnitude
+    breakdown.gross_base = breakdown.long_base + breakdown.short_base
+    breakdown.net_base = breakdown.long_base - breakdown.short_base
+
+
+@router.get("/{run_id}/exposure", response_model=list[RunExposurePointOut])
+def get_run_exposure(
+    run_id: UUID,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = Query(default=2000, ge=1, le=10000),
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[RunExposurePointOut]:
+    run = _get_actor_run(run_id, actor, db)
+    if not _is_terminal_status(run.status):
+        return []
+    if start and end and end < start:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="end must be >= start",
+        )
+
+    equity_query = db.query(RunDailyEquity).filter(RunDailyEquity.run_id == run_id)
+    if start:
+        equity_query = equity_query.filter(RunDailyEquity.date >= start)
+    if end:
+        equity_query = equity_query.filter(RunDailyEquity.date <= end)
+    equity_rows = equity_query.order_by(RunDailyEquity.date.asc()).limit(limit).all()
+    if not equity_rows:
+        return []
+
+    exposure_dates = [row.date for row in equity_rows]
+    position_rows = (
+        db.query(RunPosition)
+        .filter(
+            RunPosition.run_id == run_id,
+            RunPosition.date.in_(exposure_dates),
+        )
+        .all()
+    )
+    symbols = sorted({str(row.symbol).upper() for row in position_rows})
+    asset_rows = (
+        db.query(Asset).filter(func.upper(Asset.symbol).in_(symbols)).all()
+        if symbols
+        else []
+    )
+    assets_by_symbol = {str(row.symbol).upper(): row for row in asset_rows}
+    positions_by_date: dict[date, list[RunPosition]] = {}
+    for position in position_rows:
+        positions_by_date.setdefault(position.date, []).append(position)
+
+    results: list[RunExposurePointOut] = []
+    for equity in equity_rows:
+        by_currency: dict[str, RunExposureBreakdownOut] = {}
+        by_asset_class: dict[str, RunExposureBreakdownOut] = {}
+        by_country: dict[str, RunExposureBreakdownOut] = {}
+        total = RunExposureBreakdownOut(
+            long_base=0.0,
+            short_base=0.0,
+            gross_base=0.0,
+            net_base=0.0,
+        )
+        for position in positions_by_date.get(equity.date, []):
+            qty = float(position.qty or 0.0)
+            market_value_base = float(position.market_value_base or 0.0)
+            magnitude = abs(market_value_base)
+            if qty > 0.0:
+                total.long_base += magnitude
+            elif qty < 0.0:
+                total.short_base += magnitude
+
+            asset = assets_by_symbol.get(str(position.symbol).upper())
+            asset_class = str(getattr(asset, "asset_class", None) or "UNKNOWN").upper()
+            currency = str(getattr(asset, "currency", None) or "UNKNOWN").upper()
+            country = country_for_asset_class(asset_class)
+            for breakdowns, key in (
+                (by_currency, currency),
+                (by_asset_class, asset_class),
+                (by_country, country),
+            ):
+                _add_exposure(
+                    breakdowns,
+                    key,
+                    qty=qty,
+                    market_value_base=market_value_base,
+                )
+
+        total.gross_base = total.long_base + total.short_base
+        total.net_base = total.long_base - total.short_base
+        equity_base = float(equity.equity_base or 0.0)
+        results.append(
+            RunExposurePointOut(
+                date=equity.date,
+                long_base=total.long_base,
+                short_base=total.short_base,
+                gross_base=total.gross_base,
+                net_base=total.net_base,
+                leverage=(
+                    total.gross_base / equity_base if abs(equity_base) > 1e-12 else None
+                ),
+                equity_native_by_currency={
+                    str(currency): float(value)
+                    for currency, value in (equity.equity_by_currency or {}).items()
+                },
+                exposure_base_by_currency=by_currency,
+                by_asset_class=by_asset_class,
+                by_country=by_country,
+            )
+        )
+    return results
 
 
 @router.get("/{run_id}/metrics", response_model=RunMetricOut)
@@ -460,6 +599,7 @@ def get_run_costs_summary(
 
     fill_rows = db.query(
         RunFill.symbol,
+        func.coalesce(RunFill.meta["kind"].astext, ""),
         func.coalesce(func.sum(RunFill.commission_native), 0.0),
         func.coalesce(func.sum(RunFill.slippage_native), 0.0),
     ).filter(RunFill.run_id == run_id)
@@ -467,19 +607,26 @@ def get_run_costs_summary(
         fill_rows = fill_rows.filter(RunFill.date >= start)
     if end:
         fill_rows = fill_rows.filter(RunFill.date <= end)
-    fill_totals_by_symbol = fill_rows.group_by(RunFill.symbol).all()
+    fill_totals_by_symbol = fill_rows.group_by(
+        RunFill.symbol, func.coalesce(RunFill.meta["kind"].astext, "")
+    ).all()
 
     instruments = ((run.config_snapshot or {}).get("universe") or {}).get("instruments") or []
     symbol_currencies = {
-        str(instrument.get("symbol") or "").upper(): _implied_currency(
+        str(instrument.get("symbol") or "").upper(): currency_for_asset_class(
             str(instrument.get("asset_class") or "")
         )
         for instrument in instruments
     }
     commissions_native: dict[str, float] = {}
     slippage_native: dict[str, float] = {}
-    for symbol, commissions, slippage in fill_totals_by_symbol:
-        currency = symbol_currencies.get(str(symbol).upper())
+    base_currency = str((run.config_snapshot or {}).get("base_currency") or "USD").upper()
+    for symbol, kind, commissions, slippage in fill_totals_by_symbol:
+        currency = (
+            base_currency
+            if str(kind or "").upper() == "FX_SWEEP"
+            else symbol_currencies.get(str(symbol).upper())
+        )
         if currency is None:
             continue
         commissions_native[currency] = commissions_native.get(currency, 0.0) + float(

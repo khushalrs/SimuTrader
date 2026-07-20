@@ -5,23 +5,7 @@ from typing import Any
 
 from app.data.duckdb import get_duckdb_conn
 from app.services.config_validation import validate_and_resolve_config
-
-
-SINGLE_CURRENCY_STRATEGIES = {
-    "DCA": "DCA currently supports single-currency universes only.",
-    "FIXED_WEIGHT_REBALANCE": (
-        "FIXED_WEIGHT_REBALANCE currently supports single-currency universes only. "
-        "Use BUY_AND_HOLD with explicit amount allocations for mixed-currency runs."
-    ),
-    "MOMENTUM": (
-        "MOMENTUM currently supports single-currency universes only. "
-        "Use only USD assets, only INR assets, or switch to BUY_AND_HOLD."
-    ),
-    "MEAN_REVERSION": (
-        "MEAN_REVERSION currently supports single-currency universes only. "
-        "Use only USD assets, only INR assets, or switch to BUY_AND_HOLD."
-    ),
-}
+from app.services.capabilities import strategy_supports_mixed_currency
 
 
 def _parse_date(value: Any) -> date:
@@ -176,18 +160,18 @@ def run_preflight(raw_config: dict[str, Any]) -> dict[str, Any]:
     currencies = set(symbol_currencies.values())
     required_pairs = _required_fx_pairs(currencies, base_currency)
     if len(currencies) > 1:
-        message = SINGLE_CURRENCY_STRATEGIES.get(strategy)
-        if message:
-            errors.append(message)
-        if "initial_cash_by_currency" not in backtest:
-            errors.append(
-                "initial_cash_by_currency is required when the universe spans multiple currencies."
-            )
+        if not strategy_supports_mixed_currency(strategy):
+            errors.append(f"{strategy} does not support mixed-currency universes.")
         has_amounts = all("amount" in inst for inst in instruments)
-        if strategy == "BUY_AND_HOLD" and not has_amounts:
-            errors.append(
-                "Mixed-currency BUY_AND_HOLD runs require explicit amount allocations for every instrument."
-            )
+        if strategy == "BUY_AND_HOLD":
+            if "initial_cash_by_currency" not in backtest:
+                errors.append(
+                    "initial_cash_by_currency is required when the universe spans multiple currencies."
+                )
+            if not has_amounts:
+                errors.append(
+                    "Mixed-currency BUY_AND_HOLD runs require explicit amount allocations for every instrument."
+                )
 
     if required_pairs == ["USDINR"] and not _has_usd_inr_history(start_date, end_date):
         errors.append(

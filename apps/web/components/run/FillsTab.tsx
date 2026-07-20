@@ -81,8 +81,13 @@ export function FillsTab({ runId, status, baseCurrency = "USD" }: FillsTabProps)
                                     <tr key={`${fill.symbol}-${fill.date}-${index}`} className="border-b transition-colors hover:bg-muted/50">
                                         <td className="px-4 py-3 whitespace-nowrap">{new Date(fill.date).toLocaleString()}</td>
                                         <td className="px-4 py-3 font-medium">{fill.symbol}</td>
-                                        <td className={`px-4 py-3 text-right font-medium ${fill.side === "BUY" ? "text-green-500" : "text-red-500"}`}>
-                                            {fill.side || "N/A"}
+                                        <td className="px-4 py-3 text-right font-medium">
+                                            <span className={`inline-flex rounded px-2 py-0.5 text-xs font-semibold ${fill.side === "BUY" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" :
+                                                fill.side === "FX" ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300" :
+                                                    "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                                                }`}>
+                                                {fill.side || "N/A"}
+                                            </span>
                                         </td>
                                         <td className="px-4 py-3 text-right">{fill.qty.toLocaleString()}</td>
                                         <td className="px-4 py-3 text-right">

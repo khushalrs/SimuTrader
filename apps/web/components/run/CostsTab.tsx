@@ -318,6 +318,7 @@ export function CostsTab({ data, status }: CostsTabProps) {
                                             <td className="px-4 py-3">
                                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${fill.side?.toUpperCase() === "BUY" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-400" :
                                                     fill.side?.toUpperCase() === "SELL" ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-400" :
+                                                        fill.side?.toUpperCase() === "FX" ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-400" :
                                                         "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-400"
                                                     }`}>
                                                     {fill.side || "N/A"}

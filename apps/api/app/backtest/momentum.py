@@ -180,9 +180,6 @@ def run_momentum(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any])
     def target_allocations(ctx: DayContext):
         nonlocal last_rebalance
 
-        if len(ctx.state.cash_by_currency) != 1:
-            raise ValueError("MOMENTUM currently supports single-currency runs only.")
-
         for symbol in symbols:
             price = ctx.prices.get(symbol)
             if price is None:
@@ -213,20 +210,13 @@ def run_momentum(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any])
         returns.sort(key=lambda item: item[1], reverse=True)
         winners = {symbol for symbol, _ in returns[:top_k]}
 
-        total_value = sum(ctx.state.cash_by_currency.values())
-        for symbol, pos in ctx.state.positions.items():
-            price = ctx.state.last_price.get(symbol)
-            if price is None:
-                continue
-            total_value += pos.qty * price
-
-        if total_value <= 0:
+        if ctx.equity_base <= 0:
             return None
 
         weight = 1.0 / len(winners)
         allocations: Dict[str, float] = {}
         for symbol in symbols:
-            allocations[symbol] = total_value * 0.99 * weight if symbol in winners else 0.0
+            allocations[symbol] = weight if symbol in winners else 0.0
 
         last_rebalance = ctx.date
         return allocations
@@ -246,5 +236,6 @@ def run_momentum(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any])
         slippage_cfg=slippage_cfg,
         fill_price_policy=fill_price_policy,
         allocation_mode=allocation_mode,
+        allocation_kind="BASE_WEIGHT",
         missing_bar_policy=missing_bar_policy,
     )

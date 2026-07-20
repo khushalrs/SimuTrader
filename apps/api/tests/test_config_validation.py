@@ -78,7 +78,7 @@ def test_leverage_requires_margin_enabled() -> None:
         validate_and_resolve_config(config)
 
 
-def test_mixed_currency_momentum_validation_uses_clean_message() -> None:
+def test_mixed_currency_momentum_validation_is_supported() -> None:
     config = _base_config()
     config["strategy"] = "MOMENTUM"
     config["strategy_params"] = {
@@ -88,8 +88,8 @@ def test_mixed_currency_momentum_validation_uses_clean_message() -> None:
         "weighting": "EQUAL",
     }
     config["universe"]["instruments"][1]["asset_class"] = "IN_EQUITY"
-    with pytest.raises(ValueError, match="MOMENTUM currently supports single-currency universes only"):
-        validate_and_resolve_config(config)
+    resolved = validate_and_resolve_config(config)
+    assert resolved["strategy"] == "MOMENTUM"
 
 
 def test_execution_block_maps_into_legacy_commission_fields() -> None:
@@ -111,3 +111,13 @@ def test_config_sanitizes_control_characters() -> None:
     config["universe"]["instruments"][0]["symbol"] = "AAPL\x00\x01"
     resolved = validate_and_resolve_config(config)
     assert resolved["universe"]["instruments"][0]["symbol"] == "AAPL"
+
+
+def test_config_accepts_explicit_or_null_benchmark() -> None:
+    explicit = _base_config()
+    explicit["benchmark"] = "SPY"
+    assert validate_and_resolve_config(explicit)["benchmark"] == "SPY"
+
+    disabled = _base_config()
+    disabled["benchmark"] = None
+    assert validate_and_resolve_config(disabled)["benchmark"] is None

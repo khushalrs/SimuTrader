@@ -8,6 +8,11 @@ from typing import Any, Dict
 
 from jsonschema import Draft202012Validator, FormatChecker, validators
 
+from app.services.capabilities import (
+    currency_for_asset_class,
+    strategy_supports_mixed_currency,
+)
+
 CONFIG_SCHEMA: Dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -24,6 +29,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
             "default": {},
         },
         "base_currency": {"type": "string", "enum": ["USD", "INR"], "default": "USD"},
+        "benchmark": {"type": ["string", "null"], "minLength": 1},
         "execution": {
             "type": "object",
             "additionalProperties": False,
@@ -362,14 +368,6 @@ def _parse_date(value: Any, field_name: str) -> date:
         raise ValueError(f"Invalid {field_name} format: {value}") from exc
 
 
-def _implied_currency(asset_class: str) -> str | None:
-    if asset_class == "US_EQUITY":
-        return "USD"
-    if asset_class == "IN_EQUITY":
-        return "INR"
-    return None
-
-
 def _validate_cross_fields(config: Dict[str, Any]) -> None:
     backtest = config.get("backtest") or {}
     start_date = _parse_date(backtest.get("start_date"), "start_date")
@@ -387,7 +385,8 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
     implied_currencies = {
         currency
         for currency in (
-            _implied_currency(str(inst.get("asset_class") or "")) for inst in instruments
+            currency_for_asset_class(str(inst.get("asset_class") or ""))
+            for inst in instruments
         )
         if currency is not None
     }
@@ -432,24 +431,9 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
                 f"Invalid config: total amount {total_amount:.2f} exceeds initial_cash {initial_cash:.2f}"
             )
     if mixed_currency_universe:
-        if strategy == "MOMENTUM":
+        if not strategy_supports_mixed_currency(strategy):
             raise ValueError(
-                "Invalid config: MOMENTUM currently supports single-currency universes only. "
-                "Use only USD assets, only INR assets, or switch to BUY_AND_HOLD."
-            )
-        if strategy == "MEAN_REVERSION":
-            raise ValueError(
-                "Invalid config: MEAN_REVERSION currently supports single-currency universes only. "
-                "Use only USD assets, only INR assets, or switch to BUY_AND_HOLD."
-            )
-        if strategy == "DCA":
-            raise ValueError(
-                "Invalid config: DCA currently supports single-currency universes only."
-            )
-        if strategy == "FIXED_WEIGHT_REBALANCE":
-            raise ValueError(
-                "Invalid config: FIXED_WEIGHT_REBALANCE currently supports single-currency universes only. "
-                "Use BUY_AND_HOLD with explicit amount allocations for mixed-currency runs."
+                f"Invalid config: {strategy} does not support mixed-currency universes."
             )
         if strategy == "BUY_AND_HOLD":
             if "initial_cash_by_currency" not in backtest:
