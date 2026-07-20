@@ -1152,7 +1152,19 @@ export async function getDataQuality(symbols?: string[]): Promise<any> {
     }
 }
 
-export async function getPlaygroundPresets(): Promise<any[]> {
+export interface PlaygroundPreset {
+    id: string
+    name: string
+    description: string
+    strategy_type: string
+    base_currency: string
+    symbols: string[]
+    asset_classes: string[]
+    data_snapshot_id: string
+    config_snapshot: any
+}
+
+export async function getPlaygroundPresets(): Promise<PlaygroundPreset[]> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/playground/presets`, { cache: "no-store" })
         if (!res.ok) return []

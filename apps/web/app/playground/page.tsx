@@ -2,13 +2,17 @@
 
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { TrendingUp, BarChart2, Zap, ArrowRight, Layers, Activity } from "lucide-react"
+import { TrendingUp, Zap, ArrowRight, Layers, Activity, Loader2, Copy, Check } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 
-import { presets, PresetConfig } from "@/config/presets"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { getOrCreatePlaygroundPresetRun, getRun } from "@/lib/api"
+import {
+    getOrCreatePlaygroundPresetRun,
+    getPlaygroundPresets,
+    getRun,
+    PlaygroundPreset,
+} from "@/lib/api"
 import {
     Dialog,
     DialogContent,
@@ -16,15 +20,74 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog"
-import { Loader2, Copy, Check } from "lucide-react"
+
+type DisplayPreset = PlaygroundPreset & {
+    title: string
+    universe: string
+    behavior: string
+    icon: any
+    color: string
+    whatItDemonstrates: string
+    universeDetails: string
+    strategyType: string
+    realismSettings: string
+    expectedInsight: string
+}
+
+const strategyPresentation: Record<string, { icon: any; color: string }> = {
+    BUY_AND_HOLD: { icon: TrendingUp, color: "text-blue-500" },
+    FIXED_WEIGHT_REBALANCE: { icon: Layers, color: "text-orange-500" },
+    MOMENTUM: { icon: Zap, color: "text-yellow-500" },
+    MEAN_REVERSION: { icon: Activity, color: "text-green-500" },
+    DCA: { icon: TrendingUp, color: "text-indigo-500" },
+}
+
+function toDisplayPreset(preset: PlaygroundPreset): DisplayPreset {
+    const presentation =
+        strategyPresentation[preset.strategy_type] || strategyPresentation.BUY_AND_HOLD
+    const commission = preset.config_snapshot?.commission?.bps ?? 0
+    const slippage = preset.config_snapshot?.slippage?.bps ?? 0
+    return {
+        ...preset,
+        title: preset.name,
+        universe: preset.asset_classes.join(" + ").replaceAll("_", " "),
+        behavior: preset.description,
+        icon: presentation.icon,
+        color: presentation.color,
+        whatItDemonstrates: preset.description,
+        universeDetails: preset.symbols.join(", "),
+        strategyType: preset.strategy_type.replaceAll("_", " "),
+        realismSettings: `${preset.base_currency} base, ${commission}bps commission, ${slippage}bps slippage`,
+        expectedInsight: "Inspect returns, risk, exposures, costs, taxes, and execution details.",
+    }
+}
 
 export default function PlaygroundPage() {
     const router = useRouter()
+    const [presets, setPresets] = useState<DisplayPreset[]>([])
+    const [isLoadingPresets, setIsLoadingPresets] = useState(true)
     const [pendingRunId, setPendingRunId] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
-    const [viewConfig, setViewConfig] = useState<PresetConfig | null>(null)
+    const [viewConfig, setViewConfig] = useState<DisplayPreset | null>(null)
     const [copied, setCopied] = useState(false)
     const presetRunStorageKey = "playground_preset_runs_v1"
+
+    useEffect(() => {
+        let active = true
+        getPlaygroundPresets()
+            .then((items) => {
+                if (active) setPresets(items.map(toDisplayPreset))
+            })
+            .catch((err: any) => {
+                if (active) setError(err.message || "Failed to load presets")
+            })
+            .finally(() => {
+                if (active) setIsLoadingPresets(false)
+            })
+        return () => {
+            active = false
+        }
+    }, [])
 
     const readPresetRunMap = (): Record<string, string> => {
         if (typeof window === "undefined") return {}
@@ -46,7 +109,7 @@ export default function PlaygroundPage() {
         window.localStorage.setItem(presetRunStorageKey, JSON.stringify(current))
     }
 
-    const handleRunPreset = async (preset: PresetConfig) => {
+    const handleRunPreset = async (preset: DisplayPreset) => {
         try {
             setError(null)
             setPendingRunId(preset.id)
@@ -83,6 +146,17 @@ export default function PlaygroundPage() {
                     Quickly launch pre-configured strategy demos. Investigate capital constraints, fees, and cross-border taxes.
                 </p>
             </div>
+
+            {isLoadingPresets && (
+                <div className="flex items-center gap-2 py-12 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading presets...
+                </div>
+            )}
+
+            {!isLoadingPresets && presets.length === 0 && !error && (
+                <div className="py-12 text-sm text-muted-foreground">No presets are available.</div>
+            )}
 
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-2">
                 {presets.map((preset, index) => (

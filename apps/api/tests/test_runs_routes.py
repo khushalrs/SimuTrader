@@ -538,6 +538,7 @@ def test_explanation_endpoint_returns_stable_keys():
     assert result.worst_period is not None
     assert result.largest_position.symbol == "AAPL"
     assert result.largest_trade.symbol == "AAPL"
+    assert "42.00% gross and 35.00% net" in result.summary
     assert result.largest_trade.side == "BUY"
     assert result.largest_trade.notional_base == pytest.approx(5000.0)
     assert result.largest_tax_event.tax_due_base == pytest.approx(200.0)
