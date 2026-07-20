@@ -632,8 +632,10 @@ def test_fixed_weight_rebalance_daily(tmp_path, monkeypatch):
     weights = {
         row.symbol: row.market_value_base / equity_row.equity_base for row in positions
     }
-    assert weights[symbols[0]] == pytest.approx(0.6, rel=1e-3)
-    assert weights[symbols[1]] == pytest.approx(0.4, rel=1e-3)
+    # Targets are scaled by execution.cash_buffer_pct (default 1%) so commission and
+    # slippage are payable without every rebalance hitting partial-fill trimming.
+    assert weights[symbols[0]] == pytest.approx(0.6 * 0.99, rel=1e-3)
+    assert weights[symbols[1]] == pytest.approx(0.4 * 0.99, rel=1e-3)
 
 
 def test_dca_weekly_contributions_daily_buys(tmp_path, monkeypatch):
@@ -732,7 +734,8 @@ def test_momentum_monthly_top_k(tmp_path, monkeypatch):
         row.symbol: row.market_value_base / equity_row.equity_base for row in positions
     }
 
-    assert weights[symbols[1]] == pytest.approx(1.0, rel=1e-3)
+    # Winners receive equity net of the default 1% execution.cash_buffer_pct reserve.
+    assert weights[symbols[1]] == pytest.approx(0.99, rel=1e-3)
     assert weights.get(symbols[0], 0.0) == pytest.approx(0.0, abs=1e-6)
 
 

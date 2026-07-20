@@ -58,6 +58,12 @@ CONFIG_SCHEMA: Dict[str, Any] = {
                     "enum": ["CLOSE"],
                     "default": "CLOSE",
                 },
+                "cash_buffer_pct": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 0.5,
+                    "default": 0.01,
+                },
             },
         },
         "commission": {

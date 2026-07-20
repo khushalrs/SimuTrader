@@ -146,3 +146,103 @@ def test_mixed_currency_momentum_fx_sweep_and_base_accounting(tmp_path, monkeypa
     assert first_sweep.qty == pytest.approx(
         reliance_fill.notional_native + reliance_fill.commission_native
     )
+
+
+def test_tax_accrual_never_strands_negative_native_cash(tmp_path, monkeypatch):
+    """A closing fill accrues tax in the position's native currency after the trade
+    has already consumed that bucket. Without an end-of-day FX sweep the deficit is
+    stranded and per-currency margin interest accrues on it forever."""
+    start = date(2024, 1, 2)
+    end = date(2024, 2, 16)
+    path = tmp_path / "tax_sweep.duckdb"
+    _seed_mixed_market(str(path), start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "strategy": "MOMENTUM",
+            "base_currency": "USD",
+            "strategy_params": {
+                "lookback_days": 2,
+                "skip_days": 0,
+                "top_k": 1,
+                "rebalance_frequency": "WEEKLY",
+                "weighting": "EQUAL",
+            },
+            "universe": {
+                "instruments": [
+                    {"symbol": "AAPL", "asset_class": "US_EQUITY"},
+                    {"symbol": "RELIANCE", "asset_class": "IN_EQUITY"},
+                ]
+            },
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "initial_cash": 10_000.0,
+            "commission": {"model": "BPS", "bps": 5.0},
+            "slippage": {"model": "BPS", "bps": 10.0},
+            "tax": {"regime": "US", "short_term_days": 365},
+        },
+        data_snapshot_id="tax_sweep_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert any(event.tax_due_base > 0 for event in db.tax_rows), (
+        "expected at least one taxable realization to exercise the sweep"
+    )
+    for row in db.equity_rows:
+        for currency, amount in (row.cash_by_currency or {}).items():
+            if currency == "USD":
+                continue
+            assert amount >= -1e-6, (
+                f"{currency} cash stranded negative ({amount}) on {row.date}"
+            )
+
+
+def test_cash_buffer_is_configurable_and_applied(tmp_path, monkeypatch):
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 19)
+    path = tmp_path / "buffer.duckdb"
+    _seed_mixed_market(str(path), start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(path))
+
+    def run_with_buffer(buffer_pct):
+        db = _FakeSession()
+        execution = {} if buffer_pct is None else {"cash_buffer_pct": buffer_pct}
+        run = BacktestRun(
+            run_id=uuid4(),
+            status="QUEUED",
+            config_snapshot={
+                "strategy": "FIXED_WEIGHT_REBALANCE",
+                "base_currency": "USD",
+                "strategy_params": {
+                    "target_weights": {"AAPL": 1.0},
+                    "rebalance_frequency": "WEEKLY",
+                    "drift_threshold": 0.0,
+                },
+                "universe": {
+                    "instruments": [{"symbol": "AAPL", "asset_class": "US_EQUITY"}]
+                },
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "initial_cash": 10_000.0,
+                "commission": {"model": "BPS", "bps": 0.0},
+                "slippage": {"model": "BPS", "bps": 0.0},
+                "execution": execution,
+            },
+            data_snapshot_id="buffer_snapshot",
+            seed=42,
+        )
+        execute_run(db, run)
+        assert run.status == "SUCCEEDED"
+        final = db.equity_rows[-1]
+        return final.cash_base / final.equity_base
+
+    assert run_with_buffer(None) == pytest.approx(0.01, abs=2e-3)
+    assert run_with_buffer(0.05) == pytest.approx(0.05, abs=2e-3)
+    assert run_with_buffer(0.0) == pytest.approx(0.0, abs=2e-3)

@@ -57,7 +57,6 @@ class OrderSpec:
     side: str
     qty: float
     price: float
-    is_fx_sweep: bool = False
 
 
 @dataclass
@@ -323,6 +322,20 @@ def _convert_native_to_base(
     raise DataUnavailableError(
         f"Unsupported FX conversion from {native} to base currency {base}."
     )
+
+
+DEFAULT_CASH_BUFFER_PCT = 0.01
+
+
+def _parse_cash_buffer_pct(config: Dict[str, Any] | None) -> float:
+    """Fraction of equity held back from target allocations to cover trading costs."""
+    value = (config or {}).get("cash_buffer_pct")
+    if value is None:
+        return DEFAULT_CASH_BUFFER_PCT
+    buffer_pct = float(value)
+    if not 0.0 <= buffer_pct <= 0.5:
+        raise ValueError("execution.cash_buffer_pct must be between 0 and 0.5.")
+    return buffer_pct
 
 
 def _convert_base_to_native(
@@ -725,6 +738,7 @@ def run_engine(
     missing_fx_policy: str | None = None,
     include_financing: bool = True,
     allocation_kind: AllocationKind = "NATIVE_VALUE",
+    apply_cash_buffer: bool = True,
 ) -> int:
     symbols = [inst["symbol"] for inst in instruments]
     policy = _normalize_missing_bar_policy(missing_bar_policy)
@@ -745,6 +759,7 @@ def run_engine(
     allocation_kind = str(allocation_kind or "NATIVE_VALUE").upper()
     if allocation_kind not in {"NATIVE_VALUE", "BASE_WEIGHT"}:
         raise ValueError(f"Unsupported allocation_kind '{allocation_kind}'.")
+    cash_buffer_pct = _parse_cash_buffer_pct(config_snapshot.get("execution"))
 
     con = get_duckdb_conn()
     try:
@@ -1061,6 +1076,26 @@ def run_engine(
             )
         )
 
+    def settle_negative_native_cash(day: date, usd_inr: float | None) -> None:
+        """Clear any negative non-base cash bucket back to zero via an FX sweep.
+
+        Trade funding covers the order cost itself, but a tax accrual on a closing
+        fill is debited afterwards and can leave a native bucket short. Without this
+        pass that deficit is stranded: nothing else funds it, and per-currency margin
+        interest would accrue on it indefinitely.
+        """
+        for currency in list(state.cash_by_currency.keys()):
+            if currency == base_currency:
+                continue
+            if state.cash_by_currency.get(currency, 0.0) >= -1e-9:
+                continue
+            fund_native_cash_with_fx(
+                day=day,
+                native_currency=currency,
+                required_native=0.0,
+                usd_inr=usd_inr,
+            )
+
     def realize_lots_and_accrue_tax(
         *,
         day: date,
@@ -1207,9 +1242,16 @@ def run_engine(
             if allocation_kind == "BASE_WEIGHT":
                 # Allocators may add cash (DCA), so value the weights after they return.
                 _, target_equity_base, _, _, _, _ = compute_portfolio_values(usd_inr)
+                # Hold back a slice of equity so commission and slippage are payable
+                # without every rebalance falling into partial-fill trimming.
+                # Incremental strategies (DCA) opt out and buffer their own new cash
+                # instead, so the buffer never trims positions they already hold.
+                investable_base = target_equity_base * (
+                    1.0 - cash_buffer_pct if apply_cash_buffer else 1.0
+                )
                 target_allocations = {
                     symbol: _convert_base_to_native(
-                        float(weight) * target_equity_base,
+                        float(weight) * investable_base,
                         symbol_currencies[symbol],
                         base_currency,
                         usd_inr,
@@ -1402,10 +1444,11 @@ def run_engine(
 
                 fees_cum_by_currency[currency] += commission_native + slippage_native
 
-                if not order.is_fx_sweep:
-                    turnover_notional_base += abs(
-                        _convert_native_to_base(notional, currency, base_currency, usd_inr)
-                    )
+                # FX sweeps never reach this loop -- they are written directly by
+                # fund_native_cash_with_fx -- so currency conversions stay out of turnover.
+                turnover_notional_base += abs(
+                    _convert_native_to_base(notional, currency, base_currency, usd_inr)
+                )
 
                 fill_rows.append(
                     RunFill(
@@ -1423,6 +1466,8 @@ def run_engine(
                     )
                 )
                 assert_risk_limits(usd_inr)
+
+        settle_negative_native_cash(day, usd_inr)
 
         (
             equity_by_currency,

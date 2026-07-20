@@ -7,7 +7,7 @@ from typing import Any, Dict, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.backtest.engine import DayContext, run_engine
+from app.backtest.engine import DayContext, _parse_cash_buffer_pct, run_engine
 from app.models.backtests import BacktestRun
 
 
@@ -224,6 +224,9 @@ def run_dca(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> i
     last_contribution: date | None = None
     last_buy: date | None = None
     base_currency = str(config_snapshot.get("base_currency") or "USD").upper()
+    # DCA buffers its own incoming cash and opts out of the engine-level buffer, which
+    # would otherwise trim already-held positions on every contribution date.
+    cash_buffer_pct = _parse_cash_buffer_pct(config_snapshot.get("execution"))
 
     def target_allocations(ctx: DayContext):
         nonlocal last_contribution, last_buy
@@ -246,9 +249,10 @@ def run_dca(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> i
             return None
 
         allocations: Dict[str, float] = {}
+        investable_cash_base = available_cash_base * (1.0 - cash_buffer_pct)
         for symbol, weight in weights.items():
             target_base = ctx.position_value_base.get(symbol, 0.0) + (
-                available_cash_base * 0.99 * weight
+                investable_cash_base * weight
             )
             allocations[symbol] = target_base / equity_base
 
@@ -273,5 +277,6 @@ def run_dca(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> i
         fill_price_policy=fill_price_policy,
         allocation_mode=allocation_mode,
         allocation_kind="BASE_WEIGHT",
+        apply_cash_buffer=False,
         missing_bar_policy=missing_bar_policy,
     )
