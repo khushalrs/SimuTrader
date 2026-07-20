@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.data.duckdb import get_duckdb_conn
 from app.models.backtests import (
     BacktestRun,
     RunDailyEquity,
@@ -114,6 +115,87 @@ def _latest_equity(run_id: UUID, db: Session) -> RunDailyEquity | None:
     )
 
 
+def _rolling_month_extremes(
+    equity_rows: list[RunDailyEquity],
+) -> tuple[dict | None, dict | None]:
+    """Return best/worst 21-return windows (22 global-calendar observations)."""
+    ordered = sorted(equity_rows, key=lambda row: row.date)
+    periods: list[dict] = []
+    for index in range(21, len(ordered)):
+        start_row = ordered[index - 21]
+        end_row = ordered[index]
+        start_equity = float(start_row.equity_base or 0.0)
+        if abs(start_equity) <= 1e-12:
+            continue
+        periods.append(
+            {
+                "start_date": start_row.date,
+                "end_date": end_row.date,
+                "return_value": float(end_row.equity_base) / start_equity - 1.0,
+            }
+        )
+    if not periods:
+        return None, None
+    return (
+        max(periods, key=lambda period: period["return_value"]),
+        min(periods, key=lambda period: period["return_value"]),
+    )
+
+
+def _usd_inr_rates(start_date: date, end_date: date) -> dict[date, float]:
+    try:
+        con = get_duckdb_conn()
+        try:
+            rows = con.execute(
+                """
+                SELECT date, close
+                FROM prices
+                WHERE upper(symbol) = 'USDINR'
+                  AND date <= ?
+                ORDER BY date
+                """,
+                [end_date],
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return {}
+    rates: dict[date, float] = {}
+    last_rate: float | None = None
+    rate_at_start: float | None = None
+    for rate_date, close in rows:
+        if close is not None:
+            last_rate = float(close)
+        if rate_date <= start_date and last_rate is not None:
+            rate_at_start = last_rate
+        if rate_date >= start_date and last_rate is not None:
+            rates[rate_date] = last_rate
+    if rate_at_start is not None:
+        rates.setdefault(start_date, rate_at_start)
+    return rates
+
+
+def _native_notional_to_base(
+    notional: float,
+    currency: str | None,
+    base_currency: str,
+    usd_inr: float | None,
+) -> float | None:
+    native = str(currency or "").upper()
+    base = str(base_currency or "").upper()
+    if not native:
+        return None
+    if native == base:
+        return notional
+    if usd_inr is None or usd_inr <= 0.0:
+        return None
+    if native == "INR" and base == "USD":
+        return notional / usd_inr
+    if native == "USD" and base == "INR":
+        return notional * usd_inr
+    return None
+
+
 def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
     metrics = db.query(RunMetric).filter(RunMetric.run_id == run.run_id).first()
     if not metrics:
@@ -147,15 +229,113 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
     )
     tax_regime = _tax_regime(run.config_snapshot)
 
+    equity_rows = (
+        db.query(RunDailyEquity)
+        .filter(RunDailyEquity.run_id == run.run_id)
+        .order_by(RunDailyEquity.date.asc())
+        .all()
+    )
+    best_period, worst_period = _rolling_month_extremes(equity_rows)
+
+    position_rows = db.query(RunPosition).filter(RunPosition.run_id == run.run_id).all()
+    largest_position = None
+    if position_rows:
+        latest_position_date = max(row.date for row in position_rows)
+        latest_positions = [row for row in position_rows if row.date == latest_position_date]
+        position = max(latest_positions, key=lambda row: abs(float(row.market_value_base)))
+        largest_position = {
+            "date": position.date,
+            "symbol": position.symbol,
+            "qty": float(position.qty),
+            "market_value_base": float(position.market_value_base),
+        }
+
+    fill_rows = db.query(RunFill).filter(RunFill.run_id == run.run_id).all()
+    security_fills = [
+        fill
+        for fill in fill_rows
+        if str((getattr(fill, "meta", None) or {}).get("kind") or "").upper()
+        != "FX_SWEEP"
+    ]
+    largest_trade = None
+    if security_fills:
+        config = run.config_snapshot or {}
+        base_currency = str(config.get("base_currency") or "USD").upper()
+        instruments = ((config.get("universe") or {}).get("instruments") or [])
+        symbol_currencies = {
+            str(instrument.get("symbol") or "").upper(): currency_for_asset_class(
+                str(instrument.get("asset_class") or "")
+            )
+            for instrument in instruments
+        }
+        fill_dates = [fill.date for fill in security_fills]
+        needs_fx = any(
+            symbol_currencies.get(str(fill.symbol).upper()) not in {None, base_currency}
+            for fill in security_fills
+        )
+        fx_rates = _usd_inr_rates(min(fill_dates), max(fill_dates)) if needs_fx else {}
+        last_fx: float | None = None
+        ordered_fx_rates = sorted(fx_rates.items())
+        fx_index = 0
+        ranked_fills: list[tuple[float, RunFill, str | None, float | None]] = []
+        for fill in sorted(security_fills, key=lambda row: row.date):
+            while fx_index < len(ordered_fx_rates) and ordered_fx_rates[fx_index][0] <= fill.date:
+                last_fx = ordered_fx_rates[fx_index][1]
+                fx_index += 1
+            currency = symbol_currencies.get(str(fill.symbol).upper())
+            notional_native = abs(float(getattr(fill, "notional_native", 0.0) or 0.0))
+            notional_base = _native_notional_to_base(
+                notional_native, currency, base_currency, last_fx
+            )
+            rank_value = notional_base if notional_base is not None else notional_native
+            ranked_fills.append((rank_value, fill, currency, notional_base))
+        _, largest_fill, trade_currency, trade_notional_base = max(
+            ranked_fills, key=lambda item: item[0]
+        )
+        order_side = None
+        if largest_fill.order_id is not None:
+            side_row = (
+                db.query(RunOrder.order_id, RunOrder.side)
+                .filter(RunOrder.order_id == largest_fill.order_id)
+                .first()
+            )
+            order_side = side_row[1] if side_row else None
+        largest_trade = {
+            "date": largest_fill.date,
+            "symbol": largest_fill.symbol,
+            "side": order_side,
+            "qty": float(largest_fill.qty),
+            "notional_native": float(largest_fill.notional_native),
+            "currency": trade_currency,
+            "notional_base": trade_notional_base,
+        }
+
+    tax_rows = db.query(RunTaxEvent).filter(RunTaxEvent.run_id == run.run_id).all()
+    largest_tax_event = None
+    if tax_rows:
+        tax_event = max(tax_rows, key=lambda row: abs(float(row.tax_due_base)))
+        largest_tax_event = {
+            "date": tax_event.date,
+            "symbol": tax_event.symbol,
+            "realized_pnl_base": float(tax_event.realized_pnl_base),
+            "tax_due_base": float(tax_event.tax_due_base),
+            "bucket": tax_event.bucket,
+        }
+
     def pct(value: float | None) -> str:
         return "unknown" if value is None else f"{value * 100:.0f}%"
 
     if dominant_drag:
+        headline = (
+            f"Net return {pct(net_return)}; "
+            f"{dominant_drag.replace('_', ' ')} was the largest drag."
+        )
         summary = (
             f"The run earned {pct(gross_return)} gross and {pct(net_return)} net. "
             f"{dominant_drag.replace('_', ' ').capitalize()} were the largest drag."
         )
     else:
+        headline = f"Net return {pct(net_return)} with minimal cost drag."
         summary = f"The run earned {pct(gross_return)} gross and {pct(net_return)} net."
 
     return RunExplainOut(
@@ -167,7 +347,13 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
         trade_count=int(trade_count),
         turnover=_metric_value(metrics, "turnover"),
         tax_regime=tax_regime,
+        headline=headline,
         summary=summary,
+        best_period=best_period,
+        worst_period=worst_period,
+        largest_position=largest_position,
+        largest_trade=largest_trade,
+        largest_tax_event=largest_tax_event,
     )
 
 
@@ -406,38 +592,13 @@ def get_run_metrics(
     actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> RunMetricOut:
-    _get_actor_run(run_id, actor, db)
+    run = _get_actor_run(run_id, actor, db)
     metrics = db.query(RunMetric).filter(RunMetric.run_id == run_id).first()
     if not metrics:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Metrics not found")
-    
-    # Generate dynamic natural language explanation based on drags
-    net_ret = metrics.net_return or 0.0
-    fee_drag = metrics.fee_drag or 0.0
-    tax_drag = metrics.tax_drag or 0.0
-    borrow_drag = metrics.borrow_drag or 0.0
-    margin_drag = metrics.margin_interest_drag or 0.0
-
-    drags = [
-        ("transaction fees", fee_drag),
-        ("tax liabilities", tax_drag),
-        ("short borrow fees", borrow_drag),
-        ("margin financing interest charges", margin_drag),
-    ]
-    largest_name, largest_val = max(drags, key=lambda x: x[1])
-
-    if net_ret > 0:
-        performance = f"positive net return of +{net_ret*100:.1f}%"
-    else:
-        performance = f"net loss of {net_ret*100:.1f}%"
-
-    if largest_val > 0.001:
-        explanation_str = f"Your {performance} was achieved after overcoming a gross-to-net drag, led primarily by {largest_name} (-{largest_val*100:.1f}%)."
-    else:
-        explanation_str = f"Your strategy achieved a {performance} with minimal cost drag from transaction fees, taxes, or financing friction."
 
     out = RunMetricOut.model_validate(metrics)
-    out.explanation = explanation_str
+    out.explanation = _run_explanation(run, db).summary
     return out
 
 

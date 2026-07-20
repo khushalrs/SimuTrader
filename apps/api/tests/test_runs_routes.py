@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -15,6 +15,7 @@ from app.api.routes.runs import (
     get_run_costs_summary,
     get_run_exposure,
     get_run_fills,
+    get_run_metrics,
     get_run_positions,
 )
 from app.db import get_db
@@ -434,8 +435,11 @@ def test_cost_summary_returns_zero_contract_for_non_terminal_run():
 
 
 def test_explanation_endpoint_returns_stable_keys():
+    start = date(2024, 1, 2)
+    order_id = uuid4()
     db = _FakeDB(
         metrics=SimpleNamespace(
+            run_id=uuid4(),
             turnover=1.8,
             gross_return=0.42,
             net_return=0.35,
@@ -444,7 +448,64 @@ def test_explanation_endpoint_returns_stable_keys():
             borrow_drag=0.01,
             margin_interest_drag=0.01,
         ),
-        fills=[SimpleNamespace(fill_id=uuid4()), SimpleNamespace(fill_id=uuid4())],
+        fills=[
+            SimpleNamespace(
+                fill_id=uuid4(),
+                order_id=order_id,
+                date=start,
+                symbol="AAPL",
+                qty=50.0,
+                notional_native=5000.0,
+                meta={},
+            ),
+            SimpleNamespace(
+                fill_id=uuid4(),
+                order_id=None,
+                date=start + timedelta(days=1),
+                symbol="MSFT",
+                qty=10.0,
+                notional_native=3000.0,
+                meta={},
+            ),
+        ],
+        order_sides=[(order_id, "BUY")],
+        equity_rows=[
+            SimpleNamespace(date=start + timedelta(days=index), equity_base=1000.0 + index * 10.0)
+            for index in range(23)
+        ],
+        positions=[
+            SimpleNamespace(
+                date=start + timedelta(days=22),
+                symbol="AAPL",
+                qty=50.0,
+                market_value_base=6000.0,
+            ),
+            SimpleNamespace(
+                date=start + timedelta(days=22),
+                symbol="MSFT",
+                qty=10.0,
+                market_value_base=3500.0,
+            ),
+        ],
+        tax_rows=[
+            SimpleNamespace(
+                date=start + timedelta(days=10),
+                symbol="AAPL",
+                realized_pnl_base=1000.0,
+                tax_due_base=200.0,
+                bucket="US_ST",
+            )
+        ],
+        run_config={
+            "tax": {"regime": "US"},
+            "base_currency": "USD",
+            "universe": {
+                "instruments": [
+                    {"symbol": "AAPL", "asset_class": "US_EQUITY"},
+                    {"symbol": "MSFT", "asset_class": "US_EQUITY"},
+                ]
+            },
+        },
     )
     actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
 
@@ -460,10 +521,26 @@ def test_explanation_endpoint_returns_stable_keys():
         "trade_count",
         "turnover",
         "tax_regime",
+        "headline",
         "summary",
+        "best_period",
+        "worst_period",
+        "largest_position",
+        "largest_trade",
+        "largest_tax_event",
     }
     assert result.total_drag == pytest.approx(-0.07)
     assert result.drag_breakdown["taxes"] == pytest.approx(-0.04)
     assert result.dominant_drag == "taxes"
     assert result.trade_count == 2
     assert result.tax_regime == "US"
+    assert result.best_period is not None
+    assert result.worst_period is not None
+    assert result.largest_position.symbol == "AAPL"
+    assert result.largest_trade.symbol == "AAPL"
+    assert result.largest_trade.side == "BUY"
+    assert result.largest_trade.notional_base == pytest.approx(5000.0)
+    assert result.largest_tax_event.tax_due_base == pytest.approx(200.0)
+
+    metrics_result = get_run_metrics(run_id=uuid4(), actor=actor, db=db)
+    assert metrics_result.explanation == result.summary

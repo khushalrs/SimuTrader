@@ -111,6 +111,11 @@ def test_mixed_us_india_buy_and_hold_preflights_cleanly(tmp_path, monkeypatch):
     assert result["effective_start_date"] == date(2024, 1, 2)
     assert result["effective_end_date"] == date(2024, 1, 10)
     assert {row["symbol"] for row in result["data_coverage"]} == {"AAPL", "RELIANCE"}
+    assert result["strategy_capability"]["supports_mixed_currency"] is True
+    assert result["estimated_trading_days"] == 7
+    assert result["estimated_symbols"] == 2
+    assert result["estimated_rebalance_count"] == 1
+    assert result["risk_flags"] == []
 
 
 def test_backtest_preflight_route_accepts_raw_config(tmp_path, monkeypatch):
@@ -189,3 +194,104 @@ def test_preflight_reports_missing_fx_history(tmp_path, monkeypatch):
     assert result["ok"] is False
     assert result["required_fx_pairs"] == ["USDINR"]
     assert any("Missing USDINR FX history" in error for error in result["errors"])
+    assert any(flag["code"] == "MISSING_FX_DATA" for flag in result["risk_flags"])
+
+
+def test_preflight_flags_weight_sum_and_disabled_shorting() -> None:
+    config = _mixed_buy_and_hold_config()
+    config["strategy"] = "FIXED_WEIGHT_REBALANCE"
+    config["strategy_params"] = {
+        "target_weights": {"AAPL": 1.1, "RELIANCE": -0.2},
+        "rebalance_frequency": "MONTHLY",
+    }
+
+    result = run_preflight(config)
+
+    assert result["ok"] is False
+    assert {flag["code"] for flag in result["risk_flags"]} >= {
+        "SHORTING_DISABLED",
+    }
+
+
+def test_preflight_flags_non_normalized_weights(tmp_path, monkeypatch) -> None:
+    duckdb_path = tmp_path / "weights.duckdb"
+    _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    config = _mixed_buy_and_hold_config()
+    config["strategy"] = "FIXED_WEIGHT_REBALANCE"
+    config["strategy_params"] = {
+        "target_weights": {"AAPL": 0.6, "RELIANCE": 0.3},
+        "rebalance_frequency": "MONTHLY",
+    }
+
+    result = run_preflight(config)
+
+    assert result["ok"] is False
+    assert any(flag["code"] == "WEIGHTS_NOT_NORMALIZED" for flag in result["risk_flags"])
+
+
+def test_preflight_flags_leverage_and_top_k_before_validation() -> None:
+    leverage_config = _mixed_buy_and_hold_config()
+    leverage_config["risk"] = {"max_gross_leverage": 1.5, "max_net_leverage": 1.0}
+    leverage_result = run_preflight(leverage_config)
+    assert any(flag["code"] == "MARGIN_DISABLED" for flag in leverage_result["risk_flags"])
+
+    momentum_config = _mixed_buy_and_hold_config()
+    momentum_config["strategy"] = "MOMENTUM"
+    momentum_config["strategy_params"] = {
+        "lookback_days": 3,
+        "skip_days": 1,
+        "top_k": 3,
+        "weighting": "EQUAL",
+    }
+    momentum_result = run_preflight(momentum_config)
+    assert any(
+        flag["code"] == "TOP_K_EXCEEDS_UNIVERSE"
+        for flag in momentum_result["risk_flags"]
+    )
+
+
+def test_preflight_flags_insufficient_momentum_coverage(tmp_path, monkeypatch) -> None:
+    duckdb_path = tmp_path / "short_momentum.duckdb"
+    _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    config = _mixed_buy_and_hold_config()
+    config["strategy"] = "MOMENTUM"
+    config["strategy_params"] = {
+        "lookback_days": 7,
+        "skip_days": 1,
+        "top_k": 1,
+        "weighting": "EQUAL",
+    }
+
+    result = run_preflight(config)
+
+    assert result["ok"] is False
+    assert any(
+        flag["code"] == "INSUFFICIENT_MOMENTUM_LOOKBACK"
+        for flag in result["risk_flags"]
+    )
+
+
+def test_dca_large_contribution_is_warning_not_error(tmp_path, monkeypatch) -> None:
+    duckdb_path = tmp_path / "dca_warning.duckdb"
+    _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    config = _mixed_buy_and_hold_config()
+    config["strategy"] = "DCA"
+    config["strategy_params"] = {"buy_frequency": "DAILY", "weighting": "EQUAL"}
+    config["backtest"]["contributions"] = {
+        "enabled": True,
+        "amount": 3000.0,
+        "frequency": "MONTHLY",
+    }
+
+    result = run_preflight(config)
+
+    assert result["ok"] is True
+    assert result["errors"] == []
+    assert any(
+        flag["code"] == "DCA_CONTRIBUTION_EXCEEDS_CASH"
+        and flag["severity"] == "warning"
+        for flag in result["risk_flags"]
+    )

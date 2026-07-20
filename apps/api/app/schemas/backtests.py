@@ -27,6 +27,13 @@ class BacktestPreflightCoverageOut(BaseModel):
     rows: int
 
 
+class BacktestPreflightRiskFlagOut(BaseModel):
+    code: str
+    severity: str
+    message: str
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
 class BacktestPreflightOut(BaseModel):
     ok: bool
     errors: list[str] = Field(default_factory=list)
@@ -35,6 +42,11 @@ class BacktestPreflightOut(BaseModel):
     required_fx_pairs: list[str] = Field(default_factory=list)
     effective_start_date: Optional[date] = None
     effective_end_date: Optional[date] = None
+    strategy_capability: Dict[str, Any] = Field(default_factory=dict)
+    estimated_trading_days: Optional[int] = None
+    estimated_symbols: int = 0
+    estimated_rebalance_count: Optional[int] = None
+    risk_flags: list[BacktestPreflightRiskFlagOut] = Field(default_factory=list)
 
 
 class BacktestOut(BaseModel):
@@ -158,6 +170,37 @@ class RunCostsSummaryOut(BaseModel):
     margin_interest_base: float
 
 
+class RunExplainPeriodOut(BaseModel):
+    start_date: date
+    end_date: date
+    return_value: float
+
+
+class RunExplainPositionOut(BaseModel):
+    date: date
+    symbol: str
+    qty: float
+    market_value_base: float
+
+
+class RunExplainTradeOut(BaseModel):
+    date: date
+    symbol: str
+    side: Optional[str] = None
+    qty: float
+    notional_native: float
+    currency: Optional[str] = None
+    notional_base: Optional[float] = None
+
+
+class RunExplainTaxEventOut(BaseModel):
+    date: date
+    symbol: str
+    realized_pnl_base: float
+    tax_due_base: float
+    bucket: str
+
+
 class RunExplainOut(BaseModel):
     gross_return: Optional[float] = None
     net_return: Optional[float] = None
@@ -167,7 +210,13 @@ class RunExplainOut(BaseModel):
     trade_count: int
     turnover: Optional[float] = None
     tax_regime: str
+    headline: str
     summary: str
+    best_period: Optional[RunExplainPeriodOut] = None
+    worst_period: Optional[RunExplainPeriodOut] = None
+    largest_position: Optional[RunExplainPositionOut] = None
+    largest_trade: Optional[RunExplainTradeOut] = None
+    largest_tax_event: Optional[RunExplainTaxEventOut] = None
 
 
 class RunTaxEventOut(BaseModel):
