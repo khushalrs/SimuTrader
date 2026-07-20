@@ -49,7 +49,7 @@ make smoke-backend
 
 Usually strategy/runtime constraints, for example:
 
-- mixed-currency payload on strategy that is single-currency only (`DCA`, `MOMENTUM`, `MEAN_REVERSION`, current `FIXED_WEIGHT_REBALANCE` behavior)
+- a strategy whose capability entry explicitly disables mixed-currency allocation
 - invalid `strategy_params`
 - inconsistent instrument allocation fields
 
@@ -67,10 +67,10 @@ Typical causes:
 ## Current Currency Support Matrix
 
 - `BUY_AND_HOLD`: supports mixed-currency with explicit `amount` per instrument + `initial_cash_by_currency`.
-- `FIXED_WEIGHT_REBALANCE`: effectively single-currency at runtime.
-- `DCA`: single-currency only.
-- `MOMENTUM`: single-currency only.
-- `MEAN_REVERSION`: single-currency only.
+- `FIXED_WEIGHT_REBALANCE`: mixed-currency base-weight targets with audited FX sweeps.
+- `DCA`: mixed-currency incremental investing; existing holdings are not rebalanced.
+- `MOMENTUM`: mixed-currency base-weight targets with audited FX sweeps.
+- `MEAN_REVERSION`: mixed-currency base-weight targets with audited FX sweeps.
 
 ## Useful API Checks
 
@@ -139,4 +139,3 @@ PY
 5. For mixed currency:
    - provide explicit `amount` allocations
    - provide `initial_cash_by_currency` for every instrument currency.
-

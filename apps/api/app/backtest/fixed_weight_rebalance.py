@@ -211,39 +211,19 @@ def run_fixed_weight_rebalance(
     def target_allocations(ctx: DayContext):
         if not _is_rebalance_day(ctx.date):
             return None
-        if len(ctx.state.cash_by_currency) > 1:
-            raise ValueError(
-                "FIXED_WEIGHT_REBALANCE requires a single currency; "
-                "provide initial_cash_by_currency and target amounts for multi-currency runs."
-            )
-
-        total_value = sum(ctx.state.cash_by_currency.values())
-        for symbol, pos in ctx.state.positions.items():
-            price = ctx.prices.get(symbol)
-            if price is None:
-                price = ctx.state.last_price.get(symbol)
-            if price is None:
-                continue
-            total_value += pos.qty * price
-
-        if total_value <= 0:
+        if ctx.equity_base <= 0:
             return None
 
         if drift_threshold > 0:
             max_drift = 0.0
             for symbol, weight in target_weights.items():
-                price = ctx.prices.get(symbol)
-                if price is None:
-                    price = ctx.state.last_price.get(symbol)
-                if price is None:
-                    continue
-                current_value = ctx.state.positions[symbol].qty * price
-                current_weight = current_value / total_value if total_value else 0.0
+                current_value = ctx.position_value_base.get(symbol, 0.0)
+                current_weight = current_value / ctx.equity_base
                 max_drift = max(max_drift, abs(current_weight - weight))
             if max_drift < drift_threshold:
                 return None
 
-        return {symbol: total_value * 0.99 * weight for symbol, weight in target_weights.items()}
+        return dict(target_weights)
 
     return run_engine(
         db=db,
@@ -260,5 +240,6 @@ def run_fixed_weight_rebalance(
         slippage_cfg=slippage_cfg,
         fill_price_policy=fill_price_policy,
         allocation_mode=allocation_mode,
+        allocation_kind="BASE_WEIGHT",
         missing_bar_policy=missing_bar_policy,
     )

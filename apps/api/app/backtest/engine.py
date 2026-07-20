@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from math import sqrt
-from typing import Any, Callable, Dict, Iterable
+from math import floor, sqrt
+from typing import Any, Callable, Dict, Iterable, Literal
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -45,6 +45,10 @@ class DayContext:
     prices: Dict[str, float | None]
     market_open: Dict[str, bool]
     state: PortfolioState
+    equity_base: float
+    cash_base_total: float
+    position_value_base: Dict[str, float]
+    fx_rate: Dict[str, float]
 
 
 @dataclass
@@ -53,6 +57,7 @@ class OrderSpec:
     side: str
     qty: float
     price: float
+    is_fx_sweep: bool = False
 
 
 @dataclass
@@ -96,9 +101,11 @@ class TaxLot:
     qty: float
     unit_cost_native: float
     opened_on: date
+    opening_commission_native_per_unit: float = 0.0
 
 
 TargetAllocator = Callable[[DayContext], Dict[str, float] | None]
+AllocationKind = Literal["NATIVE_VALUE", "BASE_WEIGHT"]
 
 
 def _ensure_calendar_views(con) -> None:
@@ -169,6 +176,70 @@ def _fetch_usd_inr_rates(con, start_date: date, end_date: date) -> Dict[date, fl
         [start_date, end_date],
     ).fetchall()
     return {row_date: float(close) for row_date, close in rows if close is not None}
+
+
+def _fetch_benchmark_prices(
+    con, benchmark: str | None, start_date: date, end_date: date
+) -> tuple[Dict[date, float], str | None]:
+    if not benchmark:
+        return {}, None
+    rows = con.execute(
+        """
+        SELECT date, close, currency
+        FROM prices
+        WHERE upper(symbol) = ?
+          AND date BETWEEN ? AND ?
+        ORDER BY date
+        """,
+        [benchmark.upper(), start_date, end_date],
+    ).fetchall()
+    prices = {
+        row_date: float(close)
+        for row_date, close, _currency in rows
+        if close is not None
+    }
+    currencies = {
+        str(currency).upper()
+        for _row_date, close, currency in rows
+        if close is not None and currency
+    }
+    currency = next(iter(currencies)) if len(currencies) == 1 else None
+    return prices, currency
+
+
+def _align_benchmark_to_base(
+    dates: list[date],
+    prices_native: Dict[date, float],
+    benchmark_currency: str | None,
+    base_currency: str,
+    usd_inr_by_date: Dict[date, float],
+) -> list[float | None]:
+    if not prices_native or not benchmark_currency:
+        return [None for _date in dates]
+    last_price: float | None = None
+    last_usd_inr: float | None = None
+    first_usd_inr = next(iter(usd_inr_by_date.values()), None)
+    aligned: list[float | None] = []
+    for observation_date in dates:
+        if observation_date in prices_native:
+            last_price = prices_native[observation_date]
+        if observation_date in usd_inr_by_date:
+            last_usd_inr = usd_inr_by_date[observation_date]
+        if last_price is None:
+            aligned.append(None)
+            continue
+        try:
+            aligned.append(
+                _convert_native_to_base(
+                    last_price,
+                    benchmark_currency,
+                    base_currency,
+                    last_usd_inr if last_usd_inr is not None else first_usd_inr,
+                )
+            )
+        except DataUnavailableError:
+            aligned.append(None)
+    return aligned
 
 
 def _normalize_missing_bar_policy(policy: str) -> str:
@@ -252,6 +323,21 @@ def _convert_native_to_base(
     raise DataUnavailableError(
         f"Unsupported FX conversion from {native} to base currency {base}."
     )
+
+
+def _convert_base_to_native(
+    value: float,
+    native_currency: str,
+    base_currency: str,
+    usd_inr: float | None,
+) -> float:
+    """Inverse of native-to-base conversion at the same spot FX rate."""
+    rate = _convert_native_to_base(1.0, native_currency, base_currency, usd_inr)
+    if rate <= 0:
+        raise DataUnavailableError(
+            f"Invalid FX rate for {base_currency}->{native_currency} conversion."
+        )
+    return value / rate
 
 
 def _parse_tax(config: Dict[str, Any] | None) -> TaxSpec:
@@ -352,23 +438,63 @@ def _max_affordable_qty(
     return max(candidate, 0.0)
 
 
+def _sample_std(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    mean_value = sum(values) / len(values)
+    variance = sum((value - mean_value) ** 2 for value in values) / (len(values) - 1)
+    return sqrt(variance)
+
+
+def _linear_percentile(values: list[float], percentile: float) -> float | None:
+    """Return a linearly interpolated percentile, matching NumPy's default method."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile
+    lower = floor(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * weight
+
+
 def _compute_metrics(
     equity_series: list[float],
     fees_cum_series: list[float] | None = None,
     initial_cash: float | None = None,
+    turnover_notional_base: float = 0.0,
+    benchmark_series_base: list[float | None] | None = None,
 ) -> dict[str, float | None]:
+    """Compute metrics over every global-calendar observation, including flat days.
+
+    Historical VaR uses linear interpolation on sorted daily returns (NumPy's default
+    percentile method). VaR and CVaR are returned as positive loss magnitudes.
+    """
     if len(equity_series) < 2:
         return {
             "cagr": None,
             "volatility": None,
             "sharpe": None,
+            "sortino": None,
             "max_drawdown": None,
+            "turnover": None,
             "gross_return": None,
             "net_return": None,
             "fee_drag": 0.0,
             "tax_drag": 0.0,
             "borrow_drag": 0.0,
             "margin_interest_drag": 0.0,
+            "calmar": None,
+            "var_95": None,
+            "cvar_95": None,
+            "best_day": None,
+            "worst_day": None,
+            "win_rate": None,
+            "avg_win_day": None,
+            "avg_loss_day": None,
+            "beta": None,
+            "alpha": None,
+            "information_ratio": None,
         }
 
     initial = initial_cash if initial_cash is not None else equity_series[0]
@@ -382,13 +508,18 @@ def _compute_metrics(
 
     if daily_returns:
         mean_ret = sum(daily_returns) / len(daily_returns)
-        if len(daily_returns) > 1:
-            variance = sum((r - mean_ret) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
-        else:
-            variance = 0.0
-        std_ret = sqrt(variance)
+        std_ret = _sample_std(daily_returns) or 0.0
         volatility = std_ret * sqrt(252.0) if std_ret else 0.0
         sharpe = (mean_ret * 252.0) / volatility if volatility else None
+        negative_returns = [value for value in daily_returns if value < 0.0]
+        downside_deviation = sqrt(
+            sum(min(value, 0.0) ** 2 for value in daily_returns) / len(daily_returns)
+        )
+        sortino = (
+            (mean_ret * 252.0) / (downside_deviation * sqrt(252.0))
+            if len(negative_returns) >= 2 and downside_deviation > 0.0
+            else None
+        )
         if initial > 0 and final > 0:
             cagr = (final / initial) ** (252.0 / len(daily_returns)) - 1.0
         else:
@@ -396,6 +527,7 @@ def _compute_metrics(
     else:
         volatility = None
         sharpe = None
+        sortino = None
         cagr = None
 
     peak = equity_series[0]
@@ -417,17 +549,103 @@ def _compute_metrics(
         if gross_return is not None and net_return is not None:
             fee_drag = gross_return - net_return
 
+    years = len(daily_returns) / 252.0
+    average_equity = sum(equity_series) / len(equity_series)
+    turnover = (
+        turnover_notional_base / (average_equity * years)
+        if years > 0.0 and average_equity > 0.0
+        else None
+    )
+    calmar = (
+        cagr / abs(max_drawdown)
+        if cagr is not None and max_drawdown < 0.0
+        else None
+    )
+    percentile_5 = _linear_percentile(daily_returns, 0.05)
+    tail_returns = (
+        [value for value in daily_returns if value <= percentile_5]
+        if percentile_5 is not None
+        else []
+    )
+    var_95 = max(0.0, -percentile_5) if percentile_5 is not None else None
+    cvar_95 = max(0.0, -(sum(tail_returns) / len(tail_returns))) if tail_returns else None
+    winning_days = [value for value in daily_returns if value > 0.0]
+    losing_days = [value for value in daily_returns if value < 0.0]
+    non_flat_days = winning_days + losing_days
+
+    beta = None
+    alpha = None
+    information_ratio = None
+    if benchmark_series_base and len(benchmark_series_base) == len(equity_series):
+        paired_returns: list[tuple[float, float]] = []
+        for index in range(1, len(equity_series)):
+            portfolio_previous = equity_series[index - 1]
+            benchmark_previous = benchmark_series_base[index - 1]
+            benchmark_current = benchmark_series_base[index]
+            if (
+                portfolio_previous == 0.0
+                or benchmark_previous is None
+                or benchmark_current is None
+                or benchmark_previous == 0.0
+            ):
+                continue
+            paired_returns.append(
+                (
+                    equity_series[index] / portfolio_previous - 1.0,
+                    benchmark_current / benchmark_previous - 1.0,
+                )
+            )
+        if len(paired_returns) >= 2:
+            portfolio_returns = [row[0] for row in paired_returns]
+            benchmark_returns = [row[1] for row in paired_returns]
+            portfolio_mean = sum(portfolio_returns) / len(portfolio_returns)
+            benchmark_mean = sum(benchmark_returns) / len(benchmark_returns)
+            benchmark_variance = sum(
+                (value - benchmark_mean) ** 2 for value in benchmark_returns
+            ) / (len(benchmark_returns) - 1)
+            if benchmark_variance > 0.0:
+                covariance = sum(
+                    (portfolio - portfolio_mean) * (benchmark - benchmark_mean)
+                    for portfolio, benchmark in paired_returns
+                ) / (len(paired_returns) - 1)
+                beta = covariance / benchmark_variance
+                alpha = sum(
+                    portfolio - beta * benchmark
+                    for portfolio, benchmark in paired_returns
+                ) / len(paired_returns) * 252.0
+            active_returns = [
+                portfolio - benchmark for portfolio, benchmark in paired_returns
+            ]
+            tracking_error = _sample_std(active_returns)
+            if tracking_error and tracking_error > 0.0:
+                information_ratio = (
+                    (sum(active_returns) / len(active_returns)) * 252.0
+                ) / (tracking_error * sqrt(252.0))
+
     return {
         "cagr": cagr,
         "volatility": volatility,
         "sharpe": sharpe,
+        "sortino": sortino,
         "max_drawdown": max_drawdown,
+        "turnover": turnover,
         "gross_return": gross_return,
         "net_return": net_return,
         "fee_drag": fee_drag,
         "tax_drag": 0.0,
         "borrow_drag": 0.0,
         "margin_interest_drag": 0.0,
+        "calmar": calmar,
+        "var_95": var_95,
+        "cvar_95": cvar_95,
+        "best_day": max(daily_returns) if daily_returns else None,
+        "worst_day": min(daily_returns) if daily_returns else None,
+        "win_rate": len(winning_days) / len(non_flat_days) if non_flat_days else None,
+        "avg_win_day": sum(winning_days) / len(winning_days) if winning_days else None,
+        "avg_loss_day": sum(losing_days) / len(losing_days) if losing_days else None,
+        "beta": beta,
+        "alpha": alpha,
+        "information_ratio": information_ratio,
     }
 
 
@@ -506,12 +724,15 @@ def run_engine(
     missing_bar_policy: str = "FAIL",
     missing_fx_policy: str | None = None,
     include_financing: bool = True,
+    allocation_kind: AllocationKind = "NATIVE_VALUE",
 ) -> int:
     symbols = [inst["symbol"] for inst in instruments]
     policy = _normalize_missing_bar_policy(missing_bar_policy)
     _ = _normalize_fill_price_policy(fill_price_policy)
     config_snapshot = run.config_snapshot or {}
     base_currency = str(config_snapshot.get("base_currency") or "USD").upper()
+    benchmark_value = config_snapshot.get("benchmark")
+    benchmark = str(benchmark_value).strip().upper() if benchmark_value else None
     fx_policy = _normalize_missing_fx_policy(
         missing_fx_policy or (config_snapshot.get("data_policy") or {}).get("missing_fx")
     )
@@ -521,6 +742,9 @@ def run_engine(
     commission = _parse_commission(commission_cfg)
     slippage = _parse_slippage(slippage_cfg)
     allocation_mode = str(allocation_mode or "").upper()
+    allocation_kind = str(allocation_kind or "NATIVE_VALUE").upper()
+    if allocation_kind not in {"NATIVE_VALUE", "BASE_WEIGHT"}:
+        raise ValueError(f"Unsupported allocation_kind '{allocation_kind}'.")
 
     con = get_duckdb_conn()
     try:
@@ -528,6 +752,9 @@ def run_engine(
         symbol_currencies = _fetch_symbol_currencies(con, symbols)
         usd_inr_by_date = _fetch_usd_inr_rates(con, start_date, end_date)
         rows = _fetch_calendar_with_prices(con, symbols, start_date, end_date)
+        benchmark_prices_native, benchmark_currency = _fetch_benchmark_prices(
+            con, benchmark, start_date, end_date
+        )
     finally:
         con.close()
 
@@ -571,8 +798,11 @@ def run_engine(
     if initial_cash_by_currency:
         currencies_set.update(str(currency).upper() for currency in initial_cash_by_currency.keys())
     currencies = sorted(currencies_set)
-    multi_currency = len(currencies) > 1
-    if len(instrument_currencies) > 1 and allocation_mode != "AMOUNT":
+    if (
+        allocation_kind == "NATIVE_VALUE"
+        and len(instrument_currencies) > 1
+        and allocation_mode != "AMOUNT"
+    ):
         raise ValueError(
             "Multi-currency runs require explicit amount allocations per instrument."
         )
@@ -583,16 +813,20 @@ def run_engine(
             for currency in currencies
         }
         missing_cash = [currency for currency in instrument_currencies if currency not in initial_cash_by_currency]
-        if missing_cash:
+        if allocation_kind == "NATIVE_VALUE" and missing_cash:
             raise ValueError(
                 f"initial_cash_by_currency missing values for currencies: {missing_cash}"
             )
     else:
-        if len(instrument_currencies) > 1:
+        if allocation_kind == "NATIVE_VALUE" and len(instrument_currencies) > 1:
             raise ValueError(
                 "initial_cash_by_currency is required when the universe spans multiple currencies."
             )
-        currency = instrument_currencies[0] if instrument_currencies else base_currency
+        currency = (
+            base_currency
+            if allocation_kind == "BASE_WEIGHT"
+            else (instrument_currencies[0] if instrument_currencies else base_currency)
+        )
         cash_by_currency = {ccy: 0.0 for ccy in currencies}
         cash_by_currency[currency] = float(initial_cash)
     cash_by_currency.setdefault(base_currency, 0.0)
@@ -638,15 +872,18 @@ def run_engine(
     taxes_cum_series_base: list[float] = []
     borrow_cum_series_base: list[float] = []
     margin_cum_series_base: list[float] = []
+    equity_dates: list[date] = []
     taxes_cum_base = 0.0
     borrow_cum_base = 0.0
     margin_cum_base = 0.0
+    turnover_notional_base = 0.0
+    realized_trade_pnl_base: list[float] = []
+    realized_trade_commissions_base: list[float] = []
     peak_equity_base: float | None = None
 
     first_observed_usd_inr = next(iter(usd_inr_by_date.values()), None)
     usd_inr_last: float | None = None
     lots_by_symbol: Dict[str, list[TaxLot]] = {symbol: [] for symbol in symbols}
-
     def resolve_usd_inr(day: date) -> float | None:
         nonlocal usd_inr_last
         direct = usd_inr_by_date.get(day)
@@ -740,6 +977,90 @@ def run_engine(
         if not financing.margin_enabled and cash_base < -1e-9:
             raise ValueError("Margin is disabled but cash would become negative.")
 
+    def allocation_views(
+        usd_inr: float | None,
+    ) -> tuple[float, float, Dict[str, float], Dict[str, float]]:
+        _, equity_base, cash_base, _, _, _ = compute_portfolio_values(usd_inr)
+        position_value_base: Dict[str, float] = {}
+        for symbol, position in state.positions.items():
+            price = state.last_price.get(symbol)
+            native_value = position.qty * price if price is not None else 0.0
+            position_value_base[symbol] = _convert_native_to_base(
+                native_value,
+                symbol_currencies[symbol],
+                base_currency,
+                usd_inr,
+            )
+        fx_rate = {
+            currency: _convert_native_to_base(1.0, currency, base_currency, usd_inr)
+            for currency in currencies
+        }
+        return equity_base, cash_base, position_value_base, fx_rate
+
+    def fund_native_cash_with_fx(
+        *,
+        day: date,
+        native_currency: str,
+        required_native: float,
+        usd_inr: float | None,
+    ) -> None:
+        """Fund a native cash deficit from base cash and persist its audit fill."""
+        if native_currency == base_currency:
+            return
+        available_native = state.cash_by_currency.get(native_currency, 0.0)
+        deficit_native = max(0.0, required_native - available_native)
+        if deficit_native <= 1e-9:
+            return
+        base_notional = _convert_native_to_base(
+            deficit_native, native_currency, base_currency, usd_inr
+        )
+        friction_base = base_notional * (slippage.bps / 10000.0)
+        state.cash_by_currency[base_currency] = (
+            state.cash_by_currency.get(base_currency, 0.0)
+            - base_notional
+            - friction_base
+        )
+        state.cash_by_currency[native_currency] = available_native + deficit_native
+        fees_cum_by_currency[base_currency] = (
+            fees_cum_by_currency.get(base_currency, 0.0) + friction_base
+        )
+
+        order_id = uuid4()
+        fx_meta = {
+            "kind": "FX_SWEEP",
+            "source_currency": base_currency,
+            "destination_currency": native_currency,
+        }
+        order_rows.append(
+            RunOrder(
+                order_id=order_id,
+                run_id=run.run_id,
+                date=day,
+                symbol="USDINR",
+                side="FX",
+                qty=deficit_native,
+                order_type="MKT",
+                limit_price=None,
+                status="FILLED",
+                meta=fx_meta,
+            )
+        )
+        fill_rows.append(
+            RunFill(
+                fill_id=uuid4(),
+                order_id=order_id,
+                run_id=run.run_id,
+                date=day,
+                symbol="USDINR",
+                qty=deficit_native,
+                price_native=float(usd_inr or 1.0),
+                commission_native=0.0,
+                slippage_native=friction_base,
+                notional_native=base_notional,
+                meta=fx_meta,
+            )
+        )
+
     def realize_lots_and_accrue_tax(
         *,
         day: date,
@@ -749,6 +1070,7 @@ def run_engine(
         exec_price: float,
         symbol_currency: str,
         usd_inr: float | None,
+        closing_commission_native: float,
     ) -> None:
         nonlocal taxes_cum_base
         if qty <= 0:
@@ -774,11 +1096,24 @@ def run_engine(
             realized_base = _convert_native_to_base(
                 realized_native, symbol_currency, base_currency, usd_inr
             )
+            realized_trade_pnl_base.append(realized_base)
+            commission_native = (
+                lot.opening_commission_native_per_unit * consume
+                + closing_commission_native * (consume / qty)
+            )
+            realized_trade_commissions_base.append(
+                _convert_native_to_base(
+                    commission_native, symbol_currency, base_currency, usd_inr
+                )
+            )
             bucket, tax_rate = _tax_bucket_and_rate(tax_spec, holding_days)
             tax_due_base = max(realized_base, 0.0) * tax_rate
             taxes_cum_base += tax_due_base
-            state.cash_by_currency[base_currency] = (
-                state.cash_by_currency.get(base_currency, 0.0) - tax_due_base
+            tax_due_native = _convert_base_to_native(
+                tax_due_base, symbol_currency, base_currency, usd_inr
+            )
+            state.cash_by_currency[symbol_currency] = (
+                state.cash_by_currency.get(symbol_currency, 0.0) - tax_due_native
             )
 
             tax_event_rows.append(
@@ -814,6 +1149,7 @@ def run_engine(
         day_prices: Dict[str, float | None],
     ) -> None:
         nonlocal borrow_cum_base, margin_cum_base, peak_equity_base
+        nonlocal turnover_notional_base
         if day is None:
             return
         if flags is None:
@@ -851,16 +1187,35 @@ def run_engine(
                 prices[symbol] = None
 
         usd_inr = resolve_usd_inr(day)
+        equity_base, cash_base_total, position_value_base, fx_rate = allocation_views(
+            usd_inr
+        )
         ctx = DayContext(
             date=day,
             flags=flags,
             prices=prices,
             market_open=market_open,
             state=state,
+            equity_base=equity_base,
+            cash_base_total=cash_base_total,
+            position_value_base=position_value_base,
+            fx_rate=fx_rate,
         )
         target_allocations = target_allocations_fn(ctx)
 
         if target_allocations:
+            if allocation_kind == "BASE_WEIGHT":
+                # Allocators may add cash (DCA), so value the weights after they return.
+                _, target_equity_base, _, _, _, _ = compute_portfolio_values(usd_inr)
+                target_allocations = {
+                    symbol: _convert_base_to_native(
+                        float(weight) * target_equity_base,
+                        symbol_currencies[symbol],
+                        base_currency,
+                        usd_inr,
+                    )
+                    for symbol, weight in target_allocations.items()
+                }
             orders = _targets_to_orders(state, target_allocations, prices, market_open)
             priority = {"SELL": 0, "COVER": 0, "SHORT": 1, "BUY": 1}
             for order in sorted(orders, key=lambda item: priority.get(item.side, 10)):
@@ -889,9 +1244,28 @@ def run_engine(
                 cash_bucket = state.cash_by_currency[currency]
                 if order.side in {"BUY", "COVER"}:
                     total_cost = notional + commission_native
-                    if not financing.margin_enabled and total_cost > cash_bucket + 1e-9:
+                    if not financing.margin_enabled:
+                        _, _, cash_base_available, _, _, _ = compute_portfolio_values(
+                            usd_inr
+                        )
+                        destination_cash_base = _convert_native_to_base(
+                            max(cash_bucket, 0.0), currency, base_currency, usd_inr
+                        )
+                        sweepable_base = max(
+                            0.0, cash_base_available - destination_cash_base
+                        )
+                        sweepable_native = _convert_base_to_native(
+                            sweepable_base / (1.0 + slippage.bps / 10000.0),
+                            currency,
+                            base_currency,
+                            usd_inr,
+                        )
+                        affordable_cash_native = max(cash_bucket, 0.0) + sweepable_native
+                    else:
+                        affordable_cash_native = float("inf")
+                    if total_cost > affordable_cash_native + 1e-9:
                         affordable_qty = _max_affordable_qty(
-                            cash_bucket=cash_bucket,
+                            cash_bucket=affordable_cash_native,
                             exec_price=exec_price,
                             commission_bps=commission.bps,
                             min_fee_native=commission.min_fee_native,
@@ -910,8 +1284,15 @@ def run_engine(
                                 commission.min_fee_native,
                             )
                         total_cost = notional + commission_native
-                        if total_cost > cash_bucket + 1e-9:
+                        if total_cost > affordable_cash_native + 1e-9:
                             continue
+                    fund_native_cash_with_fx(
+                        day=day,
+                        native_currency=currency,
+                        required_native=total_cost,
+                        usd_inr=usd_inr,
+                    )
+                    cash_bucket = state.cash_by_currency[currency]
                     state.cash_by_currency[currency] = cash_bucket - total_cost
                     if order.side == "BUY":
                         if pos.qty < -1e-9:
@@ -922,7 +1303,14 @@ def run_engine(
                         )
                         pos.qty = new_qty
                         lots_by_symbol[order.symbol].append(
-                            TaxLot(qty=trade_qty, unit_cost_native=exec_price, opened_on=day)
+                            TaxLot(
+                                qty=trade_qty,
+                                unit_cost_native=exec_price,
+                                opened_on=day,
+                                opening_commission_native_per_unit=(
+                                    commission_native / trade_qty if trade_qty else 0.0
+                                ),
+                            )
                         )
                     else:
                         if pos.qty >= -1e-9:
@@ -940,6 +1328,7 @@ def run_engine(
                             exec_price=exec_price,
                             symbol_currency=currency,
                             usd_inr=usd_inr,
+                            closing_commission_native=commission_native,
                         )
                         pos.qty += trade_qty
                         if abs(pos.qty) <= 1e-9:
@@ -963,6 +1352,7 @@ def run_engine(
                         exec_price=exec_price,
                         symbol_currency=currency,
                         usd_inr=usd_inr,
+                        closing_commission_native=commission_native,
                     )
                     if pos.qty <= 1e-9:
                         pos.qty = 0.0
@@ -982,7 +1372,14 @@ def run_engine(
                     pos.qty -= trade_qty
                     state.cash_by_currency[currency] = cash_bucket + notional - commission_native
                     lots_by_symbol[order.symbol].append(
-                        TaxLot(qty=trade_qty, unit_cost_native=exec_price, opened_on=day)
+                        TaxLot(
+                            qty=trade_qty,
+                            unit_cost_native=exec_price,
+                            opened_on=day,
+                            opening_commission_native_per_unit=(
+                                commission_native / trade_qty if trade_qty else 0.0
+                            ),
+                        )
                     )
                 else:
                     raise ValueError(f"Unsupported order side '{order.side}'")
@@ -1004,6 +1401,11 @@ def run_engine(
                 )
 
                 fees_cum_by_currency[currency] += commission_native + slippage_native
+
+                if not order.is_fx_sweep:
+                    turnover_notional_base += abs(
+                        _convert_native_to_base(notional, currency, base_currency, usd_inr)
+                    )
 
                 fill_rows.append(
                     RunFill(
@@ -1031,22 +1433,42 @@ def run_engine(
             short_notional_base,
         ) = compute_portfolio_values(usd_inr)
 
-        margin_borrowed_base = max(0.0, -cash_value)
-        margin_interest_base = (
-            margin_borrowed_base * (financing.daily_margin_interest_bps / 10000.0)
-            if include_financing and financing.margin_enabled
-            else 0.0
-        )
-        borrow_fee_base = (
-            short_notional_base * (financing.daily_borrow_fee_bps / 10000.0)
-            if include_financing and financing.shorting_enabled
-            else 0.0
-        )
-        financing_total_base = margin_interest_base + borrow_fee_base
-        if financing_total_base:
-            state.cash_by_currency[base_currency] = (
-                state.cash_by_currency.get(base_currency, 0.0) - financing_total_base
+        margin_borrowed_base = sum(
+            _convert_native_to_base(
+                abs(amount), currency, base_currency, usd_inr
             )
+            for currency, amount in state.cash_by_currency.items()
+            if amount < 0.0
+        )
+        margin_interest_base = 0.0
+        if include_financing and financing.margin_enabled:
+            for currency, amount in list(state.cash_by_currency.items()):
+                if amount >= 0.0:
+                    continue
+                interest_native = abs(amount) * (
+                    financing.daily_margin_interest_bps / 10000.0
+                )
+                state.cash_by_currency[currency] -= interest_native
+                margin_interest_base += _convert_native_to_base(
+                    interest_native, currency, base_currency, usd_inr
+                )
+
+        borrow_fee_base = 0.0
+        if include_financing and financing.shorting_enabled:
+            for symbol, position in state.positions.items():
+                price = state.last_price.get(symbol)
+                if position.qty >= 0.0 or price is None:
+                    continue
+                currency = str(symbol_currencies[symbol]).upper()
+                fee_native = abs(position.qty * price) * (
+                    financing.daily_borrow_fee_bps / 10000.0
+                )
+                state.cash_by_currency[currency] -= fee_native
+                borrow_fee_base += _convert_native_to_base(
+                    fee_native, currency, base_currency, usd_inr
+                )
+
+        if margin_interest_base or borrow_fee_base:
             borrow_cum_base += borrow_fee_base
             margin_cum_base += margin_interest_base
             (
@@ -1102,6 +1524,7 @@ def run_engine(
             drawdown = 0.0
 
         equity_series_base.append(equity)
+        equity_dates.append(day)
         fees_cum_series_base.append(fees_cum_value)
         taxes_cum_series_base.append(taxes_cum_base)
         borrow_cum_series_base.append(borrow_cum_base)
@@ -1200,6 +1623,14 @@ def run_engine(
         equity_series_base,
         fees_cum_series_base,
         initial_cash=initial_cash_base,
+        turnover_notional_base=turnover_notional_base,
+        benchmark_series_base=_align_benchmark_to_base(
+            equity_dates,
+            benchmark_prices_native,
+            benchmark_currency,
+            base_currency,
+            usd_inr_by_date,
+        ),
     )
     if initial_cash_base:
         metrics["tax_drag"] = taxes_cum_base / initial_cash_base
@@ -1209,7 +1640,41 @@ def run_engine(
         metrics["tax_drag"] = None
         metrics["borrow_drag"] = None
         metrics["margin_interest_drag"] = None
-    metrics_meta = {"currencies": currencies, "base_currency": base_currency}
+    winning_trades = [value for value in realized_trade_pnl_base if value > 0.0]
+    losing_trades = [value for value in realized_trade_pnl_base if value < 0.0]
+    metrics_meta = {
+        "currencies": currencies,
+        "base_currency": base_currency,
+        "benchmark": benchmark,
+        "calmar": metrics["calmar"],
+        "var_95": metrics["var_95"],
+        "cvar_95": metrics["cvar_95"],
+        "best_day": metrics["best_day"],
+        "worst_day": metrics["worst_day"],
+        "win_rate": metrics["win_rate"],
+        "avg_win_day": metrics["avg_win_day"],
+        "avg_loss_day": metrics["avg_loss_day"],
+        "beta": metrics["beta"],
+        "alpha": metrics["alpha"],
+        "information_ratio": metrics["information_ratio"],
+        "avg_winning_trade": (
+            sum(winning_trades) / len(winning_trades) if winning_trades else None
+        ),
+        "avg_losing_trade": (
+            sum(losing_trades) / len(losing_trades) if losing_trades else None
+        ),
+        "trade_win_rate": (
+            len(winning_trades) / len(realized_trade_pnl_base)
+            if realized_trade_pnl_base
+            else None
+        ),
+        "avg_commission_per_trade": (
+            sum(realized_trade_commissions_base) / len(realized_trade_commissions_base)
+            if realized_trade_commissions_base
+            else None
+        ),
+        "turnover_convention": "two_way_annualized",
+    }
 
     metrics_meta.update(
         {
@@ -1232,9 +1697,9 @@ def run_engine(
             cagr=metrics["cagr"],
             volatility=metrics["volatility"],
             sharpe=metrics["sharpe"],
-            sortino=None,
+            sortino=metrics["sortino"],
             max_drawdown=metrics["max_drawdown"],
-            turnover=None,
+            turnover=metrics["turnover"],
             gross_return=metrics["gross_return"],
             net_return=metrics["net_return"],
             fee_drag=metrics["fee_drag"],

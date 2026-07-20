@@ -14,6 +14,7 @@ export function StrategyBuilder() {
     const [config, setConfig] = useState({
         version: "1.0",
         name: "Custom Strategy",
+        benchmark: "SPY",
         universe: {
             base_currency: "USD",
             instruments: [] as any[],

@@ -325,9 +325,8 @@ def _build_scenarios(
             ),
         ),
         Scenario(
-            name="dca_mixed_currency_expected_fail",
-            expect_status="FAILED",
-            expect_error_code="E_CONFIG_INVALID",
+            name="dca_mixed_currency_supported",
+            expect_status="SUCCEEDED",
             config_snapshot=merge(
                 base,
                 {

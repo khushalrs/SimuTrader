@@ -210,6 +210,18 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     symbols = ["TESTA", "TESTB"]
 
     _seed_duckdb(str(duckdb_path), symbols, start, end)
+    con = duckdb.connect(str(duckdb_path))
+    con.execute(
+        """
+        INSERT INTO prices
+        SELECT date, 'SPY', asset_class, currency, open, high, low, close, volume,
+               exchange, data_source
+        FROM prices
+        WHERE symbol = ?
+        """,
+        [symbols[0]],
+    )
+    con.close()
     monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
 
     db = _FakeSession()
@@ -217,6 +229,7 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
         run_id=uuid4(),
         status="QUEUED",
         config_snapshot={
+            "benchmark": "SPY",
             "universe": {
                 "instruments": [
                     {"symbol": symbols[0], "asset_class": "US_EQUITY", "amount": 4000.0},
@@ -255,6 +268,12 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert metric_meta["config_version"] is None
     assert metric_meta["universe_summary"]["instrument_count"] == len(symbols)
     assert set(metric_meta["universe_summary"]["symbols"]) == set(symbols)
+    assert metric_meta["benchmark"] == "SPY"
+    assert metric_meta["beta"] is not None
+    assert metric_meta["alpha"] is not None
+    assert metric_meta["information_ratio"] is not None
+    assert metric_meta["turnover_convention"] == "two_way_annualized"
+    assert db.metrics_rows[0].turnover is not None
 
 
 def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):
@@ -271,6 +290,7 @@ def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):
         run_id=uuid4(),
         status="QUEUED",
         config_snapshot={
+            "benchmark": "DOES_NOT_EXIST",
             "universe": {
                 "instruments": [
                     {"symbol": symbols[0], "asset_class": "US_EQUITY", "amount": 1000.0},
@@ -304,6 +324,9 @@ def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):
     assert metric.gross_return is not None
     assert metric.net_return is not None
     assert metric.fee_drag is not None
+    assert metric.meta["beta"] is None
+    assert metric.meta["alpha"] is None
+    assert metric.meta["information_ratio"] is None
     assert metric.gross_return > metric.net_return
 
 
@@ -609,9 +632,8 @@ def test_fixed_weight_rebalance_daily(tmp_path, monkeypatch):
     weights = {
         row.symbol: row.market_value_base / equity_row.equity_base for row in positions
     }
-    # Rebalance targets are applied with a 1% cash reserve.
-    assert weights[symbols[0]] == pytest.approx(0.6 * 0.99, rel=1e-3)
-    assert weights[symbols[1]] == pytest.approx(0.4 * 0.99, rel=1e-3)
+    assert weights[symbols[0]] == pytest.approx(0.6, rel=1e-3)
+    assert weights[symbols[1]] == pytest.approx(0.4, rel=1e-3)
 
 
 def test_dca_weekly_contributions_daily_buys(tmp_path, monkeypatch):
@@ -710,8 +732,7 @@ def test_momentum_monthly_top_k(tmp_path, monkeypatch):
         row.symbol: row.market_value_base / equity_row.equity_base for row in positions
     }
 
-    # Momentum allocations now deploy 99% of equity into winners.
-    assert weights[symbols[1]] == pytest.approx(0.99, rel=1e-3)
+    assert weights[symbols[1]] == pytest.approx(1.0, rel=1e-3)
     assert weights.get(symbols[0], 0.0) == pytest.approx(0.0, abs=1e-6)
 
 
@@ -767,3 +788,11 @@ def test_mean_reversion_entry_and_hold(tmp_path, monkeypatch):
 
     assert run.status == "SUCCEEDED"
     assert db.position_rows, "Expected positions to be persisted"
+    assert db.tax_rows, "Expected FIFO realizations from closed positions"
+    metric_meta = db.metrics_rows[0].meta
+    assert metric_meta["trade_win_rate"] is not None
+    assert metric_meta["avg_commission_per_trade"] == pytest.approx(0.0)
+    assert (
+        metric_meta["avg_winning_trade"] is not None
+        or metric_meta["avg_losing_trade"] is not None
+    )

@@ -17,6 +17,18 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
     const [allocationMode, setAllocationMode] = useState<string>("equal_weight")
     const shortingEnabled = config.financing?.shorting?.enabled;
 
+    const handleBaseCurrencyChange = (baseCurrency: string) => {
+        updateConfig((prev: any) => {
+            const previousDefault = prev.universe.base_currency === "INR" ? "NIFTY" : "SPY";
+            const nextDefault = baseCurrency === "INR" ? "NIFTY" : "SPY";
+            return {
+                ...prev,
+                benchmark: prev.benchmark === previousDefault ? nextDefault : prev.benchmark,
+                universe: { ...prev.universe, base_currency: baseCurrency },
+            };
+        });
+    };
+
     // Determine initial allocationMode from instruments when step loads
     useEffect(() => {
         const instruments = config.universe.instruments;
@@ -214,16 +226,34 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
             <h2 className="text-xl font-semibold mb-4">Define Universe & Timeframe</h2>
             <div className="space-y-6 flex-1">
 
-                <div className="space-y-2">
-                    <label className="text-sm font-medium">Base Currency</label>
-                    <select
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        value={config.universe.base_currency}
-                        onChange={e => updateConfig((prev: any) => ({ ...prev, universe: { ...prev.universe, base_currency: e.target.value } }))}
-                    >
-                        <option value="USD">USD</option>
-                        <option value="INR">INR</option>
-                    </select>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Base Currency</label>
+                        <select
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            value={config.universe.base_currency}
+                            onChange={e => handleBaseCurrencyChange(e.target.value)}
+                        >
+                            <option value="USD">USD</option>
+                            <option value="INR">INR</option>
+                        </select>
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Benchmark</label>
+                        <input
+                            type="text"
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm uppercase ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                            value={config.benchmark ?? ""}
+                            placeholder={config.universe.base_currency === "INR" ? "NIFTY" : "SPY"}
+                            onChange={e => updateConfig((prev: any) => ({
+                                ...prev,
+                                benchmark: e.target.value.toUpperCase(),
+                            }))}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                            Optional. Clear this field to disable benchmark-relative metrics.
+                        </p>
+                    </div>
                 </div>
 
                 <div className="space-y-2">

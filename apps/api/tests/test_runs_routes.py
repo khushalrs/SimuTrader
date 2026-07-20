@@ -10,11 +10,26 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.routes.backtests import get_backtest_trades, router as backtests_router
-from app.api.routes.runs import explain_run, get_run_costs_summary, get_run_fills, get_run_positions
+from app.api.routes.runs import (
+    explain_run,
+    get_run_costs_summary,
+    get_run_exposure,
+    get_run_fills,
+    get_run_positions,
+)
 from app.db import get_db
+from app.models.assets import Asset
+from app.models.backtests import (
+    BacktestRun,
+    RunDailyEquity,
+    RunFill,
+    RunMetric,
+    RunOrder,
+    RunPosition,
+    RunTaxEvent,
+)
 from app.security import ActorContext, ActorTier
 from app.security import get_current_actor
-from app.models.backtests import BacktestRun, RunDailyEquity, RunFill, RunMetric, RunOrder, RunPosition, RunTaxEvent
 
 
 @dataclass
@@ -76,6 +91,7 @@ class _FakeDB:
         tax_rows: list | None = None,
         run_config: dict | None = None,
         run_status: str = "SUCCEEDED",
+        assets: list | None = None,
     ):
         self.run_exists = run_exists
         self.latest_position_date = latest_position_date
@@ -88,6 +104,7 @@ class _FakeDB:
         self.tax_rows = tax_rows or []
         self.run_config = run_config or {"tax": {"regime": "US"}}
         self.run_status = run_status
+        self.assets = assets or []
 
     def query(self, *entities):
         if len(entities) == 1:
@@ -118,6 +135,8 @@ class _FakeDB:
                 return _FakeQuery(all_values=self.equity_rows)
             if entity is RunTaxEvent:
                 return _FakeQuery(all_values=self.tax_rows)
+            if entity is Asset:
+                return _FakeQuery(all_values=self.assets)
             if entity is RunDailyEquity.equity_base:
                 first_value = None if self.equity_base is None else (self.equity_base,)
                 return _FakeQuery(first_value=first_value)
@@ -125,18 +144,20 @@ class _FakeDB:
                 return _FakeQuery(scalar_value=self.latest_position_date)
         if len(entities) == 2 and entities[0] is RunOrder.order_id and entities[1] is RunOrder.side:
             return _FakeQuery(all_values=self.order_sides)
-        if len(entities) == 3 and entities[0] is RunFill.symbol:
-            totals_by_symbol: dict[str, tuple[float, float]] = {}
+        if len(entities) == 4 and entities[0] is RunFill.symbol:
+            totals_by_symbol: dict[tuple[str, str], tuple[float, float]] = {}
             for fill in self.fills:
-                commissions, slippage = totals_by_symbol.get(fill.symbol, (0.0, 0.0))
-                totals_by_symbol[fill.symbol] = (
+                kind = str((getattr(fill, "meta", None) or {}).get("kind") or "")
+                key = (fill.symbol, kind)
+                commissions, slippage = totals_by_symbol.get(key, (0.0, 0.0))
+                totals_by_symbol[key] = (
                     commissions + float(getattr(fill, "commission_native", 0.0) or 0.0),
                     slippage + float(getattr(fill, "slippage_native", 0.0) or 0.0),
                 )
             return _FakeQuery(
                 all_values=[
-                    (symbol, commissions, slippage)
-                    for symbol, (commissions, slippage) in totals_by_symbol.items()
+                    (symbol, kind, commissions, slippage)
+                    for (symbol, kind), (commissions, slippage) in totals_by_symbol.items()
                 ]
             )
         raise AssertionError(f"Unexpected query entities: {entities}")
@@ -179,6 +200,77 @@ def test_get_run_positions_returns_404_for_missing_run():
     with pytest.raises(HTTPException) as exc:
         get_run_positions(run_id=uuid4(), actor=actor, db=db)
     assert exc.value.status_code == 404
+
+
+def test_get_run_exposure_groups_long_short_and_unknown_country():
+    first = date(2024, 1, 3)
+    second = date(2024, 1, 4)
+    db = _FakeDB(
+        equity_rows=[
+            SimpleNamespace(
+                date=first,
+                equity_base=1000.0,
+                equity_by_currency={"USD": 800.0, "INR": 16000.0},
+            ),
+            SimpleNamespace(
+                date=second,
+                equity_base=1100.0,
+                equity_by_currency={"USD": 1100.0},
+            ),
+        ],
+        positions=[
+            SimpleNamespace(
+                date=first,
+                symbol="AAPL",
+                qty=5.0,
+                market_value_base=600.0,
+            ),
+            SimpleNamespace(
+                date=first,
+                symbol="RELIANCE",
+                qty=-2.0,
+                market_value_base=-200.0,
+            ),
+            SimpleNamespace(
+                date=first,
+                symbol="MYSTERY",
+                qty=1.0,
+                market_value_base=50.0,
+            ),
+        ],
+        assets=[
+            SimpleNamespace(
+                symbol="AAPL", asset_class="US_EQUITY", currency="USD"
+            ),
+            SimpleNamespace(
+                symbol="RELIANCE", asset_class="IN_EQUITY", currency="INR"
+            ),
+        ],
+    )
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+
+    result = get_run_exposure(
+        run_id=uuid4(), actor=actor, db=db, start=None, end=None, limit=2000
+    )
+
+    assert len(result) == 2
+    assert result[0].long_base == pytest.approx(650.0)
+    assert result[0].short_base == pytest.approx(200.0)
+    assert result[0].gross_base == pytest.approx(850.0)
+    assert result[0].net_base == pytest.approx(450.0)
+    assert result[0].leverage == pytest.approx(0.85)
+    assert result[0].equity_native_by_currency == {
+        "USD": 800.0,
+        "INR": 16000.0,
+    }
+    assert result[0].exposure_base_by_currency["USD"].long_base == pytest.approx(600.0)
+    assert result[0].exposure_base_by_currency["INR"].short_base == pytest.approx(200.0)
+    assert result[0].exposure_base_by_currency["UNKNOWN"].long_base == pytest.approx(50.0)
+    assert result[0].by_asset_class["US_EQUITY"].net_base == pytest.approx(600.0)
+    assert result[0].by_country["IN"].short_base == pytest.approx(200.0)
+    assert result[0].by_country["UNKNOWN"].long_base == pytest.approx(50.0)
+    assert result[1].gross_base == 0.0
+    assert result[1].by_country == {}
 
 
 def test_get_run_fills_returns_404_for_missing_run():
@@ -291,6 +383,17 @@ def test_cost_summary_groups_native_costs_and_uses_persisted_cumulative_costs():
                 commission_native=12.0,
                 slippage_native=3.0,
             ),
+            SimpleNamespace(
+                order_id=None,
+                date=date(2024, 1, 4),
+                symbol="USDINR",
+                qty=40000.0,
+                price_native=80.0,
+                notional_native=500.0,
+                commission_native=0.0,
+                slippage_native=0.5,
+                meta={"kind": "FX_SWEEP"},
+            ),
         ],
         equity_rows=[
             SimpleNamespace(
@@ -307,7 +410,7 @@ def test_cost_summary_groups_native_costs_and_uses_persisted_cumulative_costs():
     result = get_run_costs_summary(run_id=uuid4(), actor=actor, db=db)
 
     assert result.commissions_native == pytest.approx({"USD": 1.2, "INR": 12.0})
-    assert result.slippage_native == pytest.approx({"USD": 0.3, "INR": 3.0})
+    assert result.slippage_native == pytest.approx({"USD": 0.8, "INR": 3.0})
     assert result.fees_total_base == pytest.approx(9.5)
     assert result.taxes_total_base == pytest.approx(4.25)
     assert result.borrow_fees_base == pytest.approx(1.5)

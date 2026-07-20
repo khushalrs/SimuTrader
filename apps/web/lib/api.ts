@@ -563,6 +563,7 @@ export function buildValidConfig(config: any) {
 
     return {
         version: 1,
+        benchmark: config.benchmark?.trim() || null,
         strategy: config.strategy.type,
         strategy_params: cleanParams,
         base_currency: config.universe.base_currency,

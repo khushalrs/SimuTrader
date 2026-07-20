@@ -118,6 +118,24 @@ class RunPositionOut(BaseModel):
     weight: Optional[float] = None
 
 
+class RunExposureBreakdownOut(BaseModel):
+    long_base: float
+    short_base: float
+    gross_base: float
+    net_base: float
+
+
+class RunExposurePointOut(RunExposureBreakdownOut):
+    date: date
+    leverage: Optional[float] = None
+    equity_native_by_currency: Dict[str, float] = Field(default_factory=dict)
+    exposure_base_by_currency: Dict[str, RunExposureBreakdownOut] = Field(
+        default_factory=dict
+    )
+    by_asset_class: Dict[str, RunExposureBreakdownOut] = Field(default_factory=dict)
+    by_country: Dict[str, RunExposureBreakdownOut] = Field(default_factory=dict)
+
+
 class RunFillOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

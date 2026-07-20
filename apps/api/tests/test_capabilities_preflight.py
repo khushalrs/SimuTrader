@@ -94,7 +94,7 @@ def test_capabilities_returns_strategy_matrix():
     assert res.status_code == 200
     payload = res.json()
     assert payload["strategies"]["BUY_AND_HOLD"]["supports_mixed_currency"] is True
-    assert payload["strategies"]["MOMENTUM"]["supports_mixed_currency"] is False
+    assert payload["strategies"]["MOMENTUM"]["supports_mixed_currency"] is True
     assert payload["strategies"]["MOMENTUM"]["allocation_modes"] == ["equal"]
 
 
@@ -163,7 +163,7 @@ def test_backtest_preflight_route_is_rate_limited(tmp_path, monkeypatch):
     assert second.headers["Retry-After"] == "60"
 
 
-def test_mixed_us_india_momentum_preflight_fails_cleanly():
+def test_mixed_us_india_momentum_preflight_succeeds():
     config = _mixed_buy_and_hold_config()
     config["strategy"] = "MOMENTUM"
     config["strategy_params"] = {
@@ -175,11 +175,8 @@ def test_mixed_us_india_momentum_preflight_fails_cleanly():
 
     result = run_preflight(config)
 
-    assert result["ok"] is False
-    assert any(
-        "MOMENTUM currently supports single-currency universes only" in error
-        for error in result["errors"]
-    )
+    assert result["ok"] is True
+    assert result["errors"] == []
 
 
 def test_preflight_reports_missing_fx_history(tmp_path, monkeypatch):
