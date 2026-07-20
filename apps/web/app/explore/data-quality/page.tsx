@@ -17,6 +17,25 @@ import {
     Sliders
 } from "lucide-react"
 
+// Helper to determine region code from asset class or currency
+function getRegionBadge(assetClass?: string | null, currency?: string | null) {
+    if (assetClass && assetClass.includes("_")) {
+        return assetClass.split("_")[0]
+    }
+    if (currency) {
+        const cur = currency.toUpperCase()
+        if (cur === "INR") return "IN"
+        if (cur === "USD") return "US"
+        if (cur === "EUR") return "EU"
+        if (cur === "GBP") return "GB"
+        if (cur === "JPY") return "JP"
+        if (cur === "CAD") return "CA"
+        if (cur === "AUD") return "AU"
+        return cur.slice(0, 2)
+    }
+    return "Unknown"
+}
+
 export default function DataQualityPage() {
     const [searchQuery, setSearchQuery] = useState("")
 
@@ -44,7 +63,8 @@ export default function DataQualityPage() {
             const qual = qualArray.find((q: any) => q.symbol === cov.symbol) || {}
             return {
                 symbol: cov.symbol,
-                asset_class: cov.asset_class || "US_EQUITY",
+                asset_class: cov.asset_class || null,
+                currency: cov.currency || qual.currency || null,
                 start_date: cov.start_date || cov.coverage_start || "2020-01-01",
                 end_date: cov.end_date || cov.coverage_end || "2026-06-30",
                 coverage_pct: cov.coverage_pct ?? 1.0,
@@ -71,7 +91,8 @@ export default function DataQualityPage() {
     const filteredData = useMemo(() => {
         return mergedData.filter(d => 
             d.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            d.asset_class.toLowerCase().includes(searchQuery.toLowerCase())
+            (d.asset_class && d.asset_class.toLowerCase().includes(searchQuery.toLowerCase())) ||
+            (d.currency && d.currency.toLowerCase().includes(searchQuery.toLowerCase()))
         )
     }, [mergedData, searchQuery])
 
@@ -198,39 +219,46 @@ export default function DataQualityPage() {
                                     
                                     {/* Grid rows */}
                                     <div className="space-y-2">
-                                        {filteredData.map(d => (
-                                            <div key={d.symbol} className="grid grid-cols-[100px_1fr] gap-4 items-center font-mono text-xs">
-                                                <div className="font-bold text-foreground flex items-center gap-1.5">
-                                                    <span>{d.symbol}</span>
-                                                    <span className="text-[9px] font-sans font-medium px-1 rounded bg-secondary text-muted-foreground uppercase">
-                                                        {d.asset_class.split("_")[0]}
-                                                    </span>
+                                        {filteredData.map(d => {
+                                            const region = getRegionBadge(d.asset_class, d.currency)
+                                            return (
+                                                <div key={d.symbol} className="grid grid-cols-[100px_1fr] gap-4 items-center font-mono text-xs">
+                                                    <div className="font-bold text-foreground flex items-center gap-1.5">
+                                                        <span>{d.symbol}</span>
+                                                        <span className={`text-[9px] font-sans font-medium px-1.5 py-0.5 rounded text-muted-foreground uppercase ${
+                                                            region === "US" ? "bg-blue-500/10 text-blue-600 border border-blue-500/15" :
+                                                            region === "IN" ? "bg-orange-500/10 text-orange-600 border border-orange-500/15" :
+                                                            "bg-secondary border border-border"
+                                                        }`}>
+                                                            {region}
+                                                        </span>
+                                                    </div>
+                                                    <div className="grid grid-cols-7 gap-1">
+                                                        {years.map(year => {
+                                                            const coverage = d.yearly_coverage[year] ?? 0
+                                                            const isFuture = parseInt(year) > 2026
+                                                            let color = "bg-muted/30"
+                                                            if (!isFuture) {
+                                                                if (coverage >= 0.99) color = "bg-emerald-600 dark:bg-emerald-500 text-white"
+                                                                else if (coverage >= 0.95) color = "bg-emerald-400 dark:bg-emerald-600 text-white"
+                                                                else if (coverage >= 0.80) color = "bg-amber-400 dark:bg-amber-500 text-black"
+                                                                else if (coverage > 0) color = "bg-rose-400 dark:bg-rose-600 text-white"
+                                                                else color = "bg-red-950/20 dark:bg-red-950/40 text-muted-foreground"
+                                                            }
+                                                            return (
+                                                                <div 
+                                                                    key={year} 
+                                                                    title={`${d.symbol} (${year}): ${(coverage * 100).toFixed(1)}%`}
+                                                                    className={`h-7 rounded flex items-center justify-center text-[10px] font-bold transition-all hover:scale-105 ${color}`}
+                                                                >
+                                                                    {coverage > 0 ? `${(coverage * 100).toFixed(0)}%` : "-"}
+                                                                </div>
+                                                            )
+                                                        })}
+                                                    </div>
                                                 </div>
-                                                <div className="grid grid-cols-7 gap-1">
-                                                    {years.map(year => {
-                                                        const coverage = d.yearly_coverage[year] ?? 0
-                                                        const isFuture = parseInt(year) > 2026
-                                                        let color = "bg-muted/30"
-                                                        if (!isFuture) {
-                                                            if (coverage >= 0.99) color = "bg-emerald-600 dark:bg-emerald-500 text-white"
-                                                            else if (coverage >= 0.95) color = "bg-emerald-400 dark:bg-emerald-600 text-white"
-                                                            else if (coverage >= 0.80) color = "bg-amber-400 dark:bg-amber-500 text-black"
-                                                            else if (coverage > 0) color = "bg-rose-400 dark:bg-rose-600 text-white"
-                                                            else color = "bg-red-950/20 dark:bg-red-950/40 text-muted-foreground"
-                                                        }
-                                                        return (
-                                                            <div 
-                                                                key={year} 
-                                                                title={`${d.symbol} (${year}): ${(coverage * 100).toFixed(1)}%`}
-                                                                className={`h-7 rounded flex items-center justify-center text-[10px] font-bold transition-all hover:scale-105 ${color}`}
-                                                            >
-                                                                {coverage > 0 ? `${(coverage * 100).toFixed(0)}%` : "-"}
-                                                            </div>
-                                                        )
-                                                    })}
-                                                </div>
-                                            </div>
-                                        ))}
+                                            )
+                                        })}
                                     </div>
                                 </div>
                             )}
@@ -275,8 +303,15 @@ export default function DataQualityPage() {
                                     {filteredData.map((d) => (
                                         <tr key={d.symbol} className="hover:bg-muted/40 transition-colors">
                                             <td className="px-4 py-3">
-                                                <div className="font-bold text-foreground text-sm">{d.symbol}</div>
-                                                <div className="text-[10px] text-muted-foreground uppercase font-sans mt-0.5">{d.asset_class.replace(/_/g, " ")}</div>
+                                                <div className="font-bold text-foreground text-sm flex items-center gap-1.5">
+                                                    <span>{d.symbol}</span>
+                                                    <span className="text-[9px] font-sans font-medium px-1 rounded bg-secondary text-muted-foreground">
+                                                        {d.currency || "Unknown"}
+                                                    </span>
+                                                </div>
+                                                <div className="text-[10px] text-muted-foreground uppercase font-sans mt-0.5">
+                                                    {d.asset_class ? d.asset_class.replace(/_/g, " ") : "Unknown Asset Class"}
+                                                </div>
                                             </td>
                                             <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
                                                 {d.start_date} to {d.end_date}
