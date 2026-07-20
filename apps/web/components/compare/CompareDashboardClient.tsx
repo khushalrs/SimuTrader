@@ -46,7 +46,7 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
     );
 
     const getRunName = (id: string) => {
-        const run = availableRuns.find(r => r.id === id);
+        const run = availableRuns.find(r => r.id === id || r.run_id === id);
         return run?.title || run?.name || id.split("-")[0];
     }
 
@@ -68,7 +68,10 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
         }
     }
 
-    const unselectedRuns = availableRuns.filter(r => r.id !== baseRun && !comparisonRuns.includes(r.id) && r.status === "SUCCEEDED");
+    const unselectedRuns = availableRuns.filter(r => {
+        const runId = r.id || r.run_id;
+        return runId !== baseRun && !comparisonRuns.includes(runId) && r.status === "SUCCEEDED";
+    });
     const activeIds = [baseRun, ...comparisonRuns].filter(Boolean);
 
     // Dynamic processing for Indexed Equity or Peak-to-Trough Drawdown series
@@ -125,31 +128,40 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
 
     const baseRow = compareData?.metric_rows.find(r => r.run_id === baseRun);
 
-    const renderDeltaPercent = (value?: number | null, baseValue?: number | null, inverseColors = false) => {
-        if (value === undefined || value === null) return "-";
-        const display = formatPercent(value);
-        if (baseValue === undefined || baseValue === null || value === baseValue) return display;
-        const diff = value - baseValue;
+    const renderServerMetric = (
+        row: any,
+        metricKey: string,
+        isPercent = true,
+        isSharpe = false,
+        inverseColors = false
+    ) => {
+        const val = row[metricKey];
+        if (val === undefined || val === null) return "-";
+        const display = isSharpe ? val.toFixed(2) : isPercent ? formatPercent(val) : val.toFixed(2);
+
+        if (row.run_id === baseRun) return display;
+
+        let diff: number | null = null;
+        if (row.delta_vs_base && row.delta_vs_base[metricKey] !== undefined && row.delta_vs_base[metricKey] !== null) {
+            diff = row.delta_vs_base[metricKey];
+        } else if (baseRow && baseRow[metricKey] !== undefined && baseRow[metricKey] !== null) {
+            diff = val - baseRow[metricKey];
+        }
+
+        if (diff === null || diff === 0) return display;
+
         const sign = diff > 0 ? "+" : "";
         const isBetter = inverseColors ? diff < 0 : diff > 0;
-        const color = isBetter ? "text-emerald-500 font-medium" : "text-rose-500";
-        return (
-            <span className="font-mono">
-                {display} <span className={`text-[10px] ml-1 ${color}`}>({sign}{(diff * 100).toFixed(1)}%)</span>
-            </span>
-        );
-    }
+        const color = isBetter ? "text-emerald-500 font-medium" : diff < 0 ? "text-rose-500" : "text-muted-foreground";
+        const deltaDisplay = isSharpe
+            ? `${sign}${diff.toFixed(2)}`
+            : isPercent
+            ? `${sign}${(diff * 100).toFixed(1)}%`
+            : `${sign}${diff.toFixed(2)}`;
 
-    const renderDeltaSharpe = (value?: number | null, baseValue?: number | null) => {
-        if (value === undefined || value === null) return "-";
-        const display = value.toFixed(2);
-        if (baseValue === undefined || baseValue === null || value === baseValue) return display;
-        const diff = value - baseValue;
-        const sign = diff > 0 ? "+" : "";
-        const color = diff > 0 ? "text-emerald-500 font-medium" : "text-rose-500";
         return (
             <span className="font-mono">
-                {display} <span className={`text-[10px] ml-1 ${color}`}>({sign}{diff.toFixed(2)})</span>
+                {display} <span className={`text-[10px] ml-1 ${color}`}>({deltaDisplay})</span>
             </span>
         );
     }
@@ -356,12 +368,12 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
                                                     <span className="truncate max-w-[120px]">{getRunName(row.run_id)}</span>
                                                     {row.run_id === baseRun && <span className="text-[9px] bg-blue-100 text-blue-700 px-1 py-0.5 rounded ml-1">BASE</span>}
                                                 </TableCell>
-                                                <TableCell className="text-right">{renderDeltaPercent(row.cagr, baseRow?.cagr)}</TableCell>
-                                                <TableCell className="text-right">{renderDeltaPercent(row.volatility, baseRow?.volatility, true)}</TableCell>
-                                                <TableCell className="text-right">{renderDeltaSharpe(row.sharpe, baseRow?.sharpe)}</TableCell>
-                                                <TableCell className="text-right text-rose-500">{renderDeltaPercent(row.max_drawdown, baseRow?.max_drawdown)}</TableCell>
-                                                <TableCell className="text-right border-l">{renderDeltaPercent(row.gross_return, baseRow?.gross_return)}</TableCell>
-                                                <TableCell className="text-right">{renderDeltaPercent(row.net_return, baseRow?.net_return)}</TableCell>
+                                                <TableCell className="text-right">{renderServerMetric(row, "cagr", true, false, false)}</TableCell>
+                                                <TableCell className="text-right">{renderServerMetric(row, "volatility", true, false, true)}</TableCell>
+                                                <TableCell className="text-right">{renderServerMetric(row, "sharpe", false, true, false)}</TableCell>
+                                                <TableCell className="text-right text-rose-500">{renderServerMetric(row, "max_drawdown", true, false, false)}</TableCell>
+                                                <TableCell className="text-right border-l">{renderServerMetric(row, "gross_return", true, false, false)}</TableCell>
+                                                <TableCell className="text-right">{renderServerMetric(row, "net_return", true, false, false)}</TableCell>
                                             </TableRow>
                                         ))}
                                     </TableBody>
@@ -395,10 +407,10 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
                                                     <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS[activeIds.indexOf(row.run_id)] }}></div>
                                                     <span className="truncate max-w-[120px]">{getRunName(row.run_id)}</span>
                                                 </TableCell>
-                                                <TableCell className="text-right">{renderDeltaPercent(row.fee_drag, baseRow?.fee_drag, true)}</TableCell>
-                                                <TableCell className="text-right">{renderDeltaPercent(row.tax_drag, baseRow?.tax_drag, true)}</TableCell>
-                                                <TableCell className="text-right">{renderDeltaPercent(row.borrow_drag, baseRow?.borrow_drag, true)}</TableCell>
-                                                <TableCell className="text-right">{renderDeltaPercent(row.margin_interest_drag, baseRow?.margin_interest_drag, true)}</TableCell>
+                                                <TableCell className="text-right">{renderServerMetric(row, "fee_drag", true, false, true)}</TableCell>
+                                                <TableCell className="text-right">{renderServerMetric(row, "tax_drag", true, false, true)}</TableCell>
+                                                <TableCell className="text-right">{renderServerMetric(row, "borrow_drag", true, false, true)}</TableCell>
+                                                <TableCell className="text-right">{renderServerMetric(row, "margin_interest_drag", true, false, true)}</TableCell>
                                             </TableRow>
                                         ))}
                                     </TableBody>
