@@ -4,7 +4,9 @@ from datetime import date, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
+from jinja2 import BaseLoader, Environment, select_autoescape
+from jinja2.exceptions import UndefinedError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -47,6 +49,112 @@ from app.services.scenario import build_clone_config, build_scenario_config
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 GLOBAL_PRESET_ACTOR_PREFIX = "preset:global:"
+
+_REPORT_HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ run.name or "Backtest report" }} · SimuTrader</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#667085; --line:#d8dee9; --panel:#f7f9fc; --brand:#3157d5; --negative:#b42318; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:#fff; font:14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width:980px; margin:0 auto; padding:36px; }
+    header { display:flex; justify-content:space-between; gap:24px; align-items:flex-start; border-bottom:2px solid var(--ink); padding-bottom:20px; }
+    .brand { display:flex; align-items:center; gap:12px; }
+    h1 { font-size:26px; margin:0 0 4px; } h2 { font-size:16px; margin:26px 0 10px; }
+    p { margin:5px 0; } .muted { color:var(--muted); } .right { text-align:right; }
+    .badge { display:inline-block; padding:4px 9px; border:1px solid var(--line); border-radius:999px; font-size:12px; font-weight:700; }
+    .summary { margin:22px 0; padding:16px 18px; border-left:4px solid var(--brand); background:var(--panel); font-size:16px; }
+    .grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }
+    .card { border:1px solid var(--line); border-radius:8px; padding:12px; break-inside:avoid; }
+    .label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+    .value { margin-top:4px; font-size:19px; font-weight:750; font-variant-numeric:tabular-nums; }
+    table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+    th, td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; }
+    th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+    td:last-child, th:last-child { text-align:right; }
+    .chart { width:100%; height:auto; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    footer { margin-top:30px; padding-top:12px; border-top:1px solid var(--line); color:var(--muted); font-size:11px; }
+    @page { size:A4; margin:14mm; }
+    @media print { main { max-width:none; padding:0; } .card, table, .chart { break-inside:avoid; } }
+    @media (max-width:700px) { main { padding:20px; } .grid { grid-template-columns:repeat(2, 1fr); } }
+  </style>
+</head>
+<body><main>
+  <header>
+    <div>
+      <div class="brand">
+        <svg width="34" height="34" viewBox="0 0 34 34" role="img" aria-label="SimuTrader logo" xmlns="http://www.w3.org/2000/svg">
+          <rect width="34" height="34" rx="8" fill="#3157d5"/><path d="M7 23l6-7 5 4 9-11" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div><h1>{{ run.name or "Backtest report" }}</h1><div class="muted">Run {{ run.run_id }}</div></div>
+      </div>
+    </div>
+    <div class="right"><span class="badge">{{ run.status }}</span><p class="muted">Snapshot {{ run.data_snapshot_id }}</p></div>
+  </header>
+
+  {% if explanation %}<div class="summary"><strong>{{ explanation.headline }}</strong><br>{{ explanation.summary }}</div>{% endif %}
+
+  <section><h2>Performance</h2><div class="grid">
+    <div class="card"><div class="label">Net return</div><div class="value">{{ metrics.net_return|pct }}</div></div>
+    <div class="card"><div class="label">CAGR</div><div class="value">{{ metrics.cagr|pct }}</div></div>
+    <div class="card"><div class="label">Sharpe</div><div class="value">{{ metrics.sharpe|num }}</div></div>
+    <div class="card"><div class="label">Max drawdown</div><div class="value">{{ metrics.max_drawdown|pct }}</div></div>
+    <div class="card"><div class="label">Sortino</div><div class="value">{{ metrics.sortino|num }}</div></div>
+    <div class="card"><div class="label">Volatility</div><div class="value">{{ metrics.volatility|pct }}</div></div>
+    <div class="card"><div class="label">Turnover</div><div class="value">{{ metrics.turnover|num }}</div></div>
+    <div class="card"><div class="label">Latest equity</div><div class="value">{{ latest_equity.equity_base|money }}</div></div>
+  </div></section>
+
+  {% if drag_rows %}<section><h2>Return drag</h2>
+    <svg class="chart" viewBox="0 0 760 {{ 34 + drag_rows|length * 42 }}" role="img" aria-label="Return drag chart" xmlns="http://www.w3.org/2000/svg">
+      {% for item in drag_rows %}<text x="16" y="{{ 31 + loop.index0 * 42 }}" font-size="12" fill="#667085">{{ item.label }}</text>
+      <rect x="150" y="{{ 17 + loop.index0 * 42 }}" width="{{ item.width }}" height="18" rx="3" fill="#b42318" opacity=".82"/>
+      <text x="{{ 160 + item.width }}" y="{{ 31 + loop.index0 * 42 }}" font-size="12" fill="#172033">{{ item.value|pct }}</text>{% endfor %}
+    </svg>
+  </section>{% endif %}
+
+  <section><h2>Costs and taxes</h2><table><thead><tr><th>Item</th><th>Base amount</th></tr></thead><tbody>
+    <tr><td>Fees</td><td>{{ costs.fees_total_base|money }}</td></tr>
+    <tr><td>Taxes</td><td>{{ costs.taxes_total_base|money }}</td></tr>
+    <tr><td>Borrow fees</td><td>{{ costs.borrow_fees_base|money }}</td></tr>
+    <tr><td>Margin interest</td><td>{{ costs.margin_interest_base|money }}</td></tr>
+    <tr><td>Tax events</td><td>{{ taxes.event_count }}</td></tr>
+  </tbody></table></section>
+
+  <section><h2>Run configuration</h2><table><tbody>
+    <tr><td>Strategy</td><td>{{ run.config_snapshot.strategy or "BUY_AND_HOLD" }}</td></tr>
+    <tr><td>Base currency</td><td>{{ run.config_snapshot.base_currency or "USD" }}</td></tr>
+    <tr><td>Start date</td><td>{{ run.config_snapshot.backtest.start_date }}</td></tr>
+    <tr><td>End date</td><td>{{ run.config_snapshot.backtest.end_date }}</td></tr>
+    <tr><td>Seed</td><td>{{ run.seed }}</td></tr>
+  </tbody></table></section>
+  <footer>Generated by SimuTrader. This self-contained report has no external fonts, stylesheets, scripts, or images.</footer>
+</main></body></html>"""
+
+
+def _report_percent(value) -> str:
+    try:
+        return f"{float(value) * 100:.2f}%"
+    except (TypeError, ValueError, UndefinedError):
+        return "—"
+
+
+def _report_number(value) -> str:
+    try:
+        return f"{float(value):,.2f}"
+    except (TypeError, ValueError, UndefinedError):
+        return "—"
+
+
+_REPORT_ENV = Environment(
+    loader=BaseLoader(),
+    autoescape=select_autoescape(default=True),
+)
+_REPORT_ENV.filters.update(pct=_report_percent, num=_report_number, money=_report_number)
+_REPORT_TEMPLATE = _REPORT_ENV.from_string(_REPORT_HTML_TEMPLATE)
 
 
 def _parse_datetime(value: str | None):
@@ -337,13 +445,15 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
         return "unknown" if value is None else f"{value * 100:.2f}%"
 
     if dominant_drag:
+        drag_label = dominant_drag.replace("_", " ")
+        drag_verb = "was" if dominant_drag == "margin_interest" else "were"
         headline = (
             f"Net return {pct(net_return)}; "
-            f"{dominant_drag.replace('_', ' ')} was the largest drag."
+            f"{drag_label} {drag_verb} the largest drag."
         )
         summary = (
             f"The run earned {pct(gross_return)} gross and {pct(net_return)} net. "
-            f"{dominant_drag.replace('_', ' ').capitalize()} were the largest drag."
+            f"{drag_label.capitalize()} {drag_verb} the largest drag."
         )
     else:
         headline = f"Net return {pct(net_return)} with minimal cost drag."
@@ -861,7 +971,6 @@ def get_run_costs_summary(
 
     fill_rows = db.query(
         RunFill.symbol,
-        func.coalesce(RunFill.meta["kind"].astext, ""),
         func.coalesce(func.sum(RunFill.commission_native), 0.0),
         func.coalesce(func.sum(RunFill.slippage_native), 0.0),
     ).filter(RunFill.run_id == run_id)
@@ -869,9 +978,7 @@ def get_run_costs_summary(
         fill_rows = fill_rows.filter(RunFill.date >= start)
     if end:
         fill_rows = fill_rows.filter(RunFill.date <= end)
-    fill_totals_by_symbol = fill_rows.group_by(
-        RunFill.symbol, func.coalesce(RunFill.meta["kind"].astext, "")
-    ).all()
+    fill_totals_by_symbol = fill_rows.group_by(RunFill.symbol).all()
 
     instruments = ((run.config_snapshot or {}).get("universe") or {}).get("instruments") or []
     symbol_currencies = {
@@ -883,10 +990,10 @@ def get_run_costs_summary(
     commissions_native: dict[str, float] = {}
     slippage_native: dict[str, float] = {}
     base_currency = str((run.config_snapshot or {}).get("base_currency") or "USD").upper()
-    for symbol, kind, commissions, slippage in fill_totals_by_symbol:
+    for symbol, commissions, slippage in fill_totals_by_symbol:
         currency = (
             base_currency
-            if str(kind or "").upper() == "FX_SWEEP"
+            if str(symbol or "").upper() == "USDINR"
             else symbol_currencies.get(str(symbol).upper())
         )
         if currency is None:
@@ -1062,6 +1169,48 @@ def get_run_report_json(
         if latest_equity
         else None,
     }
+
+
+@router.get("/{run_id}/report.html", response_class=HTMLResponse)
+def get_run_report_html(
+    run_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """Render the canonical JSON report as a self-contained, printable HTML file."""
+    report = get_run_report_json(run_id=run_id, actor=actor, db=db)
+    explanation = report.get("explanation") or {}
+    drag_breakdown = explanation.get("drag_breakdown") or {}
+    nonzero_drags = [
+        (str(name).replace("_", " ").title(), float(value or 0.0))
+        for name, value in drag_breakdown.items()
+        if abs(float(value or 0.0)) > 1e-12
+    ]
+    max_drag = max((abs(value) for _, value in nonzero_drags), default=0.0)
+    drag_rows = [
+        {
+            "label": label,
+            "value": value,
+            "width": round(480.0 * abs(value) / max_drag, 2) if max_drag else 0.0,
+        }
+        for label, value in nonzero_drags
+    ]
+    html = _REPORT_TEMPLATE.render(
+        run=report.get("run") or {},
+        metrics=report.get("metrics") or {},
+        explanation=explanation,
+        costs=report.get("costs") or {},
+        taxes=report.get("taxes") or {},
+        latest_equity=report.get("latest_equity") or {},
+        drag_rows=drag_rows,
+    )
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Content-Disposition": f'inline; filename="run-{run_id}-report.html"',
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.get("/{run_id}/top-holdings", response_model=list[RunPositionOut])

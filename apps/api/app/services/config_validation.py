@@ -267,20 +267,28 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     execution = config.get("execution")
     if isinstance(execution, dict):
-        commission = execution.get("commission") or {}
-        slippage = execution.get("slippage") or {}
-        if "commission" not in config and isinstance(commission, dict):
-            config["commission"] = {
-                "model": commission.get("model", "BPS"),
-                "bps": commission.get("bps", 0),
-                "min_fee_native": commission.get("min_fee", commission.get("min_fee_native", 0)),
-            }
-        if "slippage" not in config and isinstance(slippage, dict):
-            config["slippage"] = {
-                "model": slippage.get("model", "BPS"),
-                "bps": slippage.get("bps", 0),
-            }
-        if "fill_price_policy" not in config and execution.get("fill_price"):
+        commission = execution.get("commission")
+        slippage = execution.get("slippage")
+        # The engine consumes the top-level fields. Treat an explicit execution
+        # block as the authoritative client-facing form and overlay only the
+        # supplied values so dotted scenario patches cannot become dead config.
+        if isinstance(commission, dict):
+            canonical_commission = copy.deepcopy(config.get("commission") or {})
+            if "model" in commission:
+                canonical_commission["model"] = commission["model"]
+            if "bps" in commission:
+                canonical_commission["bps"] = commission["bps"]
+            if "min_fee" in commission:
+                canonical_commission["min_fee_native"] = commission["min_fee"]
+            config["commission"] = canonical_commission
+        if isinstance(slippage, dict):
+            canonical_slippage = copy.deepcopy(config.get("slippage") or {})
+            if "model" in slippage:
+                canonical_slippage["model"] = slippage["model"]
+            if "bps" in slippage:
+                canonical_slippage["bps"] = slippage["bps"]
+            config["slippage"] = canonical_slippage
+        if execution.get("fill_price"):
             config["fill_price_policy"] = execution.get("fill_price")
 
     strategy = config.get("strategy")

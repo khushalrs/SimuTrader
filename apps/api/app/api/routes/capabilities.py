@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from app.schemas.capabilities import StrategySchemaOut
 from app.services.capabilities import get_capabilities, get_strategy_schemas
 
 
@@ -15,6 +16,10 @@ def capabilities() -> dict[str, dict[str, Any]]:
     return get_capabilities()
 
 
-@router.get("/strategy-schemas")
+@router.get(
+    "/strategy-schemas",
+    response_model=dict[str, StrategySchemaOut],
+    response_model_exclude_none=True,
+)
 def strategy_schemas() -> dict[str, dict[str, Any]]:
     return get_strategy_schemas()
