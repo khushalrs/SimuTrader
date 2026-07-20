@@ -32,15 +32,17 @@ def _query_symbol_coverage(
         rows = con.execute(
             f"""
             SELECT
-                upper(symbol) AS symbol,
+                symbol,
                 min(currency) AS currency,
+                min(asset_class) AS asset_class,
+                min(exchange) AS exchange,
                 min(date) AS first_date,
                 max(date) AS last_date,
                 count(*) AS rows
             FROM prices
-            WHERE upper(symbol) IN ({placeholders})
+            WHERE symbol IN ({placeholders})
               AND date BETWEEN ? AND ?
-            GROUP BY upper(symbol)
+            GROUP BY symbol
             """,
             [*symbols, start_date, end_date],
         ).fetchall()
@@ -48,9 +50,11 @@ def _query_symbol_coverage(
             row[0]: {
                 "symbol": row[0],
                 "currency": row[1],
-                "first_date": row[2],
-                "last_date": row[3],
-                "rows": int(row[4] or 0),
+                "asset_class": row[2],
+                "exchange": row[3],
+                "first_date": row[4],
+                "last_date": row[5],
+                "rows": int(row[6] or 0),
             }
             for row in rows
         }
@@ -62,6 +66,8 @@ def _query_symbol_coverage(
                     {
                         "symbol": symbol,
                         "currency": None,
+                        "asset_class": None,
+                        "exchange": None,
                         "first_date": None,
                         "last_date": None,
                         "rows": 0,
@@ -74,7 +80,7 @@ def _query_symbol_coverage(
             f"""
             SELECT min(date), max(date), count(DISTINCT date)
             FROM prices
-            WHERE upper(symbol) IN ({placeholders})
+            WHERE symbol IN ({placeholders})
               AND date BETWEEN ? AND ?
             """,
             [*symbols, start_date, end_date],

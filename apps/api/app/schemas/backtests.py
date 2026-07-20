@@ -43,6 +43,8 @@ class BacktestPreflightRequest(BaseModel):
 class BacktestPreflightCoverageOut(BaseModel):
     symbol: str
     currency: Optional[str] = None
+    asset_class: Optional[str] = None
+    exchange: Optional[str] = None
     first_date: Optional[date] = None
     last_date: Optional[date] = None
     rows: int

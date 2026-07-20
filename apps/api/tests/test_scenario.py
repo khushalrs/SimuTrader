@@ -72,6 +72,54 @@ def test_scenario_execution_cost_patch_updates_engine_fields() -> None:
     assert result["slippage"]["bps"] == pytest.approx(125)
 
 
+def test_scenario_cost_patch_and_clone_are_validation_idempotent() -> None:
+    config = _config()
+    config["commission"] = {"model": "BPS", "bps": 5, "min_fee_native": 1}
+    config["slippage"] = {"model": "BPS", "bps": 2}
+
+    scenario = build_scenario_config(
+        config,
+        uuid4(),
+        {"execution.commission.bps": 500},
+    )
+    clone = build_clone_config(scenario, uuid4())
+
+    assert scenario["commission"]["min_fee_native"] == pytest.approx(1)
+    assert clone["commission"]["min_fee_native"] == pytest.approx(1)
+    assert "execution" not in scenario
+    assert "execution" not in clone
+    scenario_without_lineage = {k: v for k, v in scenario.items() if k != "_scenario"}
+    clone_without_lineage = {k: v for k, v in clone.items() if k != "_scenario"}
+    assert clone_without_lineage == scenario_without_lineage
+
+
+def test_legacy_execution_defaults_cannot_override_canonical_minimum_fee() -> None:
+    config = _config()
+    config["commission"] = {"model": "BPS", "bps": 5, "min_fee_native": 1}
+    config["slippage"] = {"model": "BPS", "bps": 2}
+    config["execution"] = {
+        "commission": {"model": "BPS", "bps": 5, "min_fee": 0},
+        "slippage": {"model": "BPS", "bps": 0},
+        "fill_price": "CLOSE",
+        "cash_buffer_pct": 0.01,
+    }
+
+    scenario = build_scenario_config(
+        config,
+        uuid4(),
+        {"execution.commission.bps": 500},
+    )
+    clone = build_clone_config(scenario, uuid4())
+
+    assert scenario["commission"] == {
+        "model": "BPS",
+        "bps": pytest.approx(500),
+        "min_fee_native": pytest.approx(1),
+    }
+    assert scenario["execution"] == {"cash_buffer_pct": pytest.approx(0.01)}
+    assert clone["commission"] == scenario["commission"]
+
+
 def test_clone_replaces_inherited_lineage_with_direct_parent() -> None:
     config = _config()
     config["_scenario"] = {"parent_run_id": str(uuid4()), "patch": {"tax.regime": "US"}}

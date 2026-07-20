@@ -44,8 +44,10 @@ from app.schemas.backtests import (
     RunPositionOut,
     RunCloneRequest,
     RunScenarioRequest,
+    RunTaxEventOut,
 )
 from app.services.scenario import build_clone_config, build_scenario_config
+from app.services.preflight import _query_symbol_coverage
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 GLOBAL_PRESET_ACTOR_PREFIX = "preset:global:"
@@ -68,6 +70,7 @@ _REPORT_HTML_TEMPLATE = """<!doctype html>
     .badge { display:inline-block; padding:4px 9px; border:1px solid var(--line); border-radius:999px; font-size:12px; font-weight:700; }
     .summary { margin:22px 0; padding:16px 18px; border-left:4px solid var(--brand); background:var(--panel); font-size:16px; }
     .grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }
+    .two { display:grid; grid-template-columns:repeat(2, 1fr); gap:12px; }
     .card { border:1px solid var(--line); border-radius:8px; padding:12px; break-inside:avoid; }
     .label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
     .value { margin-top:4px; font-size:19px; font-weight:750; font-variant-numeric:tabular-nums; }
@@ -79,7 +82,7 @@ _REPORT_HTML_TEMPLATE = """<!doctype html>
     footer { margin-top:30px; padding-top:12px; border-top:1px solid var(--line); color:var(--muted); font-size:11px; }
     @page { size:A4; margin:14mm; }
     @media print { main { max-width:none; padding:0; } .card, table, .chart { break-inside:avoid; } }
-    @media (max-width:700px) { main { padding:20px; } .grid { grid-template-columns:repeat(2, 1fr); } }
+    @media (max-width:700px) { main { padding:20px; } .grid, .two { grid-template-columns:repeat(2, 1fr); } }
   </style>
 </head>
 <body><main>
@@ -108,6 +111,22 @@ _REPORT_HTML_TEMPLATE = """<!doctype html>
     <div class="card"><div class="label">Latest equity</div><div class="value">{{ latest_equity.equity_base|money }}</div></div>
   </div></section>
 
+  <section><h2>Risk</h2><div class="grid">
+    <div class="card"><div class="label">Volatility</div><div class="value">{{ risk.volatility|pct }}</div></div>
+    <div class="card"><div class="label">Value at Risk 95%</div><div class="value">{{ risk.var_95|pct }}</div></div>
+    <div class="card"><div class="label">Conditional VaR 95%</div><div class="value">{{ risk.cvar_95|pct }}</div></div>
+    <div class="card"><div class="label">Calmar</div><div class="value">{{ risk.calmar|num }}</div></div>
+    <div class="card"><div class="label">Beta</div><div class="value">{{ risk.beta|num }}</div></div>
+    <div class="card"><div class="label">Alpha</div><div class="value">{{ risk.alpha|pct }}</div></div>
+    <div class="card"><div class="label">Information ratio</div><div class="value">{{ risk.information_ratio|num }}</div></div>
+    <div class="card"><div class="label">Sortino</div><div class="value">{{ risk.sortino|num }}</div></div>
+  </div></section>
+
+  {% if equity_points %}<section><h2>Portfolio path</h2><div class="two">
+    <div><div class="label">Equity curve</div><svg class="chart" viewBox="0 0 760 190" role="img" aria-label="Equity curve" xmlns="http://www.w3.org/2000/svg"><line x1="20" y1="170" x2="740" y2="170" stroke="#d8dee9"/><polyline points="{{ equity_points }}" fill="none" stroke="#3157d5" stroke-width="3" vector-effect="non-scaling-stroke"/></svg></div>
+    <div><div class="label">Drawdown</div><svg class="chart" viewBox="0 0 760 190" role="img" aria-label="Drawdown curve" xmlns="http://www.w3.org/2000/svg"><line x1="20" y1="20" x2="740" y2="20" stroke="#d8dee9"/><polyline points="{{ drawdown_points }}" fill="none" stroke="#b42318" stroke-width="3" vector-effect="non-scaling-stroke"/></svg></div>
+  </div><p class="muted">{{ equity_curve|length }} daily observations from {{ equity_curve[0].date }} through {{ equity_curve[-1].date }}.</p></section>{% endif %}
+
   {% if drag_rows %}<section><h2>Return drag</h2>
     <svg class="chart" viewBox="0 0 760 {{ 34 + drag_rows|length * 42 }}" role="img" aria-label="Return drag chart" xmlns="http://www.w3.org/2000/svg">
       {% for item in drag_rows %}<text x="16" y="{{ 31 + loop.index0 * 42 }}" font-size="12" fill="#667085">{{ item.label }}</text>
@@ -123,6 +142,35 @@ _REPORT_HTML_TEMPLATE = """<!doctype html>
     <tr><td>Margin interest</td><td>{{ costs.margin_interest_base|money }}</td></tr>
     <tr><td>Tax events</td><td>{{ taxes.event_count }}</td></tr>
   </tbody></table></section>
+
+  {% if explanation %}<section><h2>Explanation</h2><table><tbody>
+    <tr><td>Dominant drag</td><td>{{ explanation.dominant_drag or "None" }}</td></tr>
+    <tr><td>Trade count</td><td>{{ explanation.trade_count }}</td></tr>
+    <tr><td>Tax regime</td><td>{{ explanation.tax_regime }}</td></tr>
+    <tr><td>Best rolling month</td><td>{% if explanation.best_period %}{{ explanation.best_period.start_date }} – {{ explanation.best_period.end_date }} ({{ explanation.best_period.return_value|pct }}){% else %}—{% endif %}</td></tr>
+    <tr><td>Worst rolling month</td><td>{% if explanation.worst_period %}{{ explanation.worst_period.start_date }} – {{ explanation.worst_period.end_date }} ({{ explanation.worst_period.return_value|pct }}){% else %}—{% endif %}</td></tr>
+    <tr><td>Largest position</td><td>{% if explanation.largest_position %}{{ explanation.largest_position.symbol }} · {{ explanation.largest_position.market_value_base|money }}{% else %}—{% endif %}</td></tr>
+    <tr><td>Largest trade</td><td>{% if explanation.largest_trade %}{{ explanation.largest_trade.symbol }} · {{ explanation.largest_trade.notional_base|money }}{% else %}—{% endif %}</td></tr>
+    <tr><td>Largest tax event</td><td>{% if explanation.largest_tax_event %}{{ explanation.largest_tax_event.symbol }} · {{ explanation.largest_tax_event.tax_due_base|money }}{% else %}—{% endif %}</td></tr>
+  </tbody></table></section>{% endif %}
+
+  <section><h2>Trades ({{ trades|length }})</h2>
+    {% if trades %}<table><thead><tr><th>Date</th><th>Symbol</th><th>Side</th><th>Quantity</th><th>Notional</th><th>Costs</th></tr></thead><tbody>
+    {% for trade in trades %}<tr><td>{{ trade.date }}</td><td>{{ trade.symbol }}</td><td>{{ trade.side or "—" }}</td><td>{{ trade.qty|num }}</td><td>{{ trade.notional|money }}</td><td>{{ (trade.commission + trade.slippage)|money }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="muted">No fills were recorded.</p>{% endif %}
+  </section>
+
+  <section><h2>Tax events ({{ tax_events|length }})</h2>
+    {% if tax_events %}<table><thead><tr><th>Date</th><th>Symbol</th><th>Bucket</th><th>Realized P&amp;L</th><th>Tax due</th></tr></thead><tbody>
+    {% for event in tax_events %}<tr><td>{{ event.date }}</td><td>{{ event.symbol }}</td><td>{{ event.bucket }}</td><td>{{ event.realized_pnl_base|money }}</td><td>{{ event.tax_due_base|money }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="muted">No taxable realization events were recorded.</p>{% endif %}
+  </section>
+
+  <section><h2>Data snapshot</h2><p><strong>{{ data_snapshot.id }}</strong></p>
+    {% if data_snapshot.coverage %}<table><thead><tr><th>Symbol</th><th>Asset class</th><th>Exchange</th><th>Currency</th><th>First bar</th><th>Last bar</th><th>Rows</th></tr></thead><tbody>
+    {% for item in data_snapshot.coverage %}<tr><td>{{ item.symbol }}</td><td>{{ item.asset_class or "—" }}</td><td>{{ item.exchange or "—" }}</td><td>{{ item.currency or "—" }}</td><td>{{ item.first_date or "—" }}</td><td>{{ item.last_date or "—" }}</td><td>{{ item.rows }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="muted">Coverage metadata was unavailable.</p>{% endif %}
+  </section>
 
   <section><h2>Run configuration</h2><table><tbody>
     <tr><td>Strategy</td><td>{{ run.config_snapshot.strategy or "BUY_AND_HOLD" }}</td></tr>
@@ -1159,12 +1207,100 @@ def get_run_report_json(
     run = _get_actor_run(run_id, actor, db)
     metrics = db.query(RunMetric).filter(RunMetric.run_id == run_id).first()
     latest_equity = _latest_equity(run_id, db)
+    equity_rows = (
+        db.query(RunDailyEquity)
+        .filter(RunDailyEquity.run_id == run_id)
+        .order_by(RunDailyEquity.date.asc())
+        .all()
+    )
+    fill_rows = (
+        db.query(RunFill)
+        .filter(RunFill.run_id == run_id)
+        .order_by(RunFill.date.asc(), RunFill.fill_id.asc())
+        .all()
+    )
+    order_ids = [fill.order_id for fill in fill_rows if fill.order_id]
+    side_lookup: dict[UUID, str] = {}
+    if order_ids:
+        side_lookup = dict(
+            db.query(RunOrder.order_id, RunOrder.side)
+            .filter(RunOrder.order_id.in_(order_ids))
+            .all()
+        )
+    trades = [
+        RunFillOut(
+            date=fill.date,
+            symbol=fill.symbol,
+            side=side_lookup.get(fill.order_id) if fill.order_id else None,
+            qty=float(fill.qty),
+            price=float(fill.price_native),
+            notional=float(fill.notional_native),
+            commission=float(fill.commission_native),
+            slippage=float(fill.slippage_native),
+        ).model_dump(mode="json")
+        for fill in fill_rows
+    ]
+    tax_rows = (
+        db.query(RunTaxEvent)
+        .filter(RunTaxEvent.run_id == run_id)
+        .order_by(RunTaxEvent.date.asc(), RunTaxEvent.tax_event_id.asc())
+        .all()
+    )
+    tax_events = [
+        RunTaxEventOut.model_validate(row).model_dump(mode="json") for row in tax_rows
+    ]
+    metric_payload = (
+        RunMetricOut.model_validate(metrics).model_dump(mode="json") if metrics else None
+    )
+    metric_meta = (metric_payload or {}).get("meta") or {}
+    risk = {
+        key: (metric_payload or {}).get(key, metric_meta.get(key))
+        for key in ("volatility", "sharpe", "sortino", "max_drawdown")
+    }
+    risk.update(
+        {
+            key: metric_meta.get(key)
+            for key in (
+                "calmar",
+                "var_95",
+                "cvar_95",
+                "beta",
+                "alpha",
+                "information_ratio",
+            )
+        }
+    )
+    config = run.config_snapshot or {}
+    instruments = ((config.get("universe") or {}).get("instruments") or [])
+    backtest = config.get("backtest") or {}
+    coverage: list[dict] = []
+    try:
+        symbols = [str(item.get("symbol") or "").upper() for item in instruments]
+        if symbols and backtest.get("start_date") and backtest.get("end_date"):
+            coverage, _, _ = _query_symbol_coverage(
+                symbols,
+                date.fromisoformat(str(backtest["start_date"])),
+                date.fromisoformat(str(backtest["end_date"])),
+            )
+    except Exception:
+        coverage = []
     return {
         "run": _to_backtest_out(run).model_dump(mode="json"),
-        "metrics": RunMetricOut.model_validate(metrics).model_dump(mode="json") if metrics else None,
+        "metrics": metric_payload,
+        "risk": risk,
         "explanation": _run_explanation(run, db).model_dump(mode="json") if metrics else None,
         "costs": get_run_costs_summary(run_id=run_id, actor=actor, db=db).model_dump(mode="json"),
         "taxes": _tax_summary(run_id, db),
+        "tax_events": tax_events,
+        "trades": trades,
+        "equity_curve": [
+            RunDailyEquityOut.model_validate(row).model_dump(mode="json")
+            for row in equity_rows
+        ],
+        "data_snapshot": {
+            "id": run.data_snapshot_id,
+            "coverage": coverage,
+        },
         "latest_equity": RunDailyEquityOut.model_validate(latest_equity).model_dump(mode="json")
         if latest_equity
         else None,
@@ -1195,6 +1331,20 @@ def get_run_report_html(
         }
         for label, value in nonzero_drags
     ]
+    equity_curve = report.get("equity_curve") or []
+
+    def chart_points(field: str) -> str:
+        values = [float(row.get(field) or 0.0) for row in equity_curve]
+        if not values:
+            return ""
+        low, high = min(values), max(values)
+        spread = high - low or 1.0
+        denominator = max(len(values) - 1, 1)
+        return " ".join(
+            f"{20 + 720 * index / denominator:.2f},{20 + 150 * (high - value) / spread:.2f}"
+            for index, value in enumerate(values)
+        )
+
     html = _REPORT_TEMPLATE.render(
         run=report.get("run") or {},
         metrics=report.get("metrics") or {},
@@ -1203,6 +1353,13 @@ def get_run_report_html(
         taxes=report.get("taxes") or {},
         latest_equity=report.get("latest_equity") or {},
         drag_rows=drag_rows,
+        risk=report.get("risk") or {},
+        equity_curve=equity_curve,
+        equity_points=chart_points("equity_base"),
+        drawdown_points=chart_points("drawdown"),
+        trades=report.get("trades") or [],
+        tax_events=report.get("tax_events") or [],
+        data_snapshot=report.get("data_snapshot") or {},
     )
     return HTMLResponse(
         content=html,

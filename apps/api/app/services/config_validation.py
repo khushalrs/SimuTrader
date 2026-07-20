@@ -273,23 +273,27 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         # block as the authoritative client-facing form and overlay only the
         # supplied values so dotted scenario patches cannot become dead config.
         if isinstance(commission, dict):
-            canonical_commission = copy.deepcopy(config.get("commission") or {})
-            if "model" in commission:
-                canonical_commission["model"] = commission["model"]
-            if "bps" in commission:
-                canonical_commission["bps"] = commission["bps"]
-            if "min_fee" in commission:
-                canonical_commission["min_fee_native"] = commission["min_fee"]
-            config["commission"] = canonical_commission
+            if "commission" not in config:
+                config["commission"] = {
+                    "model": commission.get("model", "BPS"),
+                    "bps": commission.get("bps", 0),
+                    "min_fee_native": commission.get("min_fee", 0),
+                }
         if isinstance(slippage, dict):
-            canonical_slippage = copy.deepcopy(config.get("slippage") or {})
-            if "model" in slippage:
-                canonical_slippage["model"] = slippage["model"]
-            if "bps" in slippage:
-                canonical_slippage["bps"] = slippage["bps"]
-            config["slippage"] = canonical_slippage
-        if execution.get("fill_price"):
+            if "slippage" not in config:
+                config["slippage"] = {
+                    "model": slippage.get("model", "BPS"),
+                    "bps": slippage.get("bps", 0),
+                }
+        if "fill_price_policy" not in config and execution.get("fill_price"):
             config["fill_price_policy"] = execution.get("fill_price")
+        # These are accepted as input aliases only. Keeping them in a resolved
+        # snapshot lets JSON-schema defaults masquerade as explicit overrides on
+        # the next validation pass (for example min_fee_native 1 -> 0 on clone).
+        for alias in ("commission", "slippage", "fill_price"):
+            execution.pop(alias, None)
+        if not execution:
+            config.pop("execution", None)
 
     strategy = config.get("strategy")
     if isinstance(strategy, dict):
@@ -368,6 +372,12 @@ def validate_and_resolve_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         message = "; ".join(_format_error(err) for err in errors)
         raise ValueError(f"Invalid config: {message}")
     _validate_cross_fields(config)
+    execution = config.get("execution")
+    if isinstance(execution, dict):
+        for alias in ("commission", "slippage", "fill_price"):
+            execution.pop(alias, None)
+        if not execution:
+            config.pop("execution", None)
     return config
 
 

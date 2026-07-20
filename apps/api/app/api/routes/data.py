@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import date
 import re
+import threading
+import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.data.duckdb import get_duckdb_conn
 from app.services.preflight import _query_symbol_coverage
@@ -13,6 +16,57 @@ from app.services.preflight import _query_symbol_coverage
 router = APIRouter(prefix="/data", tags=["data"])
 SYMBOL_RE = re.compile(r"[A-Z0-9.\-]{1,20}")
 MAX_SYMBOLS = 200
+DATA_CACHE_TTL_SECONDS = 900.0
+DATA_CACHE_MAX_KEYS = 256
+_data_cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+_data_cache_lock = threading.Lock()
+
+
+def _cache_get(key: str) -> Any | None:
+    now = time.monotonic()
+    with _data_cache_lock:
+        cached = _data_cache.get(key)
+        if cached is None:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            _data_cache.pop(key, None)
+            return None
+        _data_cache.move_to_end(key)
+        return payload
+
+
+def _cache_set(key: str, payload: Any) -> Any:
+    with _data_cache_lock:
+        _data_cache[key] = (time.monotonic() + DATA_CACHE_TTL_SECONDS, payload)
+        _data_cache.move_to_end(key)
+        while len(_data_cache) > DATA_CACHE_MAX_KEYS:
+            _data_cache.popitem(last=False)
+    return payload
+
+
+def _cache_headers(response: Response, hit: bool) -> None:
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
+    response.headers["X-Data-Cache"] = "HIT" if hit else "MISS"
+
+
+def _scope_cache_key(
+    endpoint: str,
+    symbols: str | None,
+    start: date | None,
+    end: date | None,
+    *limits: int,
+) -> str:
+    parsed = _parse_symbols(symbols)
+    return "|".join(
+        [
+            endpoint,
+            ",".join(parsed or []),
+            start.isoformat() if start else "",
+            end.isoformat() if end else "",
+            *(str(value) for value in limits),
+        ]
+    )
 
 
 def _parse_symbols(symbols: str | None) -> list[str] | None:
@@ -47,7 +101,7 @@ def _date_bounds(symbols: list[str]) -> tuple[date, date]:
     con = get_duckdb_conn()
     try:
         row = con.execute(
-            f"SELECT min(date), max(date) FROM prices WHERE upper(symbol) IN ({placeholders})",
+            f"SELECT min(date), max(date) FROM prices WHERE symbol IN ({placeholders})",
             symbols,
         ).fetchone()
         if not row or row[0] is None or row[1] is None:
@@ -77,56 +131,83 @@ def _resolve_scope(
 
 
 @router.get("/snapshot")
-def get_data_snapshot() -> dict[str, Any]:
+def get_data_snapshot(response: Response) -> dict[str, Any]:
+    cache_key = "snapshot"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        _cache_headers(response, True)
+        return cached
     con = get_duckdb_conn()
     try:
+        tables = {str(item[0]) for item in con.execute("SHOW TABLES").fetchall()}
         row = con.execute(
             """
             SELECT count(*), count(DISTINCT upper(symbol)), min(date), max(date)
             FROM prices
             """
         ).fetchone()
-        asset_classes = [row[0] for row in con.execute(
-            "SELECT DISTINCT asset_class FROM prices WHERE asset_class IS NOT NULL ORDER BY 1"
+        dimension_table = "assets" if "assets" in tables else "prices"
+        symbol_count = (
+            con.execute("SELECT count(*) FROM assets").fetchone()[0]
+            if dimension_table == "assets"
+            else row[1]
+        )
+        asset_classes = [item[0] for item in con.execute(
+            f"SELECT DISTINCT asset_class FROM {dimension_table} WHERE asset_class IS NOT NULL ORDER BY 1"
         ).fetchall()]
-        currencies = [row[0] for row in con.execute(
-            "SELECT DISTINCT currency FROM prices WHERE currency IS NOT NULL ORDER BY 1"
+        currencies = [item[0] for item in con.execute(
+            f"SELECT DISTINCT currency FROM {dimension_table} WHERE currency IS NOT NULL ORDER BY 1"
         ).fetchall()]
-        data_sources = [row[0] for row in con.execute(
-            "SELECT DISTINCT data_source FROM prices WHERE data_source IS NOT NULL ORDER BY 1"
+        data_sources = [item[0] for item in con.execute(
+            f"SELECT DISTINCT data_source FROM {dimension_table} WHERE data_source IS NOT NULL ORDER BY 1"
         ).fetchall()]
     finally:
         con.close()
-    return {
+    payload = {
         "row_count": int(row[0] or 0),
-        "symbol_count": int(row[1] or 0),
+        "symbol_count": int(symbol_count or 0),
         "first_date": row[2],
         "last_date": row[3],
         "asset_classes": asset_classes,
         "currencies": currencies,
         "data_sources": data_sources,
     }
+    _cache_headers(response, False)
+    return _cache_set(cache_key, payload)
 
 
 @router.get("/coverage")
 def get_data_coverage(
+    response: Response,
     symbols: str | None = None,
     start: date | None = None,
     end: date | None = None,
     limit: int = Query(default=200, ge=1, le=MAX_SYMBOLS),
 ) -> list[dict[str, Any]]:
+    cache_key = _scope_cache_key("coverage", symbols, start, end, limit)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        _cache_headers(response, True)
+        return cached
     parsed, resolved_start, resolved_end = _resolve_scope(symbols, start, end, limit)
     coverage, _, _ = _query_symbol_coverage(parsed, resolved_start, resolved_end)
-    return coverage
+    _cache_headers(response, False)
+    return _cache_set(cache_key, coverage)
 
 
 @router.get("/quality")
 def get_data_quality(
+    response: Response,
     symbols: str | None = None,
     start: date | None = None,
     end: date | None = None,
-    limit: int = Query(default=200, ge=1, le=MAX_SYMBOLS),
+    limit: int = Query(default=50, ge=1, le=MAX_SYMBOLS),
 ) -> list[dict[str, Any]]:
+    cache_key = _scope_cache_key("quality", symbols, start, end, limit)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        _cache_headers(response, True)
+        return cached
     parsed, resolved_start, resolved_end = _resolve_scope(symbols, start, end, limit)
     placeholders = ",".join(["?"] * len(parsed))
     con = get_duckdb_conn()
@@ -134,7 +215,7 @@ def get_data_quality(
         rows = con.execute(
             f"""
             SELECT
-                upper(symbol) AS symbol,
+                symbol,
                 count(*) AS rows,
                 count(*) - count(DISTINCT date) AS duplicate_dates,
                 count(*) FILTER (
@@ -146,9 +227,9 @@ def get_data_quality(
                 ) AS invalid_ohlc_rows,
                 count(*) FILTER (WHERE volume IS NULL OR volume < 0) AS invalid_volume_rows
             FROM prices
-            WHERE upper(symbol) IN ({placeholders}) AND date BETWEEN ? AND ?
-            GROUP BY upper(symbol)
-            ORDER BY upper(symbol)
+            WHERE symbol IN ({placeholders}) AND date BETWEEN ? AND ?
+            GROUP BY symbol
+            ORDER BY symbol
             """,
             [*parsed, resolved_start, resolved_end],
         ).fetchall()
@@ -173,17 +254,26 @@ def get_data_quality(
                 "quality_score": max(0.0, 1.0 - issue_count / max(row_count, 1)),
             }
         )
-    return result
+    _cache_headers(response, False)
+    return _cache_set(cache_key, result)
 
 
 @router.get("/missing-bars")
 def get_data_missing_bars(
+    response: Response,
     symbols: str | None = None,
     start: date | None = None,
     end: date | None = None,
-    symbol_limit: int = Query(default=20, ge=1, le=MAX_SYMBOLS),
-    limit: int = Query(default=2000, ge=1, le=10000),
+    symbol_limit: int = Query(default=10, ge=1, le=MAX_SYMBOLS),
+    limit: int = Query(default=500, ge=1, le=10000),
 ) -> list[dict[str, Any]]:
+    cache_key = _scope_cache_key(
+        "missing-bars", symbols, start, end, symbol_limit, limit
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        _cache_headers(response, True)
+        return cached
     parsed, resolved_start, resolved_end = _resolve_scope(
         symbols, start, end, symbol_limit
     )
@@ -193,10 +283,10 @@ def get_data_missing_bars(
         rows = con.execute(
             f"""
             WITH selected AS (
-                SELECT upper(symbol) AS symbol, min(asset_class) AS asset_class
+                SELECT symbol, min(asset_class) AS asset_class
                 FROM prices
-                WHERE upper(symbol) IN ({placeholders})
-                GROUP BY upper(symbol)
+                WHERE symbol IN ({placeholders})
+                GROUP BY symbol
             ), expected AS (
                 SELECT s.symbol, s.asset_class, c.date
                 FROM selected s
@@ -212,7 +302,7 @@ def get_data_missing_bars(
             SELECT e.symbol, e.asset_class, e.date
             FROM expected e
             LEFT JOIN prices p
-              ON upper(p.symbol) = e.symbol AND p.date = e.date
+              ON p.symbol = e.symbol AND p.date = e.date
             WHERE p.date IS NULL
             ORDER BY e.date, e.symbol
             LIMIT ?
@@ -221,7 +311,9 @@ def get_data_missing_bars(
         ).fetchall()
     finally:
         con.close()
-    return [
+    payload = [
         {"symbol": row[0], "asset_class": row[1], "date": row[2]}
         for row in rows
     ]
+    _cache_headers(response, False)
+    return _cache_set(cache_key, payload)

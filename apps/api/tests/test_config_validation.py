@@ -106,7 +106,7 @@ def test_execution_block_maps_into_legacy_commission_fields() -> None:
     assert resolved["fill_price_policy"] == "CLOSE"
 
 
-def test_execution_block_overrides_existing_engine_cost_fields() -> None:
+def test_canonical_cost_fields_win_over_stale_execution_aliases() -> None:
     config = _base_config()
     config["commission"] = {"model": "BPS", "bps": 5, "min_fee_native": 2}
     config["slippage"] = {"model": "BPS", "bps": 2}
@@ -119,13 +119,15 @@ def test_execution_block_overrides_existing_engine_cost_fields() -> None:
 
     assert resolved["commission"] == {
         "model": "BPS",
-        "bps": pytest.approx(500),
+        "bps": pytest.approx(5),
         "min_fee_native": pytest.approx(2),
     }
     assert resolved["slippage"] == {
         "model": "BPS",
-        "bps": pytest.approx(75),
+        "bps": pytest.approx(2),
     }
+    assert "execution" not in resolved
+    assert validate_and_resolve_config(resolved) == resolved
 
 
 def test_config_sanitizes_control_characters() -> None:
