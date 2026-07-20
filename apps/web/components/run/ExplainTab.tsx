@@ -302,44 +302,45 @@ export function ExplainTab({ runId }: { runId: string }) {
 
             {/* Detailed Explanations Section */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {/* Tax Impact Summary */}
+                {/* Tax Impact Analysis */}
                 <Card className="border border-border bg-card">
                     <CardHeader className="pb-3">
                         <CardTitle className="text-sm flex items-center gap-2">
-                            <Receipt className="w-4 h-4 text-rose-500" /> Tax Impact Analysis
+                            <Receipt className="w-4 h-4 text-rose-500" /> Tax Settings
                         </CardTitle>
                     </CardHeader>
-                    <CardContent className="text-xs sm:text-sm text-foreground/80 leading-relaxed">
-                        {explainData.tax_impact_summary || explainData.tax_impact || explainData.tax_explanation || (
-                            "No significant tax drag recorded. Positions were held across tax-advantaged buckets or turnover was low."
+                    <CardContent className="text-xs sm:text-sm text-foreground/80 leading-relaxed space-y-2">
+                        <p>Realized capital gains were taxed under the <strong>{explainData.tax_regime || "default"}</strong> regime.</p>
+                        <p>Total tax drag on the strategy's overall returns was <strong>{formatDrag(taxDrag)}</strong>.</p>
+                    </CardContent>
+                </Card>
+
+                {/* Turnover Dynamics */}
+                <Card className="border border-border bg-card">
+                    <CardHeader className="pb-3">
+                        <CardTitle className="text-sm flex items-center gap-2">
+                            <RefreshCw className="w-4 h-4 text-blue-500" /> Turnover & Rebalancing
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="text-xs sm:text-sm text-foreground/80 leading-relaxed space-y-2">
+                        <p>The strategy generated a total of <strong>{explainData.trade_count}</strong> matched round-trip transactions.</p>
+                        {explainData.turnover !== null && (
+                            <p>Annualized turnover of portfolio assets was calculated at <strong>{formatPercent(explainData.turnover)}</strong>.</p>
                         )}
                     </CardContent>
                 </Card>
 
-                {/* Turnover Explanation */}
+                {/* Cost Drag Summary */}
                 <Card className="border border-border bg-card">
                     <CardHeader className="pb-3">
                         <CardTitle className="text-sm flex items-center gap-2">
-                            <RefreshCw className="w-4 h-4 text-blue-500" /> Turnover Dynamics
+                            <Layers className="w-4 h-4 text-purple-500" /> Leverage & Drag Leakage
                         </CardTitle>
                     </CardHeader>
-                    <CardContent className="text-xs sm:text-sm text-foreground/80 leading-relaxed">
-                        {explainData.turnover_explanation || explainData.turnover_summary || (
-                            "Rebalancing frequency generated moderate turnover. Friction was primarily controlled by execution policy."
-                        )}
-                    </CardContent>
-                </Card>
-
-                {/* Leverage & Shorting Explanation */}
-                <Card className="border border-border bg-card">
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-sm flex items-center gap-2">
-                            <Layers className="w-4 h-4 text-purple-500" /> Leverage & Shorting
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-xs sm:text-sm text-foreground/80 leading-relaxed">
-                        {explainData.leverage_explanation || explainData.shorting_explanation || (
-                            "Strategy maintained standard long exposure without significant borrow fees or margin interest spikes."
+                    <CardContent className="text-xs sm:text-sm text-foreground/80 leading-relaxed space-y-2">
+                        <p>The total performance drag from all fee, tax, borrow, and margin interest leakage was <strong>{formatDrag(explainData.total_drag)}</strong>.</p>
+                        {dominantKey && (
+                            <p>The dominant drag factor for this run was identified as <strong>{dominantKey.replace("_", " ")}</strong>.</p>
                         )}
                     </CardContent>
                 </Card>

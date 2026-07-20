@@ -1110,17 +1110,6 @@ export async function cloneRun(runId: string, overrides?: any): Promise<string> 
     return data.run_id || data.id
 }
 
-export async function createScenario(payload: any): Promise<any> {
-    const res = await runApiFetch(`${API_BASE_URL}/scenarios`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-    })
-    if (!res.ok) {
-        throw new Error(await extractErrorMessage(res, "Failed to create scenario"))
-    }
-    return await res.json()
-}
 
 export async function getDataCoverage(symbols?: string[]): Promise<any> {
     try {

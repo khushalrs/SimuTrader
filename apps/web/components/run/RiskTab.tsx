@@ -310,7 +310,7 @@ export function RiskTab({ equity }: RiskTabProps) {
                             <Tooltip
                                 contentStyle={CHART_THEME.tooltip.contentStyle}
                                 itemStyle={CHART_THEME.tooltip.itemStyle}
-                                formatter={(value: any) => [`${(value * 100).toFixed(2)}%`, 'Drawdown']}
+                                formatter={((value: any) => [`${(value * 100).toFixed(2)}%`, 'Drawdown']) as any}
                                 labelFormatter={(label) => new Date(label).toLocaleDateString()}
                             />
                             <Area
@@ -344,7 +344,7 @@ export function RiskTab({ equity }: RiskTabProps) {
                                 <Tooltip
                                     contentStyle={CHART_THEME.tooltip.contentStyle}
                                     itemStyle={CHART_THEME.tooltip.itemStyle}
-                                    formatter={(value: any) => [value, 'Days']}
+                                    formatter={((value: any) => [value, 'Days']) as any}
                                 />
                                 <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
                             </BarChart>
@@ -386,10 +386,10 @@ export function RiskTab({ equity }: RiskTabProps) {
                                     <Tooltip
                                         contentStyle={CHART_THEME.tooltip.contentStyle}
                                         itemStyle={CHART_THEME.tooltip.itemStyle}
-                                        formatter={(value: any, name: string) => {
+                                        formatter={((value: any, name: string) => {
                                             if (name === "vol30") return [`${(value * 100).toFixed(2)}%`, "30d Volatility"];
                                             return [value.toFixed(2), "90d Sharpe Ratio"];
-                                        }}
+                                        }) as any}
                                     />
                                     <Line
                                         yAxisId="vol"
