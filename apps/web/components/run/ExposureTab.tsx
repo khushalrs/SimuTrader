@@ -1,7 +1,7 @@
 "use client"
 
 import useSWR from "swr"
-import { getRunExposure } from "@/lib/api"
+import { getRunExposure, type RunExposureBreakdown } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/ui/badge"
@@ -20,7 +20,7 @@ import {
     XAxis,
     YAxis
 } from "recharts"
-import { Layers, Globe, ShieldAlert, DollarSign, Wallet, Scale } from "lucide-react"
+import { ShieldAlert } from "lucide-react"
 
 const COLOR_PALETTE = [
     "#3b82f6", // blue
@@ -51,7 +51,7 @@ export function ExposureTab({ runId }: { runId: string }) {
         )
     }
 
-    if (error || !exposureData) {
+    if (error || !exposureData || exposureData.length === 0) {
         return (
             <Card className="min-h-[300px] flex flex-col items-center justify-center p-8 text-center border-dashed">
                 <ShieldAlert className="w-12 h-12 text-muted-foreground/30 mb-3" />
@@ -63,34 +63,56 @@ export function ExposureTab({ runId }: { runId: string }) {
         )
     }
 
-    const timeSeries = exposureData.time_series || []
+    const timeSeries = exposureData
     
-    // Extract currency list
+    // Extract unique currencies
     const currencyKeys = Array.from(
         new Set(
-            timeSeries.flatMap((d: any) => Object.keys(d.currency_exposure || {}))
+            timeSeries.flatMap((d) => Object.keys(d.exposure_base_by_currency || {}))
         )
     )
 
     // Flat data for Recharts stacked area
-    const areaChartData = timeSeries.map((d: any) => {
+    const areaChartData = timeSeries.map((d) => {
         const flat: Record<string, any> = { date: d.date.split("T")[0] }
+        const nav = d.long_base + d.short_base
         currencyKeys.forEach(curr => {
-            flat[curr] = d.currency_exposure?.[curr] || 0
+            const b = d.exposure_base_by_currency?.[curr]
+            flat[curr] = b && nav > 0 ? b.net_base / nav : 0
         })
         return flat
     })
 
-    // Country & Asset Class Breakdown lists
-    const countries = Object.entries(exposureData.country_breakdown || {}).map(([name, val]) => ({
-        name,
-        value: (val as number) * 100
-    })).sort((a, b) => b.value - a.value)
+    // Latest state
+    const latestPoint = timeSeries[timeSeries.length - 1]
+    const nav = latestPoint.long_base + latestPoint.short_base
+    const currentLeverage = latestPoint.leverage ?? (nav > 0 ? latestPoint.gross_base / nav : 1.0)
+    const netExposureVal = nav > 0 ? latestPoint.net_base / nav : 1.0
+    const grossExposureVal = nav > 0 ? latestPoint.gross_base / nav : 1.0
 
-    const assets = Object.entries(exposureData.asset_class_breakdown || {}).map(([name, val]) => ({
-        name,
-        value: (val as number) * 100
-    })).sort((a, b) => b.value - a.value)
+    // Country & Asset Class Breakdown lists (weights relative to NAV)
+    const countries = Object.entries(latestPoint.by_country || {}).map(([name, breakdown]) => {
+        const b = breakdown as RunExposureBreakdown
+        const weight = nav > 0 ? (b.net_base / nav) * 100 : 0
+        return { name, value: weight }
+    }).sort((a, b) => b.value - a.value)
+
+    const assets = Object.entries(latestPoint.by_asset_class || {}).map(([name, breakdown]) => {
+        const b = breakdown as RunExposureBreakdown
+        const weight = nav > 0 ? (b.net_base / nav) * 100 : 0
+        return { name, value: weight }
+    }).sort((a, b) => b.value - a.value)
+
+    // Normalize timeSeries for line chart
+    const lineChartData = timeSeries.map((d) => {
+        const ptNav = d.long_base + d.short_base
+        return {
+            date: d.date.split("T")[0],
+            gross_exposure: ptNav > 0 ? d.gross_base / ptNav : 0,
+            net_exposure: ptNav > 0 ? d.net_base / ptNav : 0,
+            leverage: d.leverage ?? 1
+        }
+    })
 
     return (
         <div className="space-y-6">
@@ -102,7 +124,7 @@ export function ExposureTab({ runId }: { runId: string }) {
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold font-mono text-primary">
-                            {(exposureData.current_leverage ?? 1.0).toFixed(2)}x
+                            {currentLeverage.toFixed(2)}x
                         </div>
                         <p className="text-xs text-muted-foreground mt-1">Total assets / Net Asset Value.</p>
                     </CardContent>
@@ -114,7 +136,7 @@ export function ExposureTab({ runId }: { runId: string }) {
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold font-mono text-foreground">
-                            {((exposureData.net_exposure ?? 1.0) * 100).toFixed(1)}%
+                            {(netExposureVal * 100).toFixed(1)}%
                         </div>
                         <p className="text-xs text-muted-foreground mt-1">Long minus short position weights.</p>
                     </CardContent>
@@ -126,7 +148,7 @@ export function ExposureTab({ runId }: { runId: string }) {
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold font-mono text-foreground">
-                            {((exposureData.gross_exposure ?? 1.0) * 100).toFixed(1)}%
+                            {(grossExposureVal * 100).toFixed(1)}%
                         </div>
                         <p className="text-xs text-muted-foreground mt-1">Sum of absolute position weights.</p>
                     </CardContent>
@@ -188,11 +210,10 @@ export function ExposureTab({ runId }: { runId: string }) {
             <ChartFrame title="Leverage & Net/Gross Exposures" description="Historical timeline of gross exposure, net exposure, and active strategy leverage.">
                 <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={timeSeries} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                        <LineChart data={lineChartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                             <XAxis
                                 dataKey="date"
                                 {...CHART_THEME.axis}
-                                tickFormatter={(val) => val.split("T")[0]}
                             />
                             <YAxis
                                 yAxisId="weight"

@@ -121,15 +121,24 @@ export function RunHeader({ runId, title, tags, date, requestedStart, requestedE
         setIsSubmitting(true)
         setPollingStatus("Creating simulation scenario...")
 
+        const patch: Record<string, any> = {
+            "tax.regime": taxRegime,
+            "execution.commission.bps": parseFloat(commissionBps) || 0,
+            "execution.slippage.bps": parseFloat(slippageBps) || 0,
+            "backtest.initial_cash": parseFloat(initialCash) || 0,
+            "backtest.start_date": startDate,
+            "backtest.end_date": endDate,
+            "backtest.contributions.frequency": rebalanceFreq
+        }
+
+        const originalParams = configSnapshot?.strategy_params || configSnapshot?.strategy?.params || {}
+        Object.entries(originalParams).forEach(([key, val]) => {
+            patch[`strategy_params.${key}`] = val
+        })
+
         const payload = {
-            tax_regime: taxRegime,
-            commission_bps: parseFloat(commissionBps) || 0,
-            slippage_bps: parseFloat(slippageBps) || 0,
-            initial_cash: parseFloat(initialCash) || 0,
-            start_date: startDate,
-            end_date: endDate,
-            rebalance_frequency: rebalanceFreq,
-            strategy_params: configSnapshot?.strategy_params || configSnapshot?.strategy?.params || {}
+            name: `${title} (Scenario: tax=${taxRegime})`,
+            patch
         }
 
         try {

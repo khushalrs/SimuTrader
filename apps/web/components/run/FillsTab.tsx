@@ -77,9 +77,27 @@ export function FillsTab({ runId, status, baseCurrency = "USD" }: FillsTabProps)
                                     </td>
                                 </tr>
                             ) : (
-                                allFills.map((fill, index) => (
-                                    <tr key={`${fill.symbol}-${fill.date}-${index}`} className="border-b transition-colors hover:bg-muted/50">
-                                        <td className="px-4 py-3 whitespace-nowrap">{new Date(fill.date).toLocaleString()}</td>
+                                allFills.map((fill, index) => {
+                                    const formatFillDate = (dateStr: string) => {
+                                        const d = new Date(dateStr)
+                                        if (isNaN(d.getTime())) return dateStr
+                                        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+                                            const year = d.getUTCFullYear()
+                                            const month = String(d.getUTCMonth() + 1).padStart(2, '0')
+                                            const day = String(d.getUTCDate()).padStart(2, '0')
+                                            return `${year}-${month}-${day}`
+                                        }
+                                        const year = d.getUTCFullYear()
+                                        const month = String(d.getUTCMonth() + 1).padStart(2, '0')
+                                        const day = String(d.getUTCDate()).padStart(2, '0')
+                                        const hours = String(d.getUTCHours()).padStart(2, '0')
+                                        const minutes = String(d.getUTCMinutes()).padStart(2, '0')
+                                        const seconds = String(d.getUTCSeconds()).padStart(2, '0')
+                                        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC`
+                                    }
+                                    return (
+                                        <tr key={`${fill.symbol}-${fill.date}-${index}`} className="border-b transition-colors hover:bg-muted/50">
+                                            <td className="px-4 py-3 whitespace-nowrap">{formatFillDate(fill.date)}</td>
                                         <td className="px-4 py-3 font-medium">{fill.symbol}</td>
                                         <td className="px-4 py-3 text-right font-medium">
                                             <span className={`inline-flex rounded px-2 py-0.5 text-xs font-semibold ${fill.side === "BUY" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" :
@@ -100,7 +118,8 @@ export function FillsTab({ runId, status, baseCurrency = "USD" }: FillsTabProps)
                                             {formatCurrency(fill.commission, baseCurrency)}
                                         </td>
                                     </tr>
-                                ))
+                                    )
+                                })
                             )}
                         </tbody>
                     </table>
