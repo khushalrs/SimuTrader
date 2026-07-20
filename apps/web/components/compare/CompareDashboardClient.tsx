@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from "react"
 import useSWR from "swr"
-import { compareRuns } from "@/lib/api"
+import { compareRuns, type CompareMetricKey, type RunCompareMetricRowOut } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -129,8 +129,8 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
     const baseRow = compareData?.metric_rows.find(r => r.run_id === baseRun);
 
     const renderServerMetric = (
-        row: any,
-        metricKey: string,
+        row: RunCompareMetricRowOut,
+        metricKey: CompareMetricKey,
         isPercent = true,
         isSharpe = false,
         inverseColors = false

@@ -267,6 +267,22 @@ export interface RunTaxesOut {
     events: RunTaxEventOut[]
 }
 
+/** Numeric metric columns on a compare row -- the keys that are safe to index
+ *  dynamically and that also appear in `delta_vs_base`. */
+export type CompareMetricKey =
+    | "cagr"
+    | "volatility"
+    | "sharpe"
+    | "sortino"
+    | "max_drawdown"
+    | "turnover"
+    | "gross_return"
+    | "net_return"
+    | "fee_drag"
+    | "tax_drag"
+    | "borrow_drag"
+    | "margin_interest_drag"
+
 export interface RunCompareMetricRowOut {
     run_id: string
     name?: string | null
@@ -275,7 +291,7 @@ export interface RunCompareMetricRowOut {
     base_currency?: string | null
     start_date?: string | null
     end_date?: string | null
-    delta_vs_base?: Record<string, number | null> | null
+    delta_vs_base?: Partial<Record<CompareMetricKey, number | null>> | null
     cagr?: number | null
     volatility?: number | null
     sharpe?: number | null
@@ -972,7 +988,60 @@ export async function preflightBacktest(config: any): Promise<PreflightResponse>
 // Additional Endpoints
 // ---------------------------------------------------------------------------
 
-export async function getRunExplain(runId: string): Promise<any> {
+/** Mirrors backend RunExplainOut. Keys of `drag_breakdown` and the values of
+ *  `dominant_drag` are fees | taxes | borrow | margin_interest -- NOT the *_drag
+ *  names used by RunMetric. Fields below `summary` arrive with the backend explain
+ *  upgrade and are optional until then. */
+export type DragKey = "fees" | "taxes" | "borrow" | "margin_interest"
+
+export interface RunExplainOut {
+    gross_return: number | null
+    net_return: number | null
+    total_drag: number | null
+    drag_breakdown: Partial<Record<DragKey, number>>
+    dominant_drag: DragKey | null
+    trade_count: number
+    turnover: number | null
+    tax_regime: string
+    summary: string
+    headline?: string | null
+    best_period?: { date_range?: string; return_pct?: number; description?: string } | null
+    worst_period?: { date_range?: string; return_pct?: number; description?: string } | null
+    largest_position?: { symbol?: string; weight_pct?: number } | null
+    largest_trade?: { symbol?: string; notional?: number } | null
+    largest_tax_event?: { symbol?: string; tax_due?: number } | null
+}
+
+export interface RunExposureBreakdown {
+    long_base: number
+    short_base: number
+    gross_base: number
+    net_base: number
+}
+
+export interface RunExposurePointOut {
+    date: string
+    long_base: number
+    short_base: number
+    gross_base: number
+    net_base: number
+    leverage: number | null
+    equity_native_by_currency: Record<string, number>
+    exposure_base_by_currency: Record<string, RunExposureBreakdown>
+    by_asset_class: Record<string, RunExposureBreakdown>
+    by_country: Record<string, RunExposureBreakdown>
+}
+
+export interface RunCostsSummaryOut {
+    commissions_native: Record<string, number>
+    slippage_native: Record<string, number>
+    fees_total_base: number
+    taxes_total_base: number
+    borrow_fees_base: number
+    margin_interest_base: number
+}
+
+export async function getRunExplain(runId: string): Promise<RunExplainOut | null> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/explain`, { cache: "no-store" })
         if (!res.ok) return null
@@ -983,20 +1052,21 @@ export async function getRunExplain(runId: string): Promise<any> {
     }
 }
 
-export async function getRunExposure(runId: string): Promise<any> {
+export async function getRunExposure(runId: string): Promise<RunExposurePointOut[]> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/exposure`, { cache: "no-store" })
-        if (!res.ok) return null
-        return await res.json()
+        if (!res.ok) return []
+        const data = await res.json()
+        return Array.isArray(data) ? data : []
     } catch (e) {
         devLog("[API] Error fetching run exposure:", e)
-        return null
+        return []
     }
 }
 
-export async function getRunCostsSummary(runId: string): Promise<any> {
+export async function getRunCostsSummary(runId: string): Promise<RunCostsSummaryOut | null> {
     try {
-        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/costs`, { cache: "no-store" })
+        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/costs_summary`, { cache: "no-store" })
         if (!res.ok) return null
         return await res.json()
     } catch (e) {

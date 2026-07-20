@@ -64,21 +64,23 @@ export function ExplainTab({ runId }: { runId: string }) {
         )
     }
 
-    // Extract drag breakdown values
+    // Drag keys must match RunExplainOut.drag_breakdown on the backend, which emits
+    // fees/taxes/borrow/margin_interest (already signed negative), not the *_drag
+    // names used by RunMetric.
     const breakdown = explainData.drag_breakdown || {}
-    const grossReturn = breakdown.gross_return ?? explainData.gross_return ?? 0
-    const feeDrag = breakdown.fee_drag ?? explainData.fee_drag ?? 0
-    const taxDrag = breakdown.tax_drag ?? explainData.tax_drag ?? 0
-    const borrowDrag = breakdown.borrow_drag ?? explainData.borrow_drag ?? 0
-    const marginDrag = breakdown.margin_interest_drag ?? explainData.margin_interest_drag ?? 0
-    const netReturn = breakdown.net_return ?? explainData.net_return ?? (grossReturn - feeDrag - taxDrag - borrowDrag - marginDrag)
+    const grossReturn = explainData.gross_return ?? 0
+    const feeDrag = breakdown.fees ?? 0
+    const taxDrag = breakdown.taxes ?? 0
+    const borrowDrag = breakdown.borrow ?? 0
+    const marginDrag = breakdown.margin_interest ?? 0
+    const netReturn = explainData.net_return ?? (grossReturn + feeDrag + taxDrag + borrowDrag + marginDrag)
 
     // Determine dominant drag
     const dragEntries = [
-        { key: "fee_drag", label: "Transaction Fees", value: Math.abs(feeDrag) },
-        { key: "tax_drag", label: "Tax Drag", value: Math.abs(taxDrag) },
-        { key: "borrow_drag", label: "Short Borrow Fees", value: Math.abs(borrowDrag) },
-        { key: "margin_interest_drag", label: "Margin Interest", value: Math.abs(marginDrag) },
+        { key: "fees", label: "Transaction Fees", value: Math.abs(feeDrag) },
+        { key: "taxes", label: "Tax Drag", value: Math.abs(taxDrag) },
+        { key: "borrow", label: "Short Borrow Fees", value: Math.abs(borrowDrag) },
+        { key: "margin_interest", label: "Margin Interest", value: Math.abs(marginDrag) },
     ]
     const maxDragVal = Math.max(...dragEntries.map(d => d.value))
     const dominantKey = explainData.dominant_drag || (maxDragVal > 0 ? dragEntries.find(d => d.value === maxDragVal)?.key : null)
@@ -88,8 +90,9 @@ export function ExplainTab({ runId }: { runId: string }) {
 
     return (
         <div className="space-y-6">
-            {/* Top Headline Banner */}
-            {explainData.headline && (
+            {/* Top Headline Banner. `headline` arrives once the backend explain
+                upgrade lands; until then fall back to the generated `summary`. */}
+            {(explainData.headline || explainData.summary) && (
                 <Card className="border border-primary/20 bg-gradient-to-r from-primary/5 via-card to-card shadow-sm">
                     <CardContent className="pt-6 flex items-start gap-4">
                         <div className="p-3 bg-primary/10 rounded-xl shrink-0 text-primary">
@@ -98,7 +101,7 @@ export function ExplainTab({ runId }: { runId: string }) {
                         <div>
                             <h3 className="font-semibold text-base text-foreground">Executive Performance Summary</h3>
                             <p className="text-sm text-foreground/90 mt-1 leading-relaxed">
-                                {explainData.headline}
+                                {explainData.headline || explainData.summary}
                             </p>
                         </div>
                     </CardContent>
@@ -136,10 +139,10 @@ export function ExplainTab({ runId }: { runId: string }) {
                             </div>
 
                             {/* Fee Drag */}
-                            <div className={`p-3 rounded-lg flex flex-col justify-between border ${dominantKey === 'fee_drag' ? 'bg-amber-500/15 border-amber-500/40 ring-1 ring-amber-500/30' : 'bg-amber-500/5 border-amber-500/15'}`}>
+                            <div className={`p-3 rounded-lg flex flex-col justify-between border ${dominantKey === 'fees' ? 'bg-amber-500/15 border-amber-500/40 ring-1 ring-amber-500/30' : 'bg-amber-500/5 border-amber-500/15'}`}>
                                 <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-semibold uppercase text-amber-600 dark:text-amber-400">Fees Drag</span>
-                                    {dominantKey === 'fee_drag' && <Flame className="w-3.5 h-3.5 text-amber-500" />}
+                                    {dominantKey === 'fees' && <Flame className="w-3.5 h-3.5 text-amber-500" />}
                                 </div>
                                 <div className="text-lg font-bold font-mono text-amber-700 dark:text-amber-300 mt-2">
                                     {formatDrag(feeDrag)}
@@ -150,10 +153,10 @@ export function ExplainTab({ runId }: { runId: string }) {
                             </div>
 
                             {/* Tax Drag */}
-                            <div className={`p-3 rounded-lg flex flex-col justify-between border ${dominantKey === 'tax_drag' ? 'bg-rose-500/15 border-rose-500/40 ring-1 ring-rose-500/30' : 'bg-rose-500/5 border-rose-500/15'}`}>
+                            <div className={`p-3 rounded-lg flex flex-col justify-between border ${dominantKey === 'taxes' ? 'bg-rose-500/15 border-rose-500/40 ring-1 ring-rose-500/30' : 'bg-rose-500/5 border-rose-500/15'}`}>
                                 <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-semibold uppercase text-rose-600 dark:text-rose-400">Tax Drag</span>
-                                    {dominantKey === 'tax_drag' && <Flame className="w-3.5 h-3.5 text-rose-500" />}
+                                    {dominantKey === 'taxes' && <Flame className="w-3.5 h-3.5 text-rose-500" />}
                                 </div>
                                 <div className="text-lg font-bold font-mono text-rose-700 dark:text-rose-300 mt-2">
                                     {formatDrag(taxDrag)}
@@ -164,10 +167,10 @@ export function ExplainTab({ runId }: { runId: string }) {
                             </div>
 
                             {/* Borrow Drag */}
-                            <div className={`p-3 rounded-lg flex flex-col justify-between border ${dominantKey === 'borrow_drag' ? 'bg-orange-500/15 border-orange-500/40 ring-1 ring-orange-500/30' : 'bg-orange-500/5 border-orange-500/15'}`}>
+                            <div className={`p-3 rounded-lg flex flex-col justify-between border ${dominantKey === 'borrow' ? 'bg-orange-500/15 border-orange-500/40 ring-1 ring-orange-500/30' : 'bg-orange-500/5 border-orange-500/15'}`}>
                                 <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-semibold uppercase text-orange-600 dark:text-orange-400">Borrow Drag</span>
-                                    {dominantKey === 'borrow_drag' && <Flame className="w-3.5 h-3.5 text-orange-500" />}
+                                    {dominantKey === 'borrow' && <Flame className="w-3.5 h-3.5 text-orange-500" />}
                                 </div>
                                 <div className="text-lg font-bold font-mono text-orange-700 dark:text-orange-300 mt-2">
                                     {formatDrag(borrowDrag)}
@@ -178,10 +181,10 @@ export function ExplainTab({ runId }: { runId: string }) {
                             </div>
 
                             {/* Margin Drag */}
-                            <div className={`p-3 rounded-lg flex flex-col justify-between border ${dominantKey === 'margin_interest_drag' ? 'bg-yellow-500/15 border-yellow-500/40 ring-1 ring-yellow-500/30' : 'bg-yellow-500/5 border-yellow-500/15'}`}>
+                            <div className={`p-3 rounded-lg flex flex-col justify-between border ${dominantKey === 'margin_interest' ? 'bg-yellow-500/15 border-yellow-500/40 ring-1 ring-yellow-500/30' : 'bg-yellow-500/5 border-yellow-500/15'}`}>
                                 <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-semibold uppercase text-yellow-600 dark:text-yellow-400">Margin Int.</span>
-                                    {dominantKey === 'margin_interest_drag' && <Flame className="w-3.5 h-3.5 text-yellow-500" />}
+                                    {dominantKey === 'margin_interest' && <Flame className="w-3.5 h-3.5 text-yellow-500" />}
                                 </div>
                                 <div className="text-lg font-bold font-mono text-yellow-700 dark:text-yellow-300 mt-2">
                                     {formatDrag(marginDrag)}
@@ -209,11 +212,11 @@ export function ExplainTab({ runId }: { runId: string }) {
             {/* Cost Drag Cards Grid with Dominant Drag Badge */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {/* Fee Drag Card */}
-                <Card className={`relative overflow-hidden ${dominantKey === 'fee_drag' ? 'border-amber-500 shadow-md bg-amber-500/5' : ''}`}>
+                <Card className={`relative overflow-hidden ${dominantKey === 'fees' ? 'border-amber-500 shadow-md bg-amber-500/5' : ''}`}>
                     <CardHeader className="pb-2">
                         <div className="flex items-center justify-between">
                             <CardTitle className="text-xs font-semibold uppercase text-muted-foreground">Transaction Fees</CardTitle>
-                            {dominantKey === 'fee_drag' && (
+                            {dominantKey === 'fees' && (
                                 <Badge variant="destructive" className="bg-amber-500 hover:bg-amber-600 text-[10px] py-0 px-1.5 gap-1">
                                     <Flame className="w-3 h-3" /> Dominant Drag
                                 </Badge>
@@ -231,11 +234,11 @@ export function ExplainTab({ runId }: { runId: string }) {
                 </Card>
 
                 {/* Tax Drag Card */}
-                <Card className={`relative overflow-hidden ${dominantKey === 'tax_drag' ? 'border-rose-500 shadow-md bg-rose-500/5' : ''}`}>
+                <Card className={`relative overflow-hidden ${dominantKey === 'taxes' ? 'border-rose-500 shadow-md bg-rose-500/5' : ''}`}>
                     <CardHeader className="pb-2">
                         <div className="flex items-center justify-between">
                             <CardTitle className="text-xs font-semibold uppercase text-muted-foreground">Capital Gains Tax</CardTitle>
-                            {dominantKey === 'tax_drag' && (
+                            {dominantKey === 'taxes' && (
                                 <Badge variant="destructive" className="bg-rose-500 hover:bg-rose-600 text-[10px] py-0 px-1.5 gap-1">
                                     <Flame className="w-3 h-3" /> Dominant Drag
                                 </Badge>
@@ -253,11 +256,11 @@ export function ExplainTab({ runId }: { runId: string }) {
                 </Card>
 
                 {/* Short Borrow Drag Card */}
-                <Card className={`relative overflow-hidden ${dominantKey === 'borrow_drag' ? 'border-orange-500 shadow-md bg-orange-500/5' : ''}`}>
+                <Card className={`relative overflow-hidden ${dominantKey === 'borrow' ? 'border-orange-500 shadow-md bg-orange-500/5' : ''}`}>
                     <CardHeader className="pb-2">
                         <div className="flex items-center justify-between">
                             <CardTitle className="text-xs font-semibold uppercase text-muted-foreground">Short Borrow Fees</CardTitle>
-                            {dominantKey === 'borrow_drag' && (
+                            {dominantKey === 'borrow' && (
                                 <Badge variant="destructive" className="bg-orange-500 hover:bg-orange-600 text-[10px] py-0 px-1.5 gap-1">
                                     <Flame className="w-3 h-3" /> Dominant Drag
                                 </Badge>
@@ -275,11 +278,11 @@ export function ExplainTab({ runId }: { runId: string }) {
                 </Card>
 
                 {/* Margin Interest Drag Card */}
-                <Card className={`relative overflow-hidden ${dominantKey === 'margin_interest_drag' ? 'border-yellow-500 shadow-md bg-yellow-500/5' : ''}`}>
+                <Card className={`relative overflow-hidden ${dominantKey === 'margin_interest' ? 'border-yellow-500 shadow-md bg-yellow-500/5' : ''}`}>
                     <CardHeader className="pb-2">
                         <div className="flex items-center justify-between">
                             <CardTitle className="text-xs font-semibold uppercase text-muted-foreground">Margin Interest</CardTitle>
-                            {dominantKey === 'margin_interest_drag' && (
+                            {dominantKey === 'margin_interest' && (
                                 <Badge variant="destructive" className="bg-yellow-500 hover:bg-yellow-600 text-[10px] py-0 px-1.5 gap-1">
                                     <Flame className="w-3 h-3" /> Dominant Drag
                                 </Badge>
