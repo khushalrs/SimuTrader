@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from app.api.routes import runs as runs_routes
 from app.api.routes.backtests import get_backtest_trades, router as backtests_router
 from app.api.routes.runs import (
     explain_run,
@@ -145,20 +146,18 @@ class _FakeDB:
                 return _FakeQuery(scalar_value=self.latest_position_date)
         if len(entities) == 2 and entities[0] is RunOrder.order_id and entities[1] is RunOrder.side:
             return _FakeQuery(all_values=self.order_sides)
-        if len(entities) == 4 and entities[0] is RunFill.symbol:
-            totals_by_symbol: dict[tuple[str, str], tuple[float, float]] = {}
+        if len(entities) == 3 and entities[0] is RunFill.symbol:
+            totals_by_symbol: dict[str, tuple[float, float]] = {}
             for fill in self.fills:
-                kind = str((getattr(fill, "meta", None) or {}).get("kind") or "")
-                key = (fill.symbol, kind)
-                commissions, slippage = totals_by_symbol.get(key, (0.0, 0.0))
-                totals_by_symbol[key] = (
+                commissions, slippage = totals_by_symbol.get(fill.symbol, (0.0, 0.0))
+                totals_by_symbol[fill.symbol] = (
                     commissions + float(getattr(fill, "commission_native", 0.0) or 0.0),
                     slippage + float(getattr(fill, "slippage_native", 0.0) or 0.0),
                 )
             return _FakeQuery(
                 all_values=[
-                    (symbol, kind, commissions, slippage)
-                    for (symbol, kind), (commissions, slippage) in totals_by_symbol.items()
+                    (symbol, commissions, slippage)
+                    for symbol, (commissions, slippage) in totals_by_symbol.items()
                 ]
             )
         raise AssertionError(f"Unexpected query entities: {entities}")
@@ -539,9 +538,69 @@ def test_explanation_endpoint_returns_stable_keys():
     assert result.largest_position.symbol == "AAPL"
     assert result.largest_trade.symbol == "AAPL"
     assert "42.00% gross and 35.00% net" in result.summary
+    assert "Taxes were the largest drag." in result.summary
     assert result.largest_trade.side == "BUY"
     assert result.largest_trade.notional_base == pytest.approx(5000.0)
     assert result.largest_tax_event.tax_due_base == pytest.approx(200.0)
 
     metrics_result = get_run_metrics(run_id=uuid4(), actor=actor, db=db)
     assert metrics_result.explanation == result.summary
+
+
+def test_html_report_is_self_contained_and_uses_json_report(monkeypatch):
+    run_id = uuid4()
+    monkeypatch.setattr(
+        runs_routes,
+        "get_run_report_json",
+        lambda **_kwargs: {
+            "run": {
+                "run_id": str(run_id),
+                "name": "Offline report",
+                "status": "SUCCEEDED",
+                "data_snapshot_id": "snapshot-1",
+                "seed": 42,
+                "config_snapshot": {
+                    "strategy": "BUY_AND_HOLD",
+                    "base_currency": "USD",
+                    "backtest": {
+                        "start_date": "2024-01-01",
+                        "end_date": "2024-12-31",
+                    },
+                },
+            },
+            "metrics": {
+                "net_return": 0.1234,
+                "cagr": 0.1,
+                "sharpe": 1.2,
+                "max_drawdown": -0.08,
+            },
+            "explanation": {
+                "headline": "Net return 12.34%.",
+                "summary": "The run earned 12.34% net.",
+                "drag_breakdown": {"fees": -0.002},
+            },
+            "costs": {
+                "fees_total_base": 20.0,
+                "taxes_total_base": 10.0,
+                "borrow_fees_base": 0.0,
+                "margin_interest_base": 0.0,
+            },
+            "taxes": {"event_count": 1},
+            "latest_equity": {"equity_base": 11234.0},
+        },
+    )
+
+    response = runs_routes.get_run_report_html(
+        run_id=run_id,
+        actor=ActorContext(tier=ActorTier.GUEST, actor_key="guest:test"),
+        db=object(),
+    )
+    html = response.body.decode()
+
+    assert response.media_type == "text/html"
+    assert "Offline report" in html
+    assert "12.34%" in html
+    assert "<style>" in html
+    assert "<svg" in html
+    assert 'href="http' not in html and 'src="http' not in html
+    assert "<link" not in html and "<script" not in html

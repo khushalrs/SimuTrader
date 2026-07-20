@@ -106,6 +106,28 @@ def test_execution_block_maps_into_legacy_commission_fields() -> None:
     assert resolved["fill_price_policy"] == "CLOSE"
 
 
+def test_execution_block_overrides_existing_engine_cost_fields() -> None:
+    config = _base_config()
+    config["commission"] = {"model": "BPS", "bps": 5, "min_fee_native": 2}
+    config["slippage"] = {"model": "BPS", "bps": 2}
+    config["execution"] = {
+        "commission": {"bps": 500},
+        "slippage": {"bps": 75},
+    }
+
+    resolved = validate_and_resolve_config(config)
+
+    assert resolved["commission"] == {
+        "model": "BPS",
+        "bps": pytest.approx(500),
+        "min_fee_native": pytest.approx(2),
+    }
+    assert resolved["slippage"] == {
+        "model": "BPS",
+        "bps": pytest.approx(75),
+    }
+
+
 def test_config_sanitizes_control_characters() -> None:
     config = _base_config()
     config["universe"]["instruments"][0]["symbol"] = "AAPL\x00\x01"

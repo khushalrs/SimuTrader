@@ -53,6 +53,25 @@ def test_scenario_applies_dotted_patch_without_mutating_parent() -> None:
     }
 
 
+def test_scenario_execution_cost_patch_updates_engine_fields() -> None:
+    config = _config()
+    config["commission"] = {"model": "BPS", "bps": 5, "min_fee_native": 1}
+    config["slippage"] = {"model": "BPS", "bps": 2}
+
+    result = build_scenario_config(
+        config,
+        uuid4(),
+        {
+            "execution.commission.bps": 500,
+            "execution.slippage.bps": 125,
+        },
+    )
+
+    assert result["commission"]["bps"] == pytest.approx(500)
+    assert result["commission"]["min_fee_native"] == pytest.approx(1)
+    assert result["slippage"]["bps"] == pytest.approx(125)
+
+
 def test_clone_replaces_inherited_lineage_with_direct_parent() -> None:
     config = _config()
     config["_scenario"] = {"parent_run_id": str(uuid4()), "patch": {"tax.regime": "US"}}

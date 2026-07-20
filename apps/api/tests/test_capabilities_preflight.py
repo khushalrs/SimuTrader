@@ -119,6 +119,18 @@ def test_strategy_schemas_exposes_runtime_parameter_contracts():
         "MEAN_REVERSION",
     }
     for schema in payload.values():
+        assert set(schema) == {
+            "required_params",
+            "optional_params",
+            "defaults",
+            "param_types",
+            "description",
+            "supported_allocation_modes",
+            "supported_asset_classes",
+            "supports_shorting",
+            "supports_margin",
+            "supports_mixed_currency",
+        }
         assert set(schema["required_params"] + schema["optional_params"]) == set(
             schema["param_types"]
         )
@@ -152,6 +164,14 @@ def test_strategy_schemas_exposes_runtime_parameter_contracts():
     mean_reversion = payload["MEAN_REVERSION"]
     assert mean_reversion["defaults"] == {"rebalance_frequency": "DAILY"}
     assert mean_reversion["param_types"]["hold_days"]["min"] == 1
+
+    openapi = app.openapi()
+    response_schema = openapi["paths"]["/strategy-schemas"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+    assert response_schema["additionalProperties"]["$ref"].endswith(
+        "/StrategySchemaOut"
+    )
 
 
 def test_mixed_us_india_buy_and_hold_preflights_cleanly(tmp_path, monkeypatch):
