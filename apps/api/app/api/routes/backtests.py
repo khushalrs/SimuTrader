@@ -32,8 +32,6 @@ from app.schemas.backtests import (
     RunNormalizedEquityPointOut,
     RunTaxesOut,
     RunTaxEventOut,
-    PreflightRequest,
-    PreflightOut,
 )
 from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
@@ -685,37 +683,3 @@ def get_backtest(
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return _to_backtest_out(run)
-
-
-@router.post("/preflight", response_model=PreflightOut)
-def preflight_backtest(
-    payload: PreflightRequest,
-    actor: ActorContext = Depends(get_current_actor),
-) -> PreflightOut:
-    try:
-        resolved = validate_and_resolve_config(payload.config_snapshot)
-        warnings = []
-
-        # Extra warning heuristics
-        strategy = str(resolved.get("strategy") or "").upper()
-        if strategy == "MOMENTUM":
-            universe = resolved.get("universe") or {}
-            instruments = universe.get("instruments") or []
-            asset_classes = {inst.get("asset_class") for inst in instruments}
-            if len(asset_classes) > 1:
-                warnings.append(
-                    "Momentum currently supports single-currency universes. "
-                    "Your universe contains assets from multiple classes/currencies."
-                )
-
-        return PreflightOut(
-            status="green" if not warnings else "yellow",
-            errors=[],
-            warnings=warnings,
-        )
-    except ValueError as exc:
-        return PreflightOut(
-            status="red",
-            errors=[str(exc)],
-            warnings=[],
-        )

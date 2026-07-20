@@ -129,6 +129,18 @@ def test_backtest_preflight_route_accepts_raw_config(tmp_path, monkeypatch):
     assert payload["ok"] is True
     assert payload["required_fx_pairs"] == ["USDINR"]
 
+    operation = app.openapi()["paths"]["/backtests/preflight"]["post"]
+    assert operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/BacktestPreflightRequest"},
+            {"additionalProperties": True, "type": "object"},
+        ],
+        "title": "Payload",
+    }
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/BacktestPreflightOut"
+    }
+
 
 def test_backtest_preflight_route_is_rate_limited(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "mixed_route_limited.duckdb"

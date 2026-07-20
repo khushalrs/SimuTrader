@@ -132,9 +132,12 @@ class RunFillOut(BaseModel):
 
 
 class RunCostsSummaryOut(BaseModel):
-    commissions: float
-    slippage: float
-    total_costs: float
+    commissions_native: Dict[str, float] = Field(default_factory=dict)
+    slippage_native: Dict[str, float] = Field(default_factory=dict)
+    fees_total_base: float
+    taxes_total_base: float
+    borrow_fees_base: float
+    margin_interest_base: float
 
 
 class RunExplainOut(BaseModel):
@@ -208,13 +211,3 @@ class RunCompareOut(BaseModel):
     run_ids: list[UUID]
     metric_rows: list[RunCompareMetricRowOut] = Field(default_factory=list)
     equity_series: list[RunCompareSeriesOut] = Field(default_factory=list)
-
-
-class PreflightRequest(BaseModel):
-    config_snapshot: Dict[str, Any]
-
-
-class PreflightOut(BaseModel):
-    status: str
-    errors: list[str]
-    warnings: list[str]

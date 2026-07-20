@@ -31,6 +31,9 @@ class _FakeQuery:
     def order_by(self, *args, **kwargs):  # noqa: ANN002, ANN003
         return self
 
+    def group_by(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        return self
+
     def limit(self, value: int):
         self.limit_value = value
         return self
@@ -71,6 +74,8 @@ class _FakeDB:
         metrics: object | None = None,
         equity_rows: list | None = None,
         tax_rows: list | None = None,
+        run_config: dict | None = None,
+        run_status: str = "SUCCEEDED",
     ):
         self.run_exists = run_exists
         self.latest_position_date = latest_position_date
@@ -81,6 +86,8 @@ class _FakeDB:
         self.metrics = metrics
         self.equity_rows = equity_rows or []
         self.tax_rows = tax_rows or []
+        self.run_config = run_config or {"tax": {"regime": "US"}}
+        self.run_status = run_status
 
     def query(self, *entities):
         if len(entities) == 1:
@@ -94,8 +101,8 @@ class _FakeDB:
                     SimpleNamespace(
                         run_id=uuid4(),
                         actor_key="guest:test",
-                        status="SUCCEEDED",
-                        config_snapshot={"tax": {"regime": "US"}},
+                        status=self.run_status,
+                        config_snapshot=self.run_config,
                     )
                     if self.run_exists
                     else None
@@ -118,10 +125,20 @@ class _FakeDB:
                 return _FakeQuery(scalar_value=self.latest_position_date)
         if len(entities) == 2 and entities[0] is RunOrder.order_id and entities[1] is RunOrder.side:
             return _FakeQuery(all_values=self.order_sides)
-        if len(entities) == 2:
-            commissions = sum(float(getattr(fill, "commission_native", 0.0) or 0.0) for fill in self.fills)
-            slippage = sum(float(getattr(fill, "slippage_native", 0.0) or 0.0) for fill in self.fills)
-            return _FakeQuery(first_value=(commissions, slippage))
+        if len(entities) == 3 and entities[0] is RunFill.symbol:
+            totals_by_symbol: dict[str, tuple[float, float]] = {}
+            for fill in self.fills:
+                commissions, slippage = totals_by_symbol.get(fill.symbol, (0.0, 0.0))
+                totals_by_symbol[fill.symbol] = (
+                    commissions + float(getattr(fill, "commission_native", 0.0) or 0.0),
+                    slippage + float(getattr(fill, "slippage_native", 0.0) or 0.0),
+                )
+            return _FakeQuery(
+                all_values=[
+                    (symbol, commissions, slippage)
+                    for symbol, (commissions, slippage) in totals_by_symbol.items()
+                ]
+            )
         raise AssertionError(f"Unexpected query entities: {entities}")
 
 
@@ -242,9 +259,17 @@ def test_get_backtest_trades_rejects_unbounded_pagination():
     assert offset_res.status_code == 422
 
 
-def test_cost_summary_uses_persisted_cumulative_costs():
+def test_cost_summary_groups_native_costs_and_uses_persisted_cumulative_costs():
     latest = date(2024, 1, 5)
     db = _FakeDB(
+        run_config={
+            "universe": {
+                "instruments": [
+                    {"symbol": "MSFT", "asset_class": "US_EQUITY"},
+                    {"symbol": "RELIANCE", "asset_class": "IN_EQUITY"},
+                ]
+            }
+        },
         fills=[
             SimpleNamespace(
                 order_id=None,
@@ -255,12 +280,25 @@ def test_cost_summary_uses_persisted_cumulative_costs():
                 notional_native=300.0,
                 commission_native=1.2,
                 slippage_native=0.3,
-            )
+            ),
+            SimpleNamespace(
+                order_id=None,
+                date=date(2024, 1, 4),
+                symbol="RELIANCE",
+                qty=1.0,
+                price_native=2500.0,
+                notional_native=2500.0,
+                commission_native=12.0,
+                slippage_native=3.0,
+            ),
         ],
         equity_rows=[
             SimpleNamespace(
                 date=latest,
                 fees_cum_base=9.5,
+                taxes_cum_base=4.25,
+                borrow_fees_cum_base=1.5,
+                margin_interest_cum_base=0.75,
             )
         ],
     )
@@ -268,9 +306,28 @@ def test_cost_summary_uses_persisted_cumulative_costs():
 
     result = get_run_costs_summary(run_id=uuid4(), actor=actor, db=db)
 
-    assert result.commissions == pytest.approx(1.2)
-    assert result.slippage == pytest.approx(0.3)
-    assert result.total_costs == pytest.approx(9.5)
+    assert result.commissions_native == pytest.approx({"USD": 1.2, "INR": 12.0})
+    assert result.slippage_native == pytest.approx({"USD": 0.3, "INR": 3.0})
+    assert result.fees_total_base == pytest.approx(9.5)
+    assert result.taxes_total_base == pytest.approx(4.25)
+    assert result.borrow_fees_base == pytest.approx(1.5)
+    assert result.margin_interest_base == pytest.approx(0.75)
+
+
+def test_cost_summary_returns_zero_contract_for_non_terminal_run():
+    db = _FakeDB(run_status="RUNNING")
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+
+    result = get_run_costs_summary(run_id=uuid4(), actor=actor, db=db)
+
+    assert result.model_dump() == {
+        "commissions_native": {},
+        "slippage_native": {},
+        "fees_total_base": 0.0,
+        "taxes_total_base": 0.0,
+        "borrow_fees_base": 0.0,
+        "margin_interest_base": 0.0,
+    }
 
 
 def test_explanation_endpoint_returns_stable_keys():

@@ -19,6 +19,7 @@ from app.models.backtests import (
     RunTaxEvent,
 )
 from app.security import ActorContext, get_current_actor
+from app.services.config_validation import _implied_currency
 from app.services.redis_store import (
     get_cached_run_status,
     get_cached_top_holdings,
@@ -443,7 +444,14 @@ def get_run_costs_summary(
 ) -> RunCostsSummaryOut:
     run = _get_actor_run(run_id, actor, db)
     if not _is_terminal_status(run.status):
-        return RunCostsSummaryOut(commissions=0.0, slippage=0.0, total_costs=0.0)
+        return RunCostsSummaryOut(
+            commissions_native={},
+            slippage_native={},
+            fees_total_base=0.0,
+            taxes_total_base=0.0,
+            borrow_fees_base=0.0,
+            margin_interest_base=0.0,
+        )
     if start and end and end < start:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -451,6 +459,7 @@ def get_run_costs_summary(
         )
 
     fill_rows = db.query(
+        RunFill.symbol,
         func.coalesce(func.sum(RunFill.commission_native), 0.0),
         func.coalesce(func.sum(RunFill.slippage_native), 0.0),
     ).filter(RunFill.run_id == run_id)
@@ -458,7 +467,27 @@ def get_run_costs_summary(
         fill_rows = fill_rows.filter(RunFill.date >= start)
     if end:
         fill_rows = fill_rows.filter(RunFill.date <= end)
-    commissions, slippage = fill_rows.first()
+    fill_totals_by_symbol = fill_rows.group_by(RunFill.symbol).all()
+
+    instruments = ((run.config_snapshot or {}).get("universe") or {}).get("instruments") or []
+    symbol_currencies = {
+        str(instrument.get("symbol") or "").upper(): _implied_currency(
+            str(instrument.get("asset_class") or "")
+        )
+        for instrument in instruments
+    }
+    commissions_native: dict[str, float] = {}
+    slippage_native: dict[str, float] = {}
+    for symbol, commissions, slippage in fill_totals_by_symbol:
+        currency = symbol_currencies.get(str(symbol).upper())
+        if currency is None:
+            continue
+        commissions_native[currency] = commissions_native.get(currency, 0.0) + float(
+            commissions or 0.0
+        )
+        slippage_native[currency] = slippage_native.get(currency, 0.0) + float(
+            slippage or 0.0
+        )
 
     equity_rows = db.query(RunDailyEquity).filter(RunDailyEquity.run_id == run_id)
     if start:
@@ -466,11 +495,15 @@ def get_run_costs_summary(
     if end:
         equity_rows = equity_rows.filter(RunDailyEquity.date <= end)
     latest_equity = equity_rows.order_by(RunDailyEquity.date.desc()).first()
-    total_costs = float(latest_equity.fees_cum_base if latest_equity else 0.0)
     return RunCostsSummaryOut(
-        commissions=float(commissions or 0.0),
-        slippage=float(slippage or 0.0),
-        total_costs=total_costs,
+        commissions_native=commissions_native,
+        slippage_native=slippage_native,
+        fees_total_base=float(latest_equity.fees_cum_base if latest_equity else 0.0),
+        taxes_total_base=float(latest_equity.taxes_cum_base if latest_equity else 0.0),
+        borrow_fees_base=float(latest_equity.borrow_fees_cum_base if latest_equity else 0.0),
+        margin_interest_base=float(
+            latest_equity.margin_interest_cum_base if latest_equity else 0.0
+        ),
     )
 
 
