@@ -24,6 +24,18 @@ class RunScenarioRequest(BaseModel):
     patch: Dict[str, Any]
 
 
+class PlaygroundPresetOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    strategy_type: str
+    base_currency: str
+    symbols: list[str] = Field(default_factory=list)
+    asset_classes: list[str] = Field(default_factory=list)
+    data_snapshot_id: str
+    config_snapshot: Dict[str, Any]
+
+
 class BacktestPreflightRequest(BaseModel):
     config_snapshot: Dict[str, Any]
 

@@ -6,9 +6,53 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.playground.presets import GLOBAL_PRESET_DEFINITIONS
 from app.playground.service import enqueue_global_preset_run
-from app.schemas.backtests import BacktestOut
+from app.schemas.backtests import BacktestOut, PlaygroundPresetOut
 
 router = APIRouter(prefix="/playground", tags=["playground"])
+
+
+def _preset_description(strategy_type: str) -> str:
+    descriptions = {
+        "BUY_AND_HOLD": "Long-horizon portfolio compounding with explicit execution costs.",
+        "FIXED_WEIGHT_REBALANCE": "Scheduled target-weight rebalancing with financing and risk controls.",
+        "DCA": "Incremental cash deployment without rebalancing existing holdings.",
+        "MOMENTUM": "Top-k relative-strength rotation with turnover and execution friction.",
+        "MEAN_REVERSION": "Counter-trend entries with threshold or holding-period exits.",
+    }
+    return descriptions.get(strategy_type, "Preconfigured backtest scenario.")
+
+
+@router.get("/presets", response_model=list[PlaygroundPresetOut])
+def list_playground_presets() -> list[PlaygroundPresetOut]:
+    presets: list[PlaygroundPresetOut] = []
+    for preset_id, definition in GLOBAL_PRESET_DEFINITIONS.items():
+        config = definition["config_snapshot"]
+        strategy = config.get("strategy") or "BUY_AND_HOLD"
+        strategy_type = (
+            str(strategy.get("type") or "BUY_AND_HOLD").upper()
+            if isinstance(strategy, dict)
+            else str(strategy).upper()
+        )
+        instruments = ((config.get("universe") or {}).get("instruments") or [])
+        presets.append(
+            PlaygroundPresetOut(
+                id=preset_id,
+                name=str(definition["name"]),
+                description=_preset_description(strategy_type),
+                strategy_type=strategy_type,
+                base_currency=str(config.get("base_currency") or "USD").upper(),
+                symbols=[str(instrument.get("symbol") or "") for instrument in instruments],
+                asset_classes=sorted(
+                    {
+                        str(instrument.get("asset_class") or "UNKNOWN")
+                        for instrument in instruments
+                    }
+                ),
+                data_snapshot_id=str(definition["data_snapshot_id"]),
+                config_snapshot=config,
+            )
+        )
+    return presets
 
 
 def _to_backtest_out(run) -> BacktestOut:
@@ -45,4 +89,3 @@ def get_or_create_global_preset_run(
     else:
         response.status_code = status.HTTP_202_ACCEPTED
     return _to_backtest_out(run)
-

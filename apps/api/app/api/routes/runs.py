@@ -259,6 +259,9 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
         for fill in fill_rows
         if str((getattr(fill, "meta", None) or {}).get("kind") or "").upper()
         != "FX_SWEEP"
+        and getattr(fill, "date", None) is not None
+        and getattr(fill, "symbol", None)
+        and getattr(fill, "qty", None) is not None
     ]
     largest_trade = None
     if security_fills:
@@ -271,9 +274,10 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
             )
             for instrument in instruments
         }
-        fill_dates = [fill.date for fill in security_fills]
+        fill_dates = [getattr(fill, "date") for fill in security_fills]
         needs_fx = any(
-            symbol_currencies.get(str(fill.symbol).upper()) not in {None, base_currency}
+            symbol_currencies.get(str(getattr(fill, "symbol")).upper())
+            not in {None, base_currency}
             for fill in security_fills
         )
         fx_rates = _usd_inr_rates(min(fill_dates), max(fill_dates)) if needs_fx else {}
@@ -281,11 +285,12 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
         ordered_fx_rates = sorted(fx_rates.items())
         fx_index = 0
         ranked_fills: list[tuple[float, RunFill, str | None, float | None]] = []
-        for fill in sorted(security_fills, key=lambda row: row.date):
-            while fx_index < len(ordered_fx_rates) and ordered_fx_rates[fx_index][0] <= fill.date:
+        for fill in sorted(security_fills, key=lambda row: getattr(row, "date")):
+            fill_date = getattr(fill, "date")
+            while fx_index < len(ordered_fx_rates) and ordered_fx_rates[fx_index][0] <= fill_date:
                 last_fx = ordered_fx_rates[fx_index][1]
                 fx_index += 1
-            currency = symbol_currencies.get(str(fill.symbol).upper())
+            currency = symbol_currencies.get(str(getattr(fill, "symbol")).upper())
             notional_native = abs(float(getattr(fill, "notional_native", 0.0) or 0.0))
             notional_base = _native_notional_to_base(
                 notional_native, currency, base_currency, last_fx
@@ -296,19 +301,22 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
             ranked_fills, key=lambda item: item[0]
         )
         order_side = None
-        if largest_fill.order_id is not None:
+        largest_order_id = getattr(largest_fill, "order_id", None)
+        if largest_order_id is not None:
             side_row = (
                 db.query(RunOrder.order_id, RunOrder.side)
-                .filter(RunOrder.order_id == largest_fill.order_id)
+                .filter(RunOrder.order_id == largest_order_id)
                 .first()
             )
             order_side = side_row[1] if side_row else None
         largest_trade = {
-            "date": largest_fill.date,
-            "symbol": largest_fill.symbol,
+            "date": getattr(largest_fill, "date"),
+            "symbol": getattr(largest_fill, "symbol"),
             "side": order_side,
-            "qty": float(largest_fill.qty),
-            "notional_native": float(largest_fill.notional_native),
+            "qty": float(getattr(largest_fill, "qty")),
+            "notional_native": float(
+                getattr(largest_fill, "notional_native", 0.0) or 0.0
+            ),
             "currency": trade_currency,
             "notional_base": trade_notional_base,
         }
@@ -326,7 +334,7 @@ def _run_explanation(run: BacktestRun, db: Session) -> RunExplainOut:
         }
 
     def pct(value: float | None) -> str:
-        return "unknown" if value is None else f"{value * 100:.0f}%"
+        return "unknown" if value is None else f"{value * 100:.2f}%"
 
     if dominant_drag:
         headline = (
