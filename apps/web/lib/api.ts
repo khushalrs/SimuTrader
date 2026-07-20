@@ -899,6 +899,16 @@ export interface BacktestPreflightOut {
     warnings: string[]
     checks?: BacktestPreflightCheck[]
     meta?: Record<string, any>
+    strategy_capability?: Record<string, any>
+    estimated_trading_days?: number | null
+    estimated_symbols?: number
+    estimated_rebalance_count?: number | null
+    risk_flags?: Array<{
+        code: string
+        severity: "error" | "warning" | string
+        message: string
+        details: Record<string, any>
+    }>
 }
 
 export type PreflightResponse = BacktestPreflightOut
@@ -940,7 +950,12 @@ export async function preflightBacktest(config: any): Promise<PreflightResponse>
             errors: data.errors || [],
             warnings: data.warnings || [],
             checks: data.checks || [],
-            meta: data.meta
+            meta: data.meta,
+            strategy_capability: data.strategy_capability || {},
+            estimated_trading_days: data.estimated_trading_days ?? null,
+            estimated_symbols: data.estimated_symbols ?? 0,
+            estimated_rebalance_count: data.estimated_rebalance_count ?? null,
+            risk_flags: data.risk_flags || []
         }
     } catch (e: any) {
         return {
