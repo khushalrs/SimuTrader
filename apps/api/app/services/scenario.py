@@ -7,6 +7,26 @@ from uuid import UUID
 from app.services.config_validation import validate_and_resolve_config
 
 
+_CANONICAL_PATCH_PATHS = {
+    "execution.commission.model": "commission.model",
+    "execution.commission.bps": "commission.bps",
+    "execution.commission.min_fee": "commission.min_fee_native",
+    "execution.slippage.model": "slippage.model",
+    "execution.slippage.bps": "slippage.bps",
+    "execution.fill_price": "fill_price_policy",
+}
+
+
+def _strip_inherited_execution_aliases(config: dict[str, Any]) -> None:
+    execution = config.get("execution")
+    if not isinstance(execution, dict):
+        return
+    for alias in ("commission", "slippage", "fill_price"):
+        execution.pop(alias, None)
+    if not execution:
+        config.pop("execution", None)
+
+
 def _apply_dotted_path(config: dict[str, Any], path: str, value: Any) -> None:
     parts = [part.strip() for part in str(path or "").split(".")]
     if not parts or any(not part for part in parts):
@@ -35,8 +55,11 @@ def build_scenario_config(
         raise ValueError("Scenario patch must be an object.")
     config = deepcopy(config_snapshot or {})
     config.pop("_scenario", None)
+    _strip_inherited_execution_aliases(config)
     for path, value in patch.items():
-        _apply_dotted_path(config, str(path), value)
+        requested_path = str(path)
+        canonical_path = _CANONICAL_PATCH_PATHS.get(requested_path, requested_path)
+        _apply_dotted_path(config, canonical_path, value)
     resolved = validate_and_resolve_config(config)
     resolved["_scenario"] = {
         "parent_run_id": str(parent_run_id),

@@ -6,7 +6,7 @@ import duckdb
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.routes.data import router as data_router
+from app.api.routes import data as data_routes
 
 
 def _seed_data(path: str) -> None:
@@ -48,7 +48,8 @@ def test_data_observability_endpoints(tmp_path, monkeypatch):
     monkeypatch.setenv("DUCKDB_PATH", str(path))
     monkeypatch.setenv("DUCKDB_READ_ONLY", "true")
     app = FastAPI()
-    app.include_router(data_router)
+    data_routes._data_cache.clear()
+    app.include_router(data_routes.router)
     client = TestClient(app)
 
     snapshot = client.get("/data/snapshot")
@@ -66,13 +67,21 @@ def test_data_observability_endpoints(tmp_path, monkeypatch):
     assert snapshot.json()["symbol_count"] == 1
     assert snapshot.json()["row_count"] == 4
     assert coverage.status_code == 200
-    assert {row["symbol"]: row["rows"] for row in coverage.json()} == {
+    coverage_by_symbol = {row["symbol"]: row for row in coverage.json()}
+    assert {symbol: row["rows"] for symbol, row in coverage_by_symbol.items()} == {
         "AAPL": 4,
         "MISSING": 0,
     }
+    assert coverage_by_symbol["AAPL"]["asset_class"] == "US_EQUITY"
+    assert coverage_by_symbol["AAPL"]["exchange"] == "NASDAQ"
     assert quality.status_code == 200
     assert quality.json()[0]["quality_score"] == 1.0
     assert missing.status_code == 200
     assert missing.json() == [
         {"symbol": "AAPL", "asset_class": "US_EQUITY", "date": "2024-01-03"}
     ]
+
+    cached_quality = client.get("/data/quality", params={"symbols": "AAPL"})
+    assert quality.headers["X-Data-Cache"] == "MISS"
+    assert cached_quality.headers["X-Data-Cache"] == "HIT"
+    assert cached_quality.json() == quality.json()
