@@ -269,10 +269,19 @@ export interface RunTaxesOut {
 
 export interface RunCompareMetricRowOut {
     run_id: string
+    name?: string | null
+    strategy_type?: string | null
+    tax_regime?: string | null
+    base_currency?: string | null
+    start_date?: string | null
+    end_date?: string | null
+    delta_vs_base?: Record<string, number | null> | null
     cagr?: number | null
     volatility?: number | null
     sharpe?: number | null
+    sortino?: number | null
     max_drawdown?: number | null
+    turnover?: number | null
     gross_return?: number | null
     net_return?: number | null
     fee_drag?: number | null
@@ -735,6 +744,12 @@ export async function getRunFills(runId: string, start?: string, end?: string, l
         if (end) {
             url.searchParams.append("end", end)
         }
+        if (limit !== undefined && limit !== null) {
+            url.searchParams.append("limit", limit.toString())
+        }
+        if (offset !== undefined && offset !== null) {
+            url.searchParams.append("offset", offset.toString())
+        }
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
             devLog(`[API] Failed to fetch fills: ${res.status} ${res.statusText}`)
@@ -786,19 +801,37 @@ export async function searchAssets(query: string): Promise<AssetOut[]> {
     }
 }
 
-export async function getRuns(): Promise<Partial<RunData>[]> {
+export async function getRuns(): Promise<RunData[]> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/backtests`, { cache: "no-store" })
         if (!res.ok) {
             devLog(`[API] Failed to fetch runs: ${res.status} ${res.statusText}`)
             return []
         }
-        const parsed = RunListSchema.safeParse(await res.json())
-        if (!parsed.success) {
-            devLog("[API] getRuns: unexpected response shape", parsed.error.format())
-            return []
-        }
-        return parsed.data as Partial<RunData>[]
+        const raw = await res.json()
+        if (!Array.isArray(raw)) return []
+        return raw.map((item: any) => {
+            const id = item.run_id || item.id
+            const title = item.name?.trim() || item.title?.trim() || `Run ${id ? id.slice(0, 8) : "Untitled"}`
+            const dateSource = item.finished_at || item.started_at || item.created_at
+            const date = dateSource ? `Ran on ${formatDateLabel(dateSource)}` : item.date || ""
+            return {
+                id,
+                title,
+                name: item.name || title,
+                run_id: id,
+                date,
+                tags: [
+                    item.status,
+                    item.data_snapshot_id ? `Snapshot: ${item.data_snapshot_id}` : "",
+                    item.seed !== undefined ? `Seed: ${item.seed}` : "",
+                ].filter(Boolean),
+                metrics: mapMetrics(null),
+                status: item.status,
+                config_snapshot: item.config_snapshot,
+                created_at: item.created_at,
+            }
+        })
     } catch (e) {
         devLog("[API] Error fetching runs:", e)
         return []
@@ -851,11 +884,23 @@ export async function getStrategy(id: string): Promise<StrategyOut | null> {
     }
 }
 
-export interface PreflightResponse {
+export interface BacktestPreflightCheck {
+    name: string
+    passed: boolean
+    message?: string
+    severity?: string
+}
+
+export interface BacktestPreflightOut {
+    ok: boolean
     status: "green" | "yellow" | "red"
     errors: string[]
     warnings: string[]
+    checks?: BacktestPreflightCheck[]
+    meta?: Record<string, any>
 }
+
+export type PreflightResponse = BacktestPreflightOut
 
 export async function preflightBacktest(config: any): Promise<PreflightResponse> {
     try {
@@ -874,9 +919,11 @@ export async function preflightBacktest(config: any): Promise<PreflightResponse>
         })
         if (!res.ok) {
             return {
+                ok: false,
                 status: "red",
                 errors: [`Preflight request failed with status ${res.status}`],
-                warnings: []
+                warnings: [],
+                checks: []
             }
         }
         const data = await res.json()
@@ -887,15 +934,292 @@ export async function preflightBacktest(config: any): Promise<PreflightResponse>
             status = "yellow"
         }
         return {
-            status,
+            ok: data.ok ?? status !== "red",
+            status: data.status || status,
             errors: data.errors || [],
-            warnings: data.warnings || []
+            warnings: data.warnings || [],
+            checks: data.checks || [],
+            meta: data.meta
         }
     } catch (e: any) {
         return {
+            ok: false,
             status: "red",
             errors: [e.message || "Failed to contact preflight validation engine"],
-            warnings: []
+            warnings: [],
+            checks: []
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Additional Endpoints
+// ---------------------------------------------------------------------------
+
+export async function getRunExplain(runId: string): Promise<any> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/explain`, { cache: "no-store" })
+        if (!res.ok) return null
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching run explain:", e)
+        return null
+    }
+}
+
+export async function getRunExposure(runId: string): Promise<any> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/exposure`, { cache: "no-store" })
+        if (!res.ok) return null
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching run exposure:", e)
+        return null
+    }
+}
+
+export async function getRunCostsSummary(runId: string): Promise<any> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/costs`, { cache: "no-store" })
+        if (!res.ok) return null
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching run costs summary:", e)
+        return null
+    }
+}
+
+export async function getStrategySchemas(): Promise<any> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/strategies/schemas`, { cache: "no-store" })
+        if (!res.ok) return []
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching strategy schemas:", e)
+        return []
+    }
+}
+
+export async function getCapabilities(): Promise<any> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/capabilities`, { cache: "no-store" })
+        if (!res.ok) return null
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching capabilities:", e)
+        return null
+    }
+}
+
+export async function cloneRun(runId: string, overrides?: any): Promise<string> {
+    const res = await runApiFetch(`${API_BASE_URL}/backtests/${runId}/clone`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrides || {})
+    })
+    if (!res.ok) {
+        throw new Error(await extractErrorMessage(res, "Failed to clone run"))
+    }
+    const data = await res.json()
+    return data.run_id || data.id
+}
+
+export async function createScenario(payload: any): Promise<any> {
+    const res = await runApiFetch(`${API_BASE_URL}/scenarios`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    })
+    if (!res.ok) {
+        throw new Error(await extractErrorMessage(res, "Failed to create scenario"))
+    }
+    return await res.json()
+}
+
+export async function getDataCoverage(symbols?: string[]): Promise<any> {
+    try {
+        const url = new URL(`${API_BASE_URL}/data/coverage`)
+        if (symbols && symbols.length > 0) {
+            url.searchParams.append("symbols", symbols.join(","))
+        }
+        const res = await runApiFetch(url.toString(), { cache: "no-store" })
+        if (!res.ok) return []
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching data coverage:", e)
+        return []
+    }
+}
+
+export async function getDataQuality(symbols?: string[]): Promise<any> {
+    try {
+        const url = new URL(`${API_BASE_URL}/data/quality`)
+        if (symbols && symbols.length > 0) {
+            url.searchParams.append("symbols", symbols.join(","))
+        }
+        const res = await runApiFetch(url.toString(), { cache: "no-store" })
+        if (!res.ok) return []
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching data quality:", e)
+        return []
+    }
+}
+
+export async function getPlaygroundPresets(): Promise<any[]> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/playground/presets`, { cache: "no-store" })
+        if (!res.ok) return []
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching playground presets:", e)
+        return []
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Market API (folded from lib/market.ts)
+// ---------------------------------------------------------------------------
+
+export interface MarketBarOut {
+    date: string
+    symbol: string
+    currency: string
+    exchange: string
+    open?: number | null
+    high?: number | null
+    low?: number | null
+    close?: number | null
+    volume?: number | null
+}
+
+export interface MarketCoverageOut {
+    symbol: string
+    first_date: string
+    last_date: string
+    rows: number
+    missing_ratio?: number | null
+}
+
+export interface MarketSnapshotOut {
+    symbol: string
+    last_date: string
+    last_close: number
+    return_1w?: number | null
+    return_1m?: number | null
+    return_3m?: number | null
+    return_1y?: number | null
+    recent_vol_20d?: number | null
+    median_vol_1y?: number | null
+    meta?: any
+}
+
+const marketCache = new Map<string, { timestamp: number; data: any }>()
+const marketPendingRequests = new Map<string, Promise<any>>()
+const CACHE_TTL_MS = 60000
+
+function getMarketCached<T>(key: string): T | null {
+    const entry = marketCache.get(key)
+    if (entry && Date.now() - entry.timestamp < CACHE_TTL_MS) {
+        return entry.data as T
+    }
+    return null
+}
+
+function setMarketCached(key: string, data: any) {
+    marketCache.set(key, { timestamp: Date.now(), data })
+}
+
+async function deduplicatedMarketFetch<T>(url: URL, cacheKey: string): Promise<T> {
+    const cached = getMarketCached<T>(cacheKey)
+    if (cached) return cached
+
+    if (marketPendingRequests.has(cacheKey)) {
+        return marketPendingRequests.get(cacheKey) as Promise<T>
+    }
+
+    const promise = (async () => {
+        try {
+            const res = await runApiFetch(url.toString())
+            if (!res.ok) {
+                devLog(`[Market API] Failed to fetch ${url.pathname}: ${res.status} ${res.statusText}`)
+                throw new Error(`${res.status} ${res.statusText}`)
+            }
+            const data = await res.json()
+            setMarketCached(cacheKey, data)
+            return data
+        } finally {
+            marketPendingRequests.delete(cacheKey)
+        }
+    })()
+
+    marketPendingRequests.set(cacheKey, promise)
+    return promise
+}
+
+export async function getMarketBars(
+    symbols: string[],
+    startDate?: string,
+    endDate?: string,
+    fields: string = "close",
+    calendar: string = "GLOBAL",
+    missingBar: string = "RAW",
+    interval: string = "1d",
+    maxPoints?: number
+): Promise<MarketBarOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/market/bars`)
+        url.searchParams.append("symbols", symbols.join(","))
+        if (startDate) url.searchParams.append("start_date", startDate)
+        if (endDate) url.searchParams.append("end_date", endDate)
+        if (fields) url.searchParams.append("fields", fields)
+        if (calendar) url.searchParams.append("calendar", calendar)
+        if (missingBar) url.searchParams.append("missing_bar", missingBar)
+        if (interval) url.searchParams.append("interval", interval)
+        if (maxPoints) url.searchParams.append("max_points", String(maxPoints))
+
+        const cacheKey = `bars_${url.toString()}`
+        return await deduplicatedMarketFetch<MarketBarOut[]>(url, cacheKey)
+    } catch (error) {
+        devLog("[Market API] Error fetching market bars:", error)
+        return []
+    }
+}
+
+export async function getMarketCoverage(
+    symbols: string[],
+    startDate?: string,
+    endDate?: string,
+    calendar: string = "GLOBAL"
+): Promise<MarketCoverageOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/market/coverage`)
+        url.searchParams.append("symbols", symbols.join(","))
+        if (startDate) url.searchParams.append("start_date", startDate)
+        if (endDate) url.searchParams.append("end_date", endDate)
+        if (calendar) url.searchParams.append("calendar", calendar)
+
+        const cacheKey = `coverage_${url.toString()}`
+        return await deduplicatedMarketFetch<MarketCoverageOut[]>(url, cacheKey)
+    } catch (error) {
+        devLog("[Market API] Error fetching market coverage:", error)
+        return []
+    }
+}
+
+export async function getMarketSnapshot(
+    symbols: string[],
+    endDate?: string
+): Promise<MarketSnapshotOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/market/snapshot`)
+        url.searchParams.append("symbols", symbols.join(","))
+        if (endDate) url.searchParams.append("end_date", endDate)
+
+        const cacheKey = `snapshot_${url.toString()}`
+        return await deduplicatedMarketFetch<MarketSnapshotOut[]>(url, cacheKey)
+    } catch (error) {
+        devLog("[Market API] Error fetching market snapshot:", error)
+        return []
     }
 }

@@ -12,6 +12,8 @@ const navItems = [
     { name: 'Build', href: '/build_page' },
     { name: 'Explore', href: '/explore' },
     { name: 'Compare', href: '/compare' },
+    { name: 'Runs', href: '/runs' },
+    { name: 'Strategies', href: '/strategies' },
 ];
 
 export function Header() {
