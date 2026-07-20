@@ -23,7 +23,7 @@ if (isProd) {
     rawApiBaseUrl = rawApiBaseUrl || DEFAULT_API_BASE_URL
 }
 
-const API_BASE_URL = rawApiBaseUrl as string
+export const API_BASE_URL = rawApiBaseUrl as string
 
 // ---------------------------------------------------------------------------
 // Dev-only logger — silenced in production to prevent backend internals from

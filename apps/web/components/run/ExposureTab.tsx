@@ -186,7 +186,7 @@ export function ExposureTab({ runId }: { runId: string }) {
                                 <Tooltip
                                     contentStyle={CHART_THEME.tooltip.contentStyle}
                                     itemStyle={CHART_THEME.tooltip.itemStyle}
-                                    formatter={(value: any, name: string) => [`${(parseFloat(value) * 100).toFixed(2)}%`, name]}
+                                    formatter={((value: any, name?: string) => [`${(parseFloat(value) * 100).toFixed(2)}%`, name || ""]) as any}
                                 />
                                 <Legend />
                                 {currencyKeys.map((curr, idx) => (
@@ -232,16 +232,16 @@ export function ExposureTab({ runId }: { runId: string }) {
                             <Tooltip
                                 contentStyle={CHART_THEME.tooltip.contentStyle}
                                 itemStyle={CHART_THEME.tooltip.itemStyle}
-                                formatter={(value: any, name: string) => {
+                                formatter={((value: any, name?: string) => {
                                     if (name === "gross_exposure") return [`${(value * 100).toFixed(1)}%`, "Gross Exposure"]
                                     if (name === "net_exposure") return [`${(value * 100).toFixed(1)}%`, "Net Exposure"]
                                     return [`${value.toFixed(2)}x`, "Leverage"]
-                                }}
+                                }) as any}
                             />
                             <Legend />
-                            <Line yAxisId="weight" type="monotone" dataKey="gross_exposure" stroke="#3b82f6" strokeWidth={2} dot={false} />
-                            <Line yAxisId="weight" type="monotone" dataKey="net_exposure" stroke="#10b981" strokeWidth={2} dot={false} />
-                            <Line yAxisId="lev" type="monotone" dataKey="leverage" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                            <Line yAxisId="weight" type="monotone" dataKey="gross_exposure" name="Gross Exposure" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                            <Line yAxisId="weight" type="monotone" dataKey="net_exposure" name="Net Exposure" stroke="#10b981" strokeWidth={2} dot={false} />
+                            <Line yAxisId="lev" type="monotone" dataKey="leverage" name="Leverage" stroke="#f59e0b" strokeWidth={2} dot={false} />
                         </LineChart>
                     </ResponsiveContainer>
                 </div>

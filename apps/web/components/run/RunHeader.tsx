@@ -15,7 +15,7 @@ import {
     DialogTitle,
     DialogTrigger,
 } from "@/components/ui/dialog"
-import { getRunPositions, getRunFills, createRunScenario, getRunStatus, RunEquityPoint } from "@/lib/api"
+import { getRunPositions, getRunFills, createRunScenario, getRunStatus, RunEquityPoint, API_BASE_URL } from "@/lib/api"
 
 function downloadBlob(content: string, filename: string, contentType: string) {
     const blob = new Blob([content], { type: contentType })
@@ -75,7 +75,12 @@ export function RunHeader({ runId, title, tags, date, requestedStart, requestedE
     const [initialCash, setInitialCash] = useState(String(configSnapshot?.backtest?.initial_cash ?? 100000))
     const [startDate, setStartDate] = useState(configSnapshot?.backtest?.start_date || requestedStart || "")
     const [endDate, setEndDate] = useState(configSnapshot?.backtest?.end_date || requestedEnd || "")
-    const [rebalanceFreq, setRebalanceFreq] = useState(configSnapshot?.backtest?.contributions?.frequency || configSnapshot?.rebalance_frequency || "DAILY")
+    const [rebalanceFreq, setRebalanceFreq] = useState(
+        configSnapshot?.strategy_params?.rebalance_frequency ||
+        configSnapshot?.strategy?.params?.rebalance_frequency ||
+        configSnapshot?.rebalance_frequency ||
+        "DAILY"
+    )
 
     // Polling states
     const [isSubmitting, setIsSubmitting] = useState(false)
@@ -127,14 +132,16 @@ export function RunHeader({ runId, title, tags, date, requestedStart, requestedE
             "execution.slippage.bps": parseFloat(slippageBps) || 0,
             "backtest.initial_cash": parseFloat(initialCash) || 0,
             "backtest.start_date": startDate,
-            "backtest.end_date": endDate,
-            "backtest.contributions.frequency": rebalanceFreq
+            "backtest.end_date": endDate
         }
 
         const originalParams = configSnapshot?.strategy_params || configSnapshot?.strategy?.params || {}
         Object.entries(originalParams).forEach(([key, val]) => {
             patch[`strategy_params.${key}`] = val
         })
+
+        // Apply rebalance frequency override to strategy parameters
+        patch["strategy_params.rebalance_frequency"] = rebalanceFreq
 
         const payload = {
             name: `${title} (Scenario: tax=${taxRegime})`,
@@ -378,20 +385,45 @@ export function RunHeader({ runId, title, tags, date, requestedStart, requestedE
                                     Download data from this run in various formats.
                                 </DialogDescription>
                             </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                                <Button variant="outline" onClick={() => exportConfigJSON(runId, configSnapshot || {})}>
-                                    Download Config (JSON)
-                                </Button>
-                                <Button variant="outline" onClick={() => exportEquityCSV(runId, equity || [])} disabled={!equity || equity.length === 0}>
-                                    Download Equity Timeseries (CSV)
-                                </Button>
-                                <Button variant="outline" onClick={handleExportPositions} disabled={isExporting}>
-                                    {isExporting ? "Exporting..." : "Download Final Positions (CSV)"}
-                                </Button>
-                                <Button variant="outline" onClick={handleExportFills} disabled={isExporting}>
-                                    {isExporting ? "Exporting..." : "Download All Trades (CSV)"}
-                                </Button>
-                            </div>
+                             <div className="grid gap-3 py-3">
+                                 {/* Export Full HTML Report */}
+                                 <a 
+                                     href={`${API_BASE_URL}/runs/${runId}/export/report.html`} 
+                                     target="_blank" 
+                                     rel="noopener noreferrer"
+                                     className="flex items-center justify-center h-10 px-4 rounded-md bg-gradient-to-r from-primary to-indigo-600 hover:from-primary/95 hover:to-indigo-600/95 text-primary-foreground text-sm font-semibold shadow-sm transition-all text-center"
+                                 >
+                                     Export Full HTML Report
+                                 </a>
+                                 
+                                 <Button variant="outline" onClick={() => exportConfigJSON(runId, configSnapshot || {})}>
+                                     Download Config (JSON)
+                                 </Button>
+                                 
+                                 <a 
+                                     href={`${API_BASE_URL}/runs/${runId}/export/equity.csv`} 
+                                     download={`run_${runId}_equity.csv`}
+                                     className="flex items-center justify-center h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-all text-center"
+                                 >
+                                     Download Equity Timeseries (CSV)
+                                 </a>
+
+                                 <a 
+                                     href={`${API_BASE_URL}/runs/${runId}/export/fills.csv`} 
+                                     download={`run_${runId}_fills.csv`}
+                                     className="flex items-center justify-center h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-all text-center"
+                                 >
+                                     Download Trade Fills (CSV)
+                                 </a>
+
+                                 <a 
+                                     href={`${API_BASE_URL}/runs/${runId}/export/taxes.csv`} 
+                                     download={`run_${runId}_taxes.csv`}
+                                     className="flex items-center justify-center h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-all text-center"
+                                 >
+                                     Download Tax Transactions (CSV)
+                                 </a>
+                             </div>
                         </DialogContent>
                     </Dialog>
                 </div>

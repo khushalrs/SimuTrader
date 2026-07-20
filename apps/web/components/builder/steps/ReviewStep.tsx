@@ -3,8 +3,20 @@
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
-import { createRun, buildValidConfig, preflightBacktest } from "@/lib/api"
-import { AlertCircle } from "lucide-react"
+import { createRun, buildValidConfig, preflightBacktest, type BacktestPreflightOut } from "@/lib/api"
+import { 
+    AlertCircle, 
+    CheckCircle2, 
+    AlertTriangle, 
+    Globe, 
+    Activity, 
+    ShieldAlert, 
+    ChevronDown,
+    Calendar,
+    Coins,
+    Sliders
+} from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 
 export function ReviewStep({ config, prevStep }: any) {
     const router = useRouter()
@@ -12,33 +24,38 @@ export function ReviewStep({ config, prevStep }: any) {
     const [error, setError] = useState<string | null>(null)
     const [idempotencyKey, setIdempotencyKey] = useState<string>("")
 
-    const [preflightRes, setPreflightRes] = useState<any>(null);
-    const [isPreflighting, setIsPreflighting] = useState(true);
+    const [preflightRes, setPreflightRes] = useState<BacktestPreflightOut | null>(null)
+    const [isPreflighting, setIsPreflighting] = useState(true)
+
+    const validConfig = buildValidConfig(config)
 
     useEffect(() => {
         setIdempotencyKey(crypto.randomUUID())
     }, [config])
 
     useEffect(() => {
-        let active = true;
-        setIsPreflighting(true);
+        let active = true
+        setIsPreflighting(true)
         preflightBacktest(config).then(res => {
             if (active) {
-                setPreflightRes(res);
-                setIsPreflighting(false);
+                setPreflightRes(res)
+                setIsPreflighting(false)
             }
         }).catch((err) => {
             if (active) {
                 setPreflightRes({
+                    ok: false,
                     status: "red",
                     errors: [err.message || "Preflight request failed."],
-                    warnings: []
-                });
-                setIsPreflighting(false);
+                    warnings: [],
+                    checks: [],
+                    risk_flags: []
+                })
+                setIsPreflighting(false)
             }
-        });
-        return () => { active = false; };
-    }, [config]);
+        })
+        return () => { active = false }
+    }, [config])
 
     const handleRun = async () => {
         try {
@@ -55,84 +72,266 @@ export function ReviewStep({ config, prevStep }: any) {
         }
     }
 
+    // Helper to render date callout comparison
+    const requestedStart = validConfig.backtest?.start_date
+    const requestedEnd = validConfig.backtest?.end_date
+    const effectiveStart = preflightRes?.meta?.effective_start_date || preflightRes?.meta?.effective_start || requestedStart
+    const effectiveEnd = preflightRes?.meta?.effective_end_date || preflightRes?.meta?.effective_end || requestedEnd
+    const isDateShifted = requestedStart && effectiveStart && (requestedStart !== effectiveStart || requestedEnd !== effectiveEnd)
+
+    // Data coverage table points
+    const dataCoverage = preflightRes?.meta?.data_coverage || preflightRes?.meta?.coverage || []
+
+    // Required FX conversion pairs
+    const fxPairs = preflightRes?.meta?.required_fx_pairs || preflightRes?.meta?.fx_pairs || []
+
+    // Strategy capabilities
+    const capabilities = preflightRes?.strategy_capability || {}
+
     return (
-        <div className="p-6 flex flex-col h-full">
-            <h2 className="text-xl font-semibold mb-6">Review & Run</h2>
-
-            <div className="flex-1 space-y-4">
-                <p className="text-sm text-muted-foreground">
-                    Your strategy is ready. Review the generated configuration JSON below before submitting to the simulation engine.
+        <div className="p-6 flex flex-col h-full space-y-6 text-sm">
+            <div>
+                <h2 className="text-xl font-bold tracking-tight">Review & Readiness Panel</h2>
+                <p className="text-xs text-muted-foreground mt-1">
+                    Pre-execution checklist. Review validation rules, data coverage margins, and configuration checks before running.
                 </p>
-
-                {/* Preflight Panel */}
-                <div className="space-y-3 p-4 border rounded-lg bg-card shadow-sm">
-                    <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Engine Preflight Check</h3>
-                    {isPreflighting ? (
-                        <div className="flex items-center space-x-2 text-sm text-muted-foreground py-2">
-                            <Loader2 className="w-4 h-4 animate-spin text-primary shrink-0" />
-                            <span>Analyzing configuration rules...</span>
-                        </div>
-                    ) : preflightRes ? (
-                        <div className="space-y-2">
-                            {preflightRes.status === "green" && (
-                                <div className="flex items-start space-x-3 p-3 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 text-sm">
-                                    <div className="w-3 h-3 rounded-full bg-emerald-500 mt-1 shrink-0"></div>
-                                    <div>
-                                        <span className="font-semibold block">Ready to Run</span>
-                                        <span className="text-xs opacity-90">Your strategy configuration passed all validation rules successfully.</span>
-                                    </div>
-                                </div>
-                            )}
-                            {preflightRes.status === "yellow" && (
-                                <div className="flex items-start space-x-3 p-3 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-600 text-sm">
-                                    <div className="w-3 h-3 rounded-full bg-amber-500 mt-1 shrink-0 animate-pulse"></div>
-                                    <div>
-                                        <span className="font-semibold block">Ready with Warnings</span>
-                                        <ul className="list-disc pl-4 mt-1 space-y-1 text-xs opacity-90">
-                                            {preflightRes.warnings.map((w: string, i: number) => (
-                                                <li key={i}>{w}</li>
-                                            ))}
-                                        </ul>
-                                    </div>
-                                </div>
-                            )}
-                            {preflightRes.status === "red" && (
-                                <div className="flex items-start space-x-3 p-3 rounded-md bg-red-500/10 border border-red-500/20 text-red-600 text-sm">
-                                    <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
-                                    <div>
-                                        <span className="font-semibold block">Cannot Run Simulation</span>
-                                        <ul className="list-disc pl-4 mt-1 space-y-1 text-xs opacity-90">
-                                            {preflightRes.errors.map((e: string, i: number) => (
-                                                <li key={i}>{e}</li>
-                                            ))}
-                                        </ul>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    ) : null}
-                </div>
-
-                <div className="bg-muted p-4 rounded-md text-xs font-mono overflow-auto max-h-[300px] border border-border">
-                    <pre>{JSON.stringify(buildValidConfig(config), null, 2)}</pre>
-                </div>
-
-                {error && (
-                    <div className="p-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md">
-                        {error}
-                    </div>
-                )}
             </div>
 
+            {/* Top-Level Verdict Callout */}
+            {isPreflighting ? (
+                <div className="flex items-center space-x-3 p-4 border rounded-xl bg-muted/40 text-muted-foreground animate-pulse">
+                    <Loader2 className="w-5 h-5 animate-spin text-primary shrink-0" />
+                    <span className="font-medium text-sm">Performing engine preflight checklist & validating data snapshots...</span>
+                </div>
+            ) : preflightRes ? (
+                <div className="space-y-4">
+                    {/* Verdict Banner */}
+                    {preflightRes.status === "green" && (
+                        <div className="flex items-start space-x-3.5 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-400">
+                            <CheckCircle2 className="w-5 h-5 mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-500" />
+                            <div>
+                                <span className="font-bold text-sm block">System Ready</span>
+                                <span className="text-xs opacity-90 block mt-0.5">Strategy configuration passed all static checking tests and is ready for historical backtest run.</span>
+                            </div>
+                        </div>
+                    )}
+                    {preflightRes.status === "yellow" && (
+                        <div className="flex items-start space-x-3.5 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-500">
+                            <AlertTriangle className="w-5 h-5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-500" />
+                            <div>
+                                <span className="font-bold text-sm block">System Ready with Warnings</span>
+                                <span className="text-xs opacity-90 block mt-0.5">Static checking completed with warnings. You can proceed with execution, but metrics may degrade.</span>
+                                <ul className="list-disc pl-4 mt-2 space-y-1 text-xs opacity-90">
+                                    {preflightRes.warnings.map((w: string, i: number) => (
+                                        <li key={i}>{w}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </div>
+                    )}
+                    {preflightRes.status === "red" && (
+                        <div className="flex items-start space-x-3.5 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-700 dark:text-red-400">
+                            <AlertCircle className="w-5 h-5 mt-0.5 shrink-0 text-red-600 dark:text-red-500" />
+                            <div>
+                                <span className="font-bold text-sm block">Cannot Run Simulation</span>
+                                <span className="text-xs opacity-90 block mt-0.5">Validation engine reported critical errors in your configuration. Fix errors to continue.</span>
+                                <ul className="list-disc pl-4 mt-2 space-y-1 text-xs opacity-90 font-mono">
+                                    {preflightRes.errors.map((e: string, i: number) => (
+                                        <li key={i}>{e}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Preflight Stats & Info Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {/* Timeline callout */}
+                        <Card className="p-3.5 bg-card border shadow-sm">
+                            <div className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground mb-2">
+                                <Calendar className="w-4 h-4 text-blue-500" /> Timeline Callout
+                            </div>
+                            <div className="space-y-1 text-xs">
+                                <div><strong className="text-muted-foreground">Requested:</strong> {requestedStart} to {requestedEnd}</div>
+                                <div className={isDateShifted ? "text-yellow-600 font-medium font-semibold" : "text-muted-foreground"}>
+                                    <strong className="text-muted-foreground">Effective:</strong> {effectiveStart} to {effectiveEnd}
+                                </div>
+                                {isDateShifted && (
+                                    <span className="text-[10px] bg-yellow-500/15 text-yellow-600 px-1 py-0.5 rounded font-medium mt-1 inline-block">Dates Shifted</span>
+                                )}
+                            </div>
+                        </Card>
+
+                        {/* Estimated Activity */}
+                        <Card className="p-3.5 bg-card border shadow-sm">
+                            <div className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground mb-2">
+                                <Activity className="w-4 h-4 text-indigo-500" /> Activity Metrics
+                            </div>
+                            <div className="space-y-1.5 text-xs font-medium">
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Trading Days:</span>
+                                    <span>{preflightRes.estimated_trading_days ?? "N/A"}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Rebalances:</span>
+                                    <span>{preflightRes.estimated_rebalance_count ?? "N/A"}</span>
+                                </div>
+                            </div>
+                        </Card>
+
+                        {/* Currency FX conversions */}
+                        <Card className="p-3.5 bg-card border shadow-sm">
+                            <div className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground mb-2">
+                                <Coins className="w-4 h-4 text-emerald-500" /> Required FX Pairs
+                            </div>
+                            {fxPairs.length === 0 ? (
+                                <div className="text-xs text-muted-foreground">No cross-currency FX conversions required.</div>
+                            ) : (
+                                <div className="flex flex-wrap gap-1.5 pt-1">
+                                    {fxPairs.map((pair: string) => (
+                                        <Badge key={pair} variant="outline" className="font-mono text-[10px] bg-background">
+                                            {pair}
+                                        </Badge>
+                                    ))}
+                                </div>
+                            )}
+                        </Card>
+                    </div>
+
+                    {/* Dotted parameters capabilities / limitations */}
+                    {Object.keys(capabilities).length > 0 && (
+                        <Card className="border bg-card shadow-sm p-4">
+                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                                <Sliders className="w-3.5 h-3.5 text-purple-500" /> Strategy Capabilities & Constraints
+                            </h4>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono">
+                                {Object.entries(capabilities).map(([key, val]) => (
+                                    <div key={key} className="space-y-0.5">
+                                        <div className="text-[10px] text-muted-foreground uppercase truncate" title={key}>{key.replace(/_/g, " ")}</div>
+                                        <div className="font-bold text-foreground truncate">{String(val)}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </Card>
+                    )}
+
+                    {/* Risk Flags Section */}
+                    {preflightRes.risk_flags && preflightRes.risk_flags.length > 0 && (
+                        <Card className="border border-border/85 bg-rose-50/5 dark:bg-rose-950/5 p-4 rounded-xl">
+                            <h4 className="text-xs font-semibold text-rose-600 dark:text-rose-400 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                                <ShieldAlert className="w-4 h-4 text-rose-500" /> Potential Risk Indicators
+                            </h4>
+                            <div className="space-y-2">
+                                {preflightRes.risk_flags.map((flag, idx) => (
+                                    <div key={idx} className="flex items-start gap-2 text-xs">
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold uppercase shrink-0 ${flag.severity === "error" ? "bg-red-500/10 text-red-600 border border-red-500/20" : "bg-yellow-500/10 text-yellow-600 border border-yellow-500/20"}`}>
+                                            {flag.severity}
+                                        </span>
+                                        <div>
+                                            <span className="font-bold text-foreground font-mono text-[11px] block">{flag.code}</span>
+                                            <span className="text-muted-foreground text-xs mt-0.5 block">{flag.message}</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </Card>
+                    )}
+
+                    {/* Data Coverage Table */}
+                    <Card className="border bg-card shadow-sm overflow-hidden">
+                        <div className="px-4 py-3 bg-muted/40 border-b border-border/60">
+                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                                <Globe className="w-3.5 h-3.5 text-blue-500" /> Historical Data Coverage Snapshot
+                            </h4>
+                        </div>
+                        <div className="overflow-x-auto">
+                            {dataCoverage.length === 0 ? (
+                                <div className="p-6 text-center text-xs text-muted-foreground">
+                                    No custom symbol coverage data emitted by validation engine.
+                                </div>
+                            ) : (
+                                <table className="w-full text-xs text-left">
+                                    <thead className="bg-muted/50 border-b border-border/50 text-[10px] font-semibold text-muted-foreground uppercase">
+                                        <tr>
+                                            <th className="px-4 py-2.5">Symbol</th>
+                                            <th className="px-4 py-2.5">Source Coverage Start</th>
+                                            <th className="px-4 py-2.5">Source Coverage End</th>
+                                            <th className="px-4 py-2.5 text-right">Coverage %</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-border/40 font-mono">
+                                        {dataCoverage.map((item: any, idx: number) => (
+                                            <tr key={idx} className="hover:bg-muted/20">
+                                                <td className="px-4 py-2 font-bold text-foreground">{item.symbol}</td>
+                                                <td className="px-4 py-2 text-muted-foreground">{item.start_date || item.coverage_start || "-"}</td>
+                                                <td className="px-4 py-2 text-muted-foreground">{item.end_date || item.coverage_end || "-"}</td>
+                                                <td className="px-4 py-2 text-right">
+                                                    <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                                        (item.coverage_pct ?? 1.0) >= 0.95 ? "bg-emerald-500/10 text-emerald-600" :
+                                                        (item.coverage_pct ?? 1.0) >= 0.80 ? "bg-amber-500/10 text-amber-600" :
+                                                        "bg-rose-500/10 text-rose-600"
+                                                    }`}>
+                                                        {((item.coverage_pct ?? 1.0) * 100).toFixed(1)}%
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                    </Card>
+                </div>
+            ) : null}
+
+            {/* Raw JSON details collapsible */}
+            <details className="group border rounded-lg bg-muted/10 overflow-hidden">
+                <summary className="flex items-center justify-between p-3 font-semibold text-xs text-muted-foreground cursor-pointer select-none hover:bg-muted/20">
+                    <span>View Configuration & Raw Preflight JSON</span>
+                    <ChevronDown className="w-4 h-4 transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="p-3 border-t bg-muted/30 font-mono text-[11px] overflow-auto max-h-[300px] divide-y space-y-4">
+                    <div className="pt-2">
+                        <div className="text-[10px] uppercase font-bold text-muted-foreground mb-1.5">Strategy Config Snapshot</div>
+                        <pre>{JSON.stringify(validConfig, null, 2)}</pre>
+                    </div>
+                    {preflightRes && (
+                        <div className="pt-4">
+                            <div className="text-[10px] uppercase font-bold text-muted-foreground mb-1.5">Raw Preflight Output</div>
+                            <pre>{JSON.stringify(preflightRes, null, 2)}</pre>
+                        </div>
+                    )}
+                </div>
+            </details>
+
+            {error && (
+                <div className="p-3.5 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md">
+                    {error}
+                </div>
+            )}
+
+            {/* Stepper Footer Controls */}
             <div className="mt-8 flex items-center justify-between pt-4 border-t border-border">
                 <Button variant="outline" onClick={prevStep} disabled={isSubmitting}>Back</Button>
                 <div className="flex items-center space-x-4">
-                    {isSubmitting && <span className="text-sm text-muted-foreground animate-pulse">Running simulation...</span>}
-                    <Button onClick={handleRun} disabled={isSubmitting || isPreflighting || preflightRes?.status === "red"}>
+                    {isSubmitting && <span className="text-xs text-muted-foreground animate-pulse">Running historical simulation...</span>}
+                    <Button 
+                        onClick={handleRun} 
+                        disabled={isSubmitting || isPreflighting || preflightRes?.status === "red"}
+                        className="bg-gradient-to-r from-primary to-indigo-600 hover:from-primary/95 hover:to-indigo-600/95"
+                    >
                         {isSubmitting ? "Running..." : "Run Strategy"}
                     </Button>
                 </div>
             </div>
+        </div>
+    )
+}
+
+function Card({ className, children }: { className?: string; children: React.ReactNode }) {
+    return (
+        <div className={`rounded-xl border border-border bg-card text-card-foreground shadow-sm ${className}`}>
+            {children}
         </div>
     )
 }
