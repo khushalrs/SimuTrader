@@ -2,21 +2,29 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import date
+import json
+import logging
+import os
 import re
 import threading
 import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Response
+from redis.exceptions import RedisError
 
 from app.data.duckdb import get_duckdb_conn
 from app.services.preflight import _query_symbol_coverage
+from app.services.redis_store import get_cache_redis
+from app.settings import get_settings
 
 
 router = APIRouter(prefix="/data", tags=["data"])
+logger = logging.getLogger(__name__)
 SYMBOL_RE = re.compile(r"[A-Z0-9.\-]{1,20}")
 MAX_SYMBOLS = 200
 DATA_CACHE_TTL_SECONDS = 900.0
+DATA_QUALITY_CACHE_TTL_SECONDS = 86_400
 DATA_CACHE_MAX_KEYS = 256
 _data_cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
 _data_cache_lock = threading.Lock()
@@ -42,6 +50,44 @@ def _cache_set(key: str, payload: Any) -> Any:
         _data_cache.move_to_end(key)
         while len(_data_cache) > DATA_CACHE_MAX_KEYS:
             _data_cache.popitem(last=False)
+    return payload
+
+
+def _quality_redis_key(cache_key: str) -> str:
+    settings = get_settings()
+    snapshot_id = os.getenv("DATA_SNAPSHOT_ID", "unknown").strip() or "unknown"
+    return f"{settings.redis_cache_prefix}:data:{snapshot_id}:quality:v1:{cache_key}"
+
+
+def _quality_cache_get(cache_key: str) -> Any | None:
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    redis_key = _quality_redis_key(cache_key)
+    try:
+        value = get_cache_redis().get(redis_key)
+        if not value:
+            return None
+        payload = json.loads(value)
+        if not isinstance(payload, list):
+            return None
+        return _cache_set(cache_key, payload)
+    except (RedisError, ValueError, TypeError):
+        logger.debug("Data quality Redis cache read failed for key=%s", redis_key, exc_info=True)
+        return None
+
+
+def _quality_cache_set(cache_key: str, payload: Any) -> Any:
+    _cache_set(cache_key, payload)
+    redis_key = _quality_redis_key(cache_key)
+    try:
+        get_cache_redis().setex(
+            redis_key,
+            DATA_QUALITY_CACHE_TTL_SECONDS,
+            json.dumps(payload),
+        )
+    except (RedisError, TypeError, ValueError):
+        logger.debug("Data quality Redis cache write failed for key=%s", redis_key, exc_info=True)
     return payload
 
 
@@ -204,7 +250,7 @@ def get_data_quality(
     limit: int = Query(default=50, ge=1, le=MAX_SYMBOLS),
 ) -> list[dict[str, Any]]:
     cache_key = _scope_cache_key("quality", symbols, start, end, limit)
-    cached = _cache_get(cache_key)
+    cached = _quality_cache_get(cache_key)
     if cached is not None:
         _cache_headers(response, True)
         return cached
@@ -255,7 +301,14 @@ def get_data_quality(
             }
         )
     _cache_headers(response, False)
-    return _cache_set(cache_key, result)
+    return _quality_cache_set(cache_key, result)
+
+
+def warm_default_data_quality_cache() -> None:
+    """Populate the expensive default quality view before the API accepts traffic."""
+    cache_key = _scope_cache_key("quality", None, None, None, 50)
+    if _quality_cache_get(cache_key) is None:
+        get_data_quality(Response(), symbols=None, start=None, end=None, limit=50)
 
 
 @router.get("/missing-bars")

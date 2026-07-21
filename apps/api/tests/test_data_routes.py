@@ -9,6 +9,17 @@ from fastapi.testclient import TestClient
 from app.api.routes import data as data_routes
 
 
+class _FakeRedis:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def setex(self, key, _ttl, value):
+        self.values[key] = value
+
+
 def _seed_data(path: str) -> None:
     con = duckdb.connect(path)
     con.execute(
@@ -47,6 +58,8 @@ def test_data_observability_endpoints(tmp_path, monkeypatch):
     _seed_data(str(path))
     monkeypatch.setenv("DUCKDB_PATH", str(path))
     monkeypatch.setenv("DUCKDB_READ_ONLY", "true")
+    monkeypatch.setenv("DATA_SNAPSHOT_ID", f"test-{tmp_path.name}")
+    monkeypatch.setattr(data_routes, "get_cache_redis", lambda: _FakeRedis())
     app = FastAPI()
     data_routes._data_cache.clear()
     app.include_router(data_routes.router)
@@ -85,3 +98,33 @@ def test_data_observability_endpoints(tmp_path, monkeypatch):
     assert quality.headers["X-Data-Cache"] == "MISS"
     assert cached_quality.headers["X-Data-Cache"] == "HIT"
     assert cached_quality.json() == quality.json()
+
+
+def test_quality_cache_survives_process_local_cache_clear(tmp_path, monkeypatch):
+    path = tmp_path / "data.duckdb"
+    _seed_data(str(path))
+    monkeypatch.setenv("DUCKDB_PATH", str(path))
+    monkeypatch.setenv("DUCKDB_READ_ONLY", "true")
+    monkeypatch.setenv("DATA_SNAPSHOT_ID", f"test-{tmp_path.name}")
+
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(data_routes, "get_cache_redis", lambda: fake_redis)
+    data_routes._data_cache.clear()
+    app = FastAPI()
+    app.include_router(data_routes.router)
+    client = TestClient(app)
+
+    first = client.get("/data/quality", params={"symbols": "AAPL"})
+    data_routes._data_cache.clear()
+    monkeypatch.setattr(
+        data_routes,
+        "get_duckdb_conn",
+        lambda: (_ for _ in ()).throw(AssertionError("DuckDB should not be queried")),
+    )
+    second = client.get("/data/quality", params={"symbols": "AAPL"})
+
+    assert first.status_code == 200
+    assert first.headers["X-Data-Cache"] == "MISS"
+    assert second.status_code == 200
+    assert second.headers["X-Data-Cache"] == "HIT"
+    assert second.json() == first.json()

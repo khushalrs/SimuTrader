@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api import api_router
+from app.api.routes.data import warm_default_data_quality_cache
 from app.db.session import SessionLocal
 from app.playground.presets import GLOBAL_PRESET_DEFINITIONS
 from app.playground.service import enqueue_global_preset_run
@@ -20,6 +21,10 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings.validate()
+    try:
+        warm_default_data_quality_cache()
+    except Exception:
+        logger.exception("Default data-quality cache warm-up failed")
     db = SessionLocal()
     try:
         for preset_id in GLOBAL_PRESET_DEFINITIONS.keys():
