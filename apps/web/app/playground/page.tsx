@@ -115,10 +115,19 @@ export default function PlaygroundPage() {
             setPendingRunId(preset.id)
             const existingRunId = readPresetRunMap()[preset.id]
             if (existingRunId) {
-                const existingRun = await getRun(existingRunId)
-                if (existingRun && existingRun.status === "SUCCEEDED") {
-                    router.push(`/runs/${existingRunId}`)
-                    return
+                try {
+                    const existingRun = await getRun(existingRunId)
+                    if (existingRun && existingRun.status === "SUCCEEDED") {
+                        router.push(`/runs/${existingRunId}`)
+                        return
+                    }
+                } catch (e) {
+                    // Stale cache hit! Remove the entry so we don't try it again
+                    if (typeof window !== "undefined") {
+                        const current = readPresetRunMap()
+                        delete current[preset.id]
+                        window.localStorage.setItem(presetRunStorageKey, JSON.stringify(current))
+                    }
                 }
             }
             const runId = await getOrCreatePlaygroundPresetRun(preset.id)

@@ -510,7 +510,7 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
                                     <div key={idx} className="flex justify-between items-center p-2 rounded bg-background border border-border/40">
                                         <span className="font-bold text-foreground">{cov.symbol}</span>
                                         <span className="text-[11px] text-muted-foreground">
-                                            {cov.start_date || cov.coverage_start || "-"} to {cov.end_date || cov.coverage_end || "-"}
+                                            {cov.first_date || cov.start_date || cov.coverage_start || "-"} to {cov.last_date || cov.end_date || cov.coverage_end || "-"}
                                         </span>
                                     </div>
                                 ))}

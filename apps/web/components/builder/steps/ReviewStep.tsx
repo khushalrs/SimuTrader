@@ -18,6 +18,22 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 
+const EXCLUDED_CAPABILITY_KEYS = new Set([
+    "allocation_modes", // duplicate with supported_allocation_modes
+    "param_types", // object
+    "defaults", // object
+    "supported_asset_classes" // rendered separately
+])
+
+const CAPABILITY_LABEL_MAP: Record<string, string> = {
+    required_params: "Required Parameters",
+    optional_params: "Optional Parameters",
+    supported_allocation_modes: "Supported Allocations",
+    supports_mixed_currency: "Cross-Currency FX",
+    supports_shorting: "Short Selling Enabled",
+    supports_margin: "Margin Borrowing Enabled"
+}
+
 export function ReviewStep({ config, prevStep }: any) {
     const router = useRouter()
     const [isSubmitting, setIsSubmitting] = useState(false)
@@ -75,18 +91,36 @@ export function ReviewStep({ config, prevStep }: any) {
     // Helper to render date callout comparison
     const requestedStart = validConfig.backtest?.start_date
     const requestedEnd = validConfig.backtest?.end_date
-    const effectiveStart = preflightRes?.meta?.effective_start_date || preflightRes?.meta?.effective_start || requestedStart
-    const effectiveEnd = preflightRes?.meta?.effective_end_date || preflightRes?.meta?.effective_end || requestedEnd
+    const effectiveStart = preflightRes?.meta?.effective_start_date || preflightRes?.meta?.effective_start || preflightRes?.effective_start || requestedStart
+    const effectiveEnd = preflightRes?.meta?.effective_end_date || preflightRes?.meta?.effective_end || preflightRes?.effective_end || requestedEnd
     const isDateShifted = requestedStart && effectiveStart && (requestedStart !== effectiveStart || requestedEnd !== effectiveEnd)
 
-    // Data coverage table points
-    const dataCoverage = preflightRes?.meta?.data_coverage || preflightRes?.meta?.coverage || []
+    // Data coverage (Top-level in preflight response)
+    const dataCoverage = preflightRes?.data_coverage || preflightRes?.coverage || preflightRes?.meta?.data_coverage || []
 
-    // Required FX conversion pairs
-    const fxPairs = preflightRes?.meta?.required_fx_pairs || preflightRes?.meta?.fx_pairs || []
+    // Required FX conversion pairs (Top-level in preflight response)
+    const fxPairs = preflightRes?.required_fx_pairs || preflightRes?.fx_pairs || preflightRes?.meta?.required_fx_pairs || []
 
     // Strategy capabilities
     const capabilities = preflightRes?.strategy_capability || {}
+
+    // Formatting capability values to avoid raw objects or raw developer keys
+    const getFormattedValue = (key: string, val: any) => {
+        if (typeof val === "boolean") {
+            return val ? "Supported" : "Not Supported"
+        }
+        if (Array.isArray(val)) {
+            if (val.length === 0) return "None"
+            return val.map((v: string) => {
+                // Map parameter names to clean labels
+                if (v === "weights") return "Target Weights"
+                if (v === "equal") return "Equal Weight"
+                if (v === "amounts") return "Custom Amounts"
+                return v.replace(/_/g, " ")
+            }).join(", ")
+        }
+        return String(val)
+    }
 
     return (
         <div className="p-6 flex flex-col h-full space-y-6 text-sm">
@@ -151,13 +185,13 @@ export function ReviewStep({ config, prevStep }: any) {
                             <div className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground mb-2">
                                 <Calendar className="w-4 h-4 text-blue-500" /> Timeline Callout
                             </div>
-                            <div className="space-y-1 text-xs">
-                                <div><strong className="text-muted-foreground">Requested:</strong> {requestedStart} to {requestedEnd}</div>
+                            <div className="space-y-1 text-xs font-mono">
+                                <div><strong className="text-muted-foreground font-sans">Requested:</strong> {requestedStart} to {requestedEnd}</div>
                                 <div className={isDateShifted ? "text-yellow-600 font-medium font-semibold" : "text-muted-foreground"}>
-                                    <strong className="text-muted-foreground">Effective:</strong> {effectiveStart} to {effectiveEnd}
+                                    <strong className="text-muted-foreground font-sans">Effective:</strong> {effectiveStart} to {effectiveEnd}
                                 </div>
                                 {isDateShifted && (
-                                    <span className="text-[10px] bg-yellow-500/15 text-yellow-600 px-1 py-0.5 rounded font-medium mt-1 inline-block">Dates Shifted</span>
+                                    <span className="text-[10px] bg-yellow-500/15 text-yellow-600 px-1 py-0.5 rounded font-medium mt-1 inline-block font-sans">Dates Shifted</span>
                                 )}
                             </div>
                         </Card>
@@ -185,7 +219,7 @@ export function ReviewStep({ config, prevStep }: any) {
                                 <Coins className="w-4 h-4 text-emerald-500" /> Required FX Pairs
                             </div>
                             {fxPairs.length === 0 ? (
-                                <div className="text-xs text-muted-foreground">No cross-currency FX conversions required.</div>
+                                <div className="text-xs text-muted-foreground pt-1">No cross-currency FX conversions required.</div>
                             ) : (
                                 <div className="flex flex-wrap gap-1.5 pt-1">
                                     {fxPairs.map((pair: string) => (
@@ -198,19 +232,23 @@ export function ReviewStep({ config, prevStep }: any) {
                         </Card>
                     </div>
 
-                    {/* Dotted parameters capabilities / limitations */}
+                    {/* Dotted parameters capabilities / limitations (User facing copy, duplicate rows removed, no [object Object]) */}
                     {Object.keys(capabilities).length > 0 && (
                         <Card className="border bg-card shadow-sm p-4">
-                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5 border-b pb-2">
                                 <Sliders className="w-3.5 h-3.5 text-purple-500" /> Strategy Capabilities & Constraints
                             </h4>
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono">
-                                {Object.entries(capabilities).map(([key, val]) => (
-                                    <div key={key} className="space-y-0.5">
-                                        <div className="text-[10px] text-muted-foreground uppercase truncate" title={key}>{key.replace(/_/g, " ")}</div>
-                                        <div className="font-bold text-foreground truncate">{String(val)}</div>
-                                    </div>
-                                ))}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3.5 text-xs font-sans">
+                                {Object.entries(capabilities)
+                                    .filter(([key]) => !EXCLUDED_CAPABILITY_KEYS.has(key))
+                                    .map(([key, val]) => (
+                                        <div key={key} className="flex justify-between items-center py-1 border-b border-border/40">
+                                            <span className="text-muted-foreground font-medium">{CAPABILITY_LABEL_MAP[key] || key.replace(/_/g, " ")}</span>
+                                            <span className="font-bold text-foreground font-mono bg-muted/40 px-2 py-0.5 rounded text-[11px]">
+                                                {getFormattedValue(key, val)}
+                                            </span>
+                                        </div>
+                                    ))}
                             </div>
                         </Card>
                     )}
@@ -263,8 +301,12 @@ export function ReviewStep({ config, prevStep }: any) {
                                         {dataCoverage.map((item: any, idx: number) => (
                                             <tr key={idx} className="hover:bg-muted/20">
                                                 <td className="px-4 py-2 font-bold text-foreground">{item.symbol}</td>
-                                                <td className="px-4 py-2 text-muted-foreground">{item.start_date || item.coverage_start || "-"}</td>
-                                                <td className="px-4 py-2 text-muted-foreground">{item.end_date || item.coverage_end || "-"}</td>
+                                                <td className="px-4 py-2 text-muted-foreground">
+                                                    {item.first_date || item.start_date || item.coverage_start || "-"}
+                                                </td>
+                                                <td className="px-4 py-2 text-muted-foreground">
+                                                    {item.last_date || item.end_date || item.coverage_end || "-"}
+                                                </td>
                                                 <td className="px-4 py-2 text-right">
                                                     <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold ${
                                                         (item.coverage_pct ?? 1.0) >= 0.95 ? "bg-emerald-500/10 text-emerald-600" :

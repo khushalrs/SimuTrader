@@ -5,6 +5,7 @@ import useSWR from "swr"
 import { getDataCoverage, getDataQuality } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { 
     Loader2, 
     ShieldAlert, 
@@ -14,7 +15,9 @@ import {
     CheckCircle2, 
     AlertTriangle,
     Search,
-    Sliders
+    Sliders,
+    ChevronLeft,
+    ChevronRight
 } from "lucide-react"
 
 // Helper to determine region code from asset class or currency
@@ -38,6 +41,9 @@ function getRegionBadge(assetClass?: string | null, currency?: string | null) {
 
 export default function DataQualityPage() {
     const [searchQuery, setSearchQuery] = useState("")
+    const [heatmapPage, setHeatmapPage] = useState(1)
+    const [tablePage, setTablePage] = useState(1)
+    const pageSize = 15
 
     // Fetch overall data quality and coverage
     const { data: qualityData, isLoading: isLoadingQuality, error: qualityError } = useSWR(
@@ -96,6 +102,26 @@ export default function DataQualityPage() {
         )
     }, [mergedData, searchQuery])
 
+    // Paginated subsets
+    const paginatedHeatmapData = useMemo(() => {
+        const startIdx = (heatmapPage - 1) * pageSize
+        return filteredData.slice(startIdx, startIdx + pageSize)
+    }, [filteredData, heatmapPage])
+
+    const paginatedTableData = useMemo(() => {
+        const startIdx = (tablePage - 1) * pageSize
+        return filteredData.slice(startIdx, startIdx + pageSize)
+    }, [filteredData, tablePage])
+
+    const totalHeatmapPages = Math.ceil(filteredData.length / pageSize) || 1
+    const totalTablePages = Math.ceil(filteredData.length / pageSize) || 1
+
+    const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        setSearchQuery(e.target.value)
+        setHeatmapPage(1)
+        setTablePage(1)
+    }
+
     // Summary calculations
     const summary = useMemo(() => {
         if (mergedData.length === 0) return { totalSymbols: 0, avgQuality: 100, missingBars: 0, staleRatio: 0 }
@@ -114,11 +140,23 @@ export default function DataQualityPage() {
 
     return (
         <div className="container mx-auto py-10 max-w-6xl space-y-8 animate-in fade-in duration-500 text-sm">
-            <div>
-                <h1 className="text-3xl font-bold tracking-tight">Data Quality & Coverage diagnostics</h1>
-                <p className="text-muted-foreground mt-1">
-                    Audit time-series coverage ranges, missing daily bars, stale updates, and exchange calendar alignments across active assets.
-                </p>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                    <h1 className="text-3xl font-bold tracking-tight">Data Quality & Coverage diagnostics</h1>
+                    <p className="text-muted-foreground mt-1">
+                        Audit time-series coverage ranges, missing daily bars, stale updates, and exchange calendar alignments across active assets.
+                    </p>
+                </div>
+                <div className="relative w-full sm:w-64">
+                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <input 
+                        type="text" 
+                        placeholder="Search symbols or currencies..." 
+                        className="w-full pl-8 pr-3 py-2 border rounded-md bg-background text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary shadow-sm"
+                        value={searchQuery}
+                        onChange={handleSearchChange}
+                    />
+                </div>
             </div>
 
             {isLoading ? (
@@ -196,13 +234,42 @@ export default function DataQualityPage() {
 
                     {/* Coverage Heatmap grid */}
                     <Card className="border bg-card shadow-sm">
-                        <CardHeader className="border-b">
-                            <CardTitle className="text-base flex items-center gap-2">
-                                <Globe className="w-4 h-4 text-primary" /> Coverage Heatmap Grid
-                            </CardTitle>
-                            <CardDescription>
-                                Yearly distribution of historical data quality. Deeper green indicates 100% coverage with zero stale points.
-                            </CardDescription>
+                        <CardHeader className="border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                            <div>
+                                <CardTitle className="text-base flex items-center gap-2">
+                                    <Globe className="w-4 h-4 text-primary" /> Coverage Heatmap Grid
+                                </CardTitle>
+                                <CardDescription>
+                                    Yearly distribution of historical data quality. Deeper green indicates 100% coverage with zero stale points.
+                                </CardDescription>
+                            </div>
+                            
+                            {/* Pagination controls for Heatmap */}
+                            {totalHeatmapPages > 1 && (
+                                <div className="flex items-center space-x-2 text-xs">
+                                    <Button 
+                                        variant="outline" 
+                                        size="icon" 
+                                        className="h-8 w-8"
+                                        disabled={heatmapPage === 1}
+                                        onClick={() => setHeatmapPage(p => Math.max(1, p - 1))}
+                                    >
+                                        <ChevronLeft className="h-4 w-4" />
+                                    </Button>
+                                    <span className="font-mono text-muted-foreground">
+                                        Page {heatmapPage} of {totalHeatmapPages}
+                                    </span>
+                                    <Button 
+                                        variant="outline" 
+                                        size="icon" 
+                                        className="h-8 w-8"
+                                        disabled={heatmapPage === totalHeatmapPages}
+                                        onClick={() => setHeatmapPage(p => Math.min(totalHeatmapPages, p + 1))}
+                                    >
+                                        <ChevronRight className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            )}
                         </CardHeader>
                         <CardContent className="pt-6">
                             {filteredData.length === 0 ? (
@@ -219,7 +286,7 @@ export default function DataQualityPage() {
                                     
                                     {/* Grid rows */}
                                     <div className="space-y-2">
-                                        {filteredData.map(d => {
+                                        {paginatedHeatmapData.map(d => {
                                             const region = getRegionBadge(d.asset_class, d.currency)
                                             return (
                                                 <div key={d.symbol} className="grid grid-cols-[100px_1fr] gap-4 items-center font-mono text-xs">
@@ -267,25 +334,40 @@ export default function DataQualityPage() {
 
                     {/* Detailed Data Quality Table */}
                     <Card className="border bg-card shadow-sm overflow-hidden">
-                        <CardHeader className="border-b bg-muted/20">
-                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                                <div>
-                                    <CardTitle className="text-base">Asset Quality Metrics</CardTitle>
-                                    <CardDescription>
-                                        Detailed breakdown of daily price tick ranges, stale counts, and missing conversion indicators.
-                                    </CardDescription>
-                                </div>
-                                <div className="relative w-full sm:w-64">
-                                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                                    <input 
-                                        type="text" 
-                                        placeholder="Filter by symbol..." 
-                                        className="w-full pl-8 pr-3 py-1.5 border rounded-md bg-background text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                                        value={searchQuery}
-                                        onChange={e => setSearchQuery(e.target.value)}
-                                    />
-                                </div>
+                        <CardHeader className="border-b bg-muted/20 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                            <div>
+                                <CardTitle className="text-base">Asset Quality Metrics</CardTitle>
+                                <CardDescription>
+                                    Detailed breakdown of daily price tick ranges, stale counts, and missing conversion indicators.
+                                </CardDescription>
                             </div>
+                            
+                            {/* Pagination controls for Table */}
+                            {totalTablePages > 1 && (
+                                <div className="flex items-center space-x-2 text-xs">
+                                    <Button 
+                                        variant="outline" 
+                                        size="icon" 
+                                        className="h-8 w-8"
+                                        disabled={tablePage === 1}
+                                        onClick={() => setTablePage(p => Math.max(1, p - 1))}
+                                    >
+                                        <ChevronLeft className="h-4 w-4" />
+                                    </Button>
+                                    <span className="font-mono text-muted-foreground">
+                                        Page {tablePage} of {totalTablePages}
+                                    </span>
+                                    <Button 
+                                        variant="outline" 
+                                        size="icon" 
+                                        className="h-8 w-8"
+                                        disabled={tablePage === totalTablePages}
+                                        onClick={() => setTablePage(p => Math.min(totalTablePages, p + 1))}
+                                    >
+                                        <ChevronRight className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            )}
                         </CardHeader>
                         <div className="overflow-x-auto">
                             <table className="w-full text-xs text-left">
@@ -300,7 +382,7 @@ export default function DataQualityPage() {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y font-mono">
-                                    {filteredData.map((d) => (
+                                    {paginatedTableData.map((d) => (
                                         <tr key={d.symbol} className="hover:bg-muted/40 transition-colors">
                                             <td className="px-4 py-3">
                                                 <div className="font-bold text-foreground text-sm flex items-center gap-1.5">

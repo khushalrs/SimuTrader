@@ -59,6 +59,9 @@ export function CompareDashboardClient({ availableRuns }: { availableRuns: any[]
     );
 
     const getRunName = (id: string) => {
+        const compareRow = compareData?.metric_rows?.find((r: any) => r.run_id === id);
+        if (compareRow?.name) return compareRow.name;
+
         const run = availableRuns.find(r => r.id === id || r.run_id === id);
         return run?.title || run?.name || id.split("-")[0];
     }

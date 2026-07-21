@@ -291,7 +291,7 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                     </h3>
 
                     {config.strategy.type === "BUY_AND_HOLD" && (
-                        <p className="text-xs text-muted-foreground">No custom parameters required for Buy and Hold.</p>
+                        <p className="text-xs text-muted-foreground text-center py-6 font-medium">This strategy takes no configuration parameters.</p>
                     )}
 
                     {config.strategy.type === "FIXED_WEIGHT_REBALANCE" && (
