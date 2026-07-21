@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 class StrategyParamTypeOut(BaseModel):
     type: Literal["integer", "number", "string", "object"]
+    description: str | None = None
     min: float | None = None
     max: float | None = None
     exclusive_min: float | None = None

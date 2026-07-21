@@ -57,8 +57,8 @@ export function MarketSnapshot() {
             if (snapshotData.length === 0) setIsLoading(true);
             try {
                 // Fetch snapshot and a smaller chart series for first paint.
-                const end = new Date();
-                const start = new Date();
+                const end = new Date("2026-01-21");
+                const start = new Date("2026-01-21");
                 start.setMonth(end.getMonth() - 3);
                 
                 const [snap, bars] = await Promise.all([

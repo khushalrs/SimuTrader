@@ -5,6 +5,27 @@ import { useEffect, useState } from "react"
 import { AlertCircle, Sliders, Info, Loader2 } from "lucide-react"
 import { getStrategySchemas } from "@/lib/api"
 
+const PARAM_HELP: Record<string, string> = {
+    lookback_days: "The number of historical trading days used to calculate asset performance or moving average indicators (e.g. 252 days for 1 year, 20 days for 1 month).",
+    skip_days: "The number of recent trading days to ignore to avoid short-term market noise or mean reversion effects (e.g. 21 days to skip the most recent month).",
+    top_k: "The maximum number of top-performing assets to purchase during each rebalancing cycle.",
+    entry_threshold: "The statistical Z-Score threshold at which to trigger a buy order (e.g. 2.0 indicates the price is 2 standard deviations below the mean).",
+    exit_threshold: "The statistical Z-Score threshold at which to close an active position (must be less than the entry threshold, e.g. 0.0 or 0.5).",
+    hold_days: "The maximum number of calendar days to hold an active position before auto-exiting (if exit threshold is not triggered first).",
+    drift_threshold: "The percentage allocation drift (e.g. 0.05 for 5%) that triggers an out-of-schedule rebalancing of assets.",
+    rebalance_frequency: "How often the strategy portfolio is checked and adjusted to match target allocations.",
+    weighting: "The portfolio weighting methodology (e.g. equal weights, risk-parity, or value-weighted).",
+    target_weights: "The target percentage allocation weight for each asset (must sum to 100% or will be normalized)."
+}
+
+const FALLBACK_DESCRIPTIONS: Record<string, string> = {
+    BUY_AND_HOLD: "Buy and Hold assigns equal weight to all selected assets on day 1 and maintains those holdings until the end of the simulation period.",
+    FIXED_WEIGHT_REBALANCE: "Fixed Weight Rebalance maintains target allocation weights over time by rebalancing assets periodically (daily, weekly, monthly, quarterly) or when they drift past a specified threshold.",
+    DCA: "Dollar-Cost Averaging periodically allocates fixed dollar amounts or equal weights to selected assets at specified intervals.",
+    MOMENTUM: "Momentum strategy selects top performing assets based on historical performance over a specified lookback period (e.g. 252 days) and rebalances holdings periodically.",
+    MEAN_REVERSION: "Mean Reversion trades assets based on their statistical deviation (Z-score) from a moving average. It enters when price deviates significantly and exits when it reverts."
+}
+
 export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) {
     const [schemas, setSchemas] = useState<any[]>([])
     const [isLoadingSchemas, setIsLoadingSchemas] = useState(true)
@@ -18,18 +39,9 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
         let active = true
         getStrategySchemas().then(res => {
             if (active) {
-                // Ensure res is array
                 const schemaList = Array.isArray(res) ? res : Object.values(res || {})
                 setSchemas(schemaList)
                 setIsLoadingSchemas(false)
-
-                // If currently selected strategy doesn't exist in backend list, warn/fallback
-                if (schemaList.length > 0 && config.strategy.type) {
-                    const match = schemaList.find((s: any) => s.type === config.strategy.type || s.name === config.strategy.type)
-                    if (!match) {
-                        console.warn(`Strategy ${config.strategy.type} not present in schemas, using fallback validation.`)
-                    }
-                }
             }
         }).catch((err) => {
             console.error("Failed to load strategy schemas:", err)
@@ -37,6 +49,38 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
         })
         return () => { active = false }
     }, [])
+
+    const selectedSchema = schemas.find(s => s.type === config.strategy.type)
+
+    // Check if parameter is required
+    const isParamRequired = (key: string) => {
+        if (!selectedSchema) return true // default to required if no schema
+        
+        // standard JSON Schema rules
+        const requiredList = selectedSchema.required || selectedSchema.required_params || []
+        if (Array.isArray(requiredList) && requiredList.includes(key)) return true
+        if (selectedSchema.parameters?.[key]?.required === true) return true
+        
+        // If explicitly optional
+        const optionalList = selectedSchema.optional_params || selectedSchema.optional || []
+        if (Array.isArray(optionalList) && optionalList.includes(key)) return false
+        
+        // Default fallbacks for built-in strategies
+        if (config.strategy.type === "MOMENTUM") {
+            return ["lookback_days", "top_k", "rebalance_frequency"].includes(key)
+        }
+        if (config.strategy.type === "MEAN_REVERSION") {
+            return ["lookback_days", "entry_threshold"].includes(key)
+        }
+        if (config.strategy.type === "FIXED_WEIGHT_REBALANCE") {
+            return ["rebalance_frequency", "target_weights"].includes(key)
+        }
+        if (config.strategy.type === "DCA") {
+            return ["weighting"].includes(key)
+        }
+        
+        return false
+    }
 
     // Feasibility / Warning checks
     useEffect(() => {
@@ -69,7 +113,6 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
         }
 
         // Warn on unsupported combinations of strategy and asset classes
-        const selectedSchema = schemas.find(s => s.type === strategy)
         if (selectedSchema && selectedSchema.supported_asset_classes) {
             const unsupported = instruments.filter((i: any) => !selectedSchema.supported_asset_classes.includes(i.asset_class))
             if (unsupported.length > 0) {
@@ -78,7 +121,7 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
         }
         
         setWarnings(list)
-    }, [config, schemas])
+    }, [config, selectedSchema])
 
     // Validation checks
     useEffect(() => {
@@ -121,14 +164,12 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
         const type = e.target.value
         let defaultParams: any = {}
 
-        // Set default values matching schema defaults or hardcoded values
-        const selectedSchema = schemas.find(s => s.type === type)
-        if (selectedSchema && selectedSchema.parameters) {
-            Object.entries(selectedSchema.parameters).forEach(([key, paramSchema]: [string, any]) => {
+        const match = schemas.find(s => s.type === type)
+        if (match && match.parameters) {
+            Object.entries(match.parameters).forEach(([key, paramSchema]: [string, any]) => {
                 defaultParams[key] = paramSchema.default ?? ""
             })
         } else {
-            // Hardcoded fallback default parameters
             if (type === "MOMENTUM") {
                 defaultParams = { lookback_days: 252, skip_days: 21, top_k: Math.max(1, Math.min(3, instrumentCount || 1)), rebalance_frequency: "MONTHLY", weighting: "EQUAL" }
             } else if (type === "MEAN_REVERSION") {
@@ -160,7 +201,6 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
         }))
     }
 
-    // List of strategy names/types to select from
     const strategyOptions = schemas.length > 0 
         ? schemas.map(s => ({ value: s.type || s.name, label: s.name || s.type }))
         : [
@@ -171,7 +211,42 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
             { value: "MEAN_REVERSION", label: "Mean Reversion" }
           ]
 
-    const selectedSchema = schemas.find(s => s.type === config.strategy.type)
+    const getParamRangeText = (paramSchema: any) => {
+        const min = paramSchema?.minimum ?? paramSchema?.min
+        const max = paramSchema?.maximum ?? paramSchema?.max
+        if (min !== undefined && max !== undefined) return `Range: ${min} to ${max}`
+        if (min !== undefined) return `Min: ${min}`
+        if (max !== undefined) return `Max: ${max}`
+        return ""
+    }
+
+    const renderParamLabel = (key: string, labelText: string) => {
+        const required = isParamRequired(key)
+        return (
+            <label className="text-xs font-semibold text-foreground flex items-center">
+                <span>{labelText}</span>
+                {required ? (
+                    <span className="text-rose-500 ml-0.5 font-bold" title="Required Parameter">*</span>
+                ) : (
+                    <span className="text-muted-foreground/60 text-[10px] font-normal ml-1">(Optional)</span>
+                )}
+            </label>
+        )
+    }
+
+    const renderParamFieldHelp = (key: string, paramSchema?: any) => {
+        const helpText = paramSchema?.description || PARAM_HELP[key]
+        const rangeText = paramSchema ? getParamRangeText(paramSchema) : ""
+        if (!helpText && !rangeText) return null
+        return (
+            <div className="space-y-0.5 mt-1">
+                {helpText && <p className="text-[10px] text-muted-foreground leading-normal">{helpText}</p>}
+                {rangeText && <p className="text-[10px] text-primary/80 font-medium font-mono">{rangeText}</p>}
+            </div>
+        )
+    }
+
+    const strategyDescription = selectedSchema?.description || FALLBACK_DESCRIPTIONS[config.strategy.type] || ""
 
     return (
         <div className="p-6 flex flex-col h-full space-y-6">
@@ -203,10 +278,10 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                     )}
                 </div>
 
-                {selectedSchema?.description && (
+                {strategyDescription && (
                     <div className="flex items-start gap-2.5 p-3 rounded-lg border border-primary/10 bg-primary/5 text-xs text-foreground/80">
                         <Info className="w-4 h-4 shrink-0 text-primary mt-0.5" />
-                        <p>{selectedSchema.description}</p>
+                        <p>{strategyDescription}</p>
                     </div>
                 )}
 
@@ -216,14 +291,14 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                     </h3>
 
                     {config.strategy.type === "BUY_AND_HOLD" && (
-                        <p className="text-xs text-muted-foreground">Buy and hold assigns equal weight to all assets on day 1 and holds them until the end.</p>
+                        <p className="text-xs text-muted-foreground">No custom parameters required for Buy and Hold.</p>
                     )}
 
                     {config.strategy.type === "FIXED_WEIGHT_REBALANCE" && (
                         <div className="space-y-4">
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1.5">
-                                    <label className="text-xs text-muted-foreground font-semibold">Rebalance Frequency</label>
+                                    {renderParamLabel("rebalance_frequency", "Rebalance Frequency")}
                                     <select
                                         className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         value={config.strategy.params.rebalance_frequency || "MONTHLY"}
@@ -234,9 +309,10 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                                         <option value="MONTHLY">Monthly</option>
                                         <option value="QUARTERLY">Quarterly</option>
                                     </select>
+                                    {renderParamFieldHelp("rebalance_frequency", selectedSchema?.parameters?.rebalance_frequency)}
                                 </div>
                                 <div className="space-y-1.5">
-                                    <label className="text-xs text-muted-foreground font-semibold">Drift Threshold</label>
+                                    {renderParamLabel("drift_threshold", "Drift Threshold")}
                                     <input
                                         type="number"
                                         step="0.01"
@@ -250,11 +326,12 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                                             setParam("drift_threshold", val === "" ? "" : parseFloat(val))
                                         }}
                                     />
+                                    {renderParamFieldHelp("drift_threshold", selectedSchema?.parameters?.drift_threshold)}
                                 </div>
                             </div>
                             
                             <div className="space-y-2 pt-2">
-                                <label className="text-xs font-semibold text-foreground">Target Weights (%)</label>
+                                {renderParamLabel("target_weights", "Target Weights (%)")}
                                 <div className="border border-border rounded-md p-3 space-y-2.5 bg-background/50">
                                     {config.universe.instruments.map((inst: any) => {
                                         const tw = config.strategy.params.target_weights || {}
@@ -285,7 +362,7 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                                         )
                                     })}
                                 </div>
-                                <p className="text-[10px] text-muted-foreground">Weights will be automatically normalized to sum to 100% by the backtest engine.</p>
+                                {renderParamFieldHelp("target_weights", selectedSchema?.parameters?.target_weights)}
                             </div>
                         </div>
                     )}
@@ -293,25 +370,27 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                     {config.strategy.type === "MOMENTUM" && (
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-1.5">
-                                <label className="text-xs text-muted-foreground font-semibold">Lookback Days</label>
+                                {renderParamLabel("lookback_days", "Lookback Days")}
                                 <input
                                     type="number"
                                     className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     value={config.strategy.params.lookback_days || 252}
                                     onChange={e => setParam("lookback_days", parseInt(e.target.value))}
                                 />
+                                {renderParamFieldHelp("lookback_days", selectedSchema?.parameters?.lookback_days)}
                             </div>
                             <div className="space-y-1.5">
-                                <label className="text-xs text-muted-foreground font-semibold">Skip Days</label>
+                                {renderParamLabel("skip_days", "Skip Days")}
                                 <input
                                     type="number"
                                     className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     value={config.strategy.params.skip_days || 21}
                                     onChange={e => setParam("skip_days", parseInt(e.target.value))}
                                 />
+                                {renderParamFieldHelp("skip_days", selectedSchema?.parameters?.skip_days)}
                             </div>
                             <div className="space-y-1.5">
-                                <label className="text-xs text-muted-foreground font-semibold">Top K Assets</label>
+                                {renderParamLabel("top_k", "Top K Assets")}
                                 <input
                                     type="number"
                                     min="1"
@@ -329,10 +408,10 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                                         }
                                     }}
                                 />
-                                <p className="text-[10px] text-muted-foreground pt-0.5">Max allowed limit: {instrumentCount} assets.</p>
+                                {renderParamFieldHelp("top_k", selectedSchema?.parameters?.top_k)}
                             </div>
                             <div className="space-y-1.5">
-                                <label className="text-xs text-muted-foreground font-semibold">Rebalance Frequency</label>
+                                {renderParamLabel("rebalance_frequency", "Rebalance Frequency")}
                                 <select
                                     className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     value={config.strategy.params.rebalance_frequency || "MONTHLY"}
@@ -342,6 +421,7 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                                     <option value="MONTHLY">Monthly</option>
                                     <option value="QUARTERLY">Quarterly</option>
                                 </select>
+                                {renderParamFieldHelp("rebalance_frequency", selectedSchema?.parameters?.rebalance_frequency)}
                             </div>
                         </div>
                     )}
@@ -349,16 +429,17 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                     {config.strategy.type === "MEAN_REVERSION" && (
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-1.5">
-                                <label className="text-xs text-muted-foreground font-semibold">Lookback Days</label>
+                                {renderParamLabel("lookback_days", "Lookback Days")}
                                 <input
                                     type="number"
                                     className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     value={config.strategy.params.lookback_days || 20}
                                     onChange={e => setParam("lookback_days", parseInt(e.target.value))}
                                 />
+                                {renderParamFieldHelp("lookback_days", selectedSchema?.parameters?.lookback_days)}
                             </div>
                             <div className="space-y-1.5">
-                                <label className="text-xs text-muted-foreground font-semibold">Entry Threshold (Z-Score)</label>
+                                {renderParamLabel("entry_threshold", "Entry Threshold (Z-Score)")}
                                 <input
                                     type="number"
                                     step="0.1"
@@ -366,9 +447,10 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                                     value={config.strategy.params.entry_threshold ?? 2.0}
                                     onChange={e => setParam("entry_threshold", parseFloat(e.target.value))}
                                 />
+                                {renderParamFieldHelp("entry_threshold", selectedSchema?.parameters?.entry_threshold)}
                             </div>
                             <div className="space-y-1.5">
-                                <label className="text-xs text-muted-foreground font-semibold">Exit Threshold (Optional)</label>
+                                {renderParamLabel("exit_threshold", "Exit Threshold")}
                                 <input
                                     type="number"
                                     step="0.1"
@@ -381,9 +463,10 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                                         else setParam("exit_threshold", parseFloat(val))
                                     }}
                                 />
+                                {renderParamFieldHelp("exit_threshold", selectedSchema?.parameters?.exit_threshold)}
                             </div>
                             <div className="space-y-1.5">
-                                <label className="text-xs text-muted-foreground font-semibold">Hold Days (Optional)</label>
+                                {renderParamLabel("hold_days", "Hold Days")}
                                 <input
                                     type="number"
                                     placeholder="e.g. 5"
@@ -395,13 +478,14 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                                         else setParam("hold_days", parseInt(val))
                                     }}
                                 />
+                                {renderParamFieldHelp("hold_days", selectedSchema?.parameters?.hold_days)}
                             </div>
                         </div>
                     )}
 
                     {config.strategy.type === "DCA" && (
                         <div className="space-y-1.5">
-                            <label className="text-xs text-muted-foreground font-semibold">Periodic Buy Targets</label>
+                            {renderParamLabel("weighting", "Periodic Buy Weighting")}
                             <select
                                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 value={config.strategy.params.weighting || "EQUAL"}
@@ -409,39 +493,90 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
                             >
                                 <option value="EQUAL">Equal Target Weights</option>
                             </select>
+                            {renderParamFieldHelp("weighting", selectedSchema?.parameters?.weighting)}
                         </div>
                     )}
 
                     {/* Dynamically render unknown parameter fields parsed from strategy schemas */}
                     {selectedSchema?.parameters && !["BUY_AND_HOLD", "FIXED_WEIGHT_REBALANCE", "MOMENTUM", "MEAN_REVERSION", "DCA"].includes(config.strategy.type) && (
-                        <div className="grid grid-cols-2 gap-4">
-                            {Object.entries(selectedSchema.parameters).map(([key, paramSchema]: [string, any]) => (
-                                <div key={key} className="space-y-1.5">
-                                    <label className="text-xs text-muted-foreground font-semibold capitalize">{key.replace(/_/g, " ")}</label>
-                                    {paramSchema.enum ? (
-                                        <select
-                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            value={config.strategy.params[key] ?? paramSchema.default ?? ""}
-                                            onChange={e => setParam(key, e.target.value)}
-                                        >
-                                            {paramSchema.enum.map((opt: string) => (
-                                                <option key={opt} value={opt}>{opt}</option>
+                        <div className="space-y-6 pt-2">
+                            {/* Required Parameters section */}
+                            {Object.entries(selectedSchema.parameters).some(([key]) => isParamRequired(key)) && (
+                                <div className="space-y-4">
+                                    <h4 className="text-[10px] font-semibold uppercase text-muted-foreground tracking-wider pb-1 border-b">Required Configurations</h4>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        {Object.entries(selectedSchema.parameters)
+                                            .filter(([key]) => isParamRequired(key))
+                                            .map(([key, paramSchema]: [string, any]) => (
+                                                <div key={key} className="space-y-1.5">
+                                                    {renderParamLabel(key, key.replace(/_/g, " "))}
+                                                    {paramSchema.enum ? (
+                                                        <select
+                                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                            value={config.strategy.params[key] ?? paramSchema.default ?? ""}
+                                                            onChange={e => setParam(key, e.target.value)}
+                                                        >
+                                                            {paramSchema.enum.map((opt: string) => (
+                                                                <option key={opt} value={opt}>{opt}</option>
+                                                            ))}
+                                                        </select>
+                                                    ) : (
+                                                        <input
+                                                            type={paramSchema.type === "number" || paramSchema.type === "integer" ? "number" : "text"}
+                                                            placeholder={`Default: ${paramSchema.default ?? ""}`}
+                                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                            value={config.strategy.params[key] ?? ""}
+                                                            onChange={e => {
+                                                                const val = e.target.value
+                                                                setParam(key, paramSchema.type === "number" || paramSchema.type === "integer" ? (val === "" ? "" : parseFloat(val)) : val)
+                                                            }}
+                                                        />
+                                                    )}
+                                                    {renderParamFieldHelp(key, paramSchema)}
+                                                </div>
                                             ))}
-                                        </select>
-                                    ) : (
-                                        <input
-                                            type={paramSchema.type === "number" || paramSchema.type === "integer" ? "number" : "text"}
-                                            placeholder={`Default: ${paramSchema.default ?? ""}`}
-                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            value={config.strategy.params[key] ?? ""}
-                                            onChange={e => {
-                                                const val = e.target.value
-                                                setParam(key, paramSchema.type === "number" || paramSchema.type === "integer" ? (val === "" ? "" : parseFloat(val)) : val)
-                                            }}
-                                        />
-                                    )}
+                                    </div>
                                 </div>
-                            ))}
+                            )}
+
+                            {/* Optional Parameters section */}
+                            {Object.entries(selectedSchema.parameters).some(([key]) => !isParamRequired(key)) && (
+                                <div className="space-y-4 pt-2">
+                                    <h4 className="text-[10px] font-semibold uppercase text-muted-foreground tracking-wider pb-1 border-b">Optional Configurations</h4>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        {Object.entries(selectedSchema.parameters)
+                                            .filter(([key]) => !isParamRequired(key))
+                                            .map(([key, paramSchema]: [string, any]) => (
+                                                <div key={key} className="space-y-1.5">
+                                                    {renderParamLabel(key, key.replace(/_/g, " "))}
+                                                    {paramSchema.enum ? (
+                                                        <select
+                                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                            value={config.strategy.params[key] ?? paramSchema.default ?? ""}
+                                                            onChange={e => setParam(key, e.target.value)}
+                                                        >
+                                                            {paramSchema.enum.map((opt: string) => (
+                                                                <option key={opt} value={opt}>{opt}</option>
+                                                            ))}
+                                                        </select>
+                                                    ) : (
+                                                        <input
+                                                            type={paramSchema.type === "number" || paramSchema.type === "integer" ? "number" : "text"}
+                                                            placeholder={`Default: ${paramSchema.default ?? ""}`}
+                                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                            value={config.strategy.params[key] ?? ""}
+                                                            onChange={e => {
+                                                                const val = e.target.value
+                                                                setParam(key, paramSchema.type === "number" || paramSchema.type === "integer" ? (val === "" ? "" : parseFloat(val)) : val)
+                                                            }}
+                                                        />
+                                                    )}
+                                                    {renderParamFieldHelp(key, paramSchema)}
+                                                </div>
+                                            ))}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

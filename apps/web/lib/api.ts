@@ -114,9 +114,29 @@ const RunListItemSchema = z.object({
 const RunListSchema = z.array(RunListItemSchema)
 
 function runApiFetch(input: string, init?: RequestInit): Promise<Response> {
+    const headers: Record<string, string> = {}
+    
+    if (isServer) {
+        try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const nextHeaders = require("next/headers")
+            const cookieStore = nextHeaders.cookies()
+            const cookieHeader = cookieStore.toString()
+            if (cookieHeader) {
+                headers["Cookie"] = cookieHeader
+            }
+        } catch {
+            // Ignore if called outside request context (e.g. during build)
+        }
+    }
+
     return fetch(input, {
         credentials: "include",
         ...init,
+        headers: {
+            ...headers,
+            ...init?.headers,
+        }
     })
 }
 
@@ -1077,7 +1097,7 @@ export async function getRunCostsSummary(runId: string): Promise<RunCostsSummary
 
 export async function getStrategySchemas(): Promise<any> {
     try {
-        const res = await runApiFetch(`${API_BASE_URL}/strategies/schemas`, { cache: "no-store" })
+        const res = await runApiFetch(`${API_BASE_URL}/strategy-schemas`, { cache: "no-store" })
         if (!res.ok) return []
         return await res.json()
     } catch (e) {
