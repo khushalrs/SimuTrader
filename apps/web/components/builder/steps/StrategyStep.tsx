@@ -127,12 +127,23 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
     useEffect(() => {
         setValidationError(null)
         const type = config.strategy.type
-        const p = config.strategy.params
+        const p = config.strategy.params || {}
+        const instruments = config.universe.instruments || []
 
         if (type === "MOMENTUM") {
-            const tk = p.top_k || 3
-            if (instrumentCount === 0) setValidationError("Please select at least 1 instrument in Step 1.")
-            else if (tk < 1 || tk > instrumentCount) setValidationError("Top K must be between 1 and the number of selected instruments.")
+            const tk = p.top_k !== undefined && p.top_k !== "" ? parseInt(p.top_k) : 3
+            if (instrumentCount === 0) {
+                setValidationError("Please select at least 1 instrument in Step 1.")
+            } else if (tk > instrumentCount && instrumentCount > 0) {
+                // Auto-clamp top_k to available instrument count
+                updateConfig((prev: any) => ({
+                    ...prev,
+                    strategy: {
+                        ...prev.strategy,
+                        params: { ...prev.strategy.params, top_k: Math.max(1, instrumentCount) }
+                    }
+                }))
+            }
         } else if (type === "MEAN_REVERSION") {
             if (p.entry_threshold === undefined || p.entry_threshold <= 0) setValidationError("Entry threshold must be > 0.")
             else if (p.exit_threshold !== undefined && p.exit_threshold !== "" && p.exit_threshold < 0) setValidationError("Exit threshold must be >= 0.")
@@ -141,12 +152,25 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
             else if ((p.exit_threshold === undefined || p.exit_threshold === "") && (p.hold_days === undefined || p.hold_days === "")) setValidationError("Must specify either Exit Threshold or Hold Days.")
         } else if (type === "FIXED_WEIGHT_REBALANCE") {
             const tw = p.target_weights || {}
-            const symbols = config.universe.instruments.map((i: any) => i.symbol)
+            const symbols = instruments.map((i: any) => i.symbol)
             const missing = symbols.filter((s: string) => tw[s] === undefined || tw[s] === "")
             if (instrumentCount === 0) {
                 setValidationError("Please select at least 1 instrument in Step 1.")
             } else if (missing.length > 0) {
-                setValidationError(`Must specify target weights for all symbols. Missing: ${missing.join(", ")}`)
+                // Auto-populate target weights for missing symbols
+                const newWeights: Record<string, number> = { ...tw }
+                symbols.forEach((s: string) => {
+                    if (newWeights[s] === undefined || newWeights[s] === null || (newWeights[s] as any) === "") {
+                        newWeights[s] = instrumentCount > 0 ? parseFloat((1 / instrumentCount).toFixed(4)) : 1.0
+                    }
+                })
+                updateConfig((prev: any) => ({
+                    ...prev,
+                    strategy: {
+                        ...prev.strategy,
+                        params: { ...prev.strategy.params, target_weights: newWeights }
+                    }
+                }))
             } else {
                 const totalGross = Object.values(tw).reduce((acc: number, val: any) => acc + Math.abs(parseFloat(val || 0)), 0)
                 if (totalGross <= 0) {

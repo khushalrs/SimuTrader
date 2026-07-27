@@ -91,18 +91,18 @@ export function ReviewStep({ config, prevStep }: any) {
     // Helper to render date callout comparison
     const requestedStart = validConfig.backtest?.start_date
     const requestedEnd = validConfig.backtest?.end_date
-    const effectiveStart = preflightRes?.meta?.effective_start_date || preflightRes?.meta?.effective_start || preflightRes?.effective_start || requestedStart
-    const effectiveEnd = preflightRes?.meta?.effective_end_date || preflightRes?.meta?.effective_end || preflightRes?.effective_end || requestedEnd
+    const effectiveStart = preflightRes?.meta?.effective_start_date || (preflightRes as any)?.meta?.effective_start || (preflightRes as any)?.effective_start || requestedStart
+    const effectiveEnd = preflightRes?.meta?.effective_end_date || (preflightRes as any)?.meta?.effective_end || (preflightRes as any)?.effective_end || requestedEnd
     const isDateShifted = requestedStart && effectiveStart && (requestedStart !== effectiveStart || requestedEnd !== effectiveEnd)
 
     // Data coverage (Top-level in preflight response)
-    const dataCoverage = preflightRes?.data_coverage || preflightRes?.coverage || preflightRes?.meta?.data_coverage || []
+    const dataCoverage = (preflightRes as any)?.data_coverage || (preflightRes as any)?.coverage || preflightRes?.meta?.data_coverage || []
 
     // Required FX conversion pairs (Top-level in preflight response)
-    const fxPairs = preflightRes?.required_fx_pairs || preflightRes?.fx_pairs || preflightRes?.meta?.required_fx_pairs || []
+    const fxPairs = (preflightRes as any)?.required_fx_pairs || (preflightRes as any)?.fx_pairs || preflightRes?.meta?.required_fx_pairs || []
 
     // Strategy capabilities
-    const capabilities = preflightRes?.strategy_capability || {}
+    const capabilities = (preflightRes as any)?.strategy_capability || {}
 
     // Formatting capability values to avoid raw objects or raw developer keys
     const getFormattedValue = (key: string, val: any) => {

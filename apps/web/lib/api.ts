@@ -25,6 +25,28 @@ if (isProd) {
 
 export const API_BASE_URL = rawApiBaseUrl as string
 
+export function buildApiUrl(path: string, params?: Record<string, string | undefined>): string {
+    const isAbs = API_BASE_URL.startsWith("http://") || API_BASE_URL.startsWith("https://")
+    const base = isAbs
+        ? API_BASE_URL
+        : typeof window !== "undefined"
+            ? `${window.location.origin}${API_BASE_URL.startsWith("/") ? "" : "/"}${API_BASE_URL}`
+            : `http://localhost:8000${API_BASE_URL.startsWith("/") ? "" : "/"}${API_BASE_URL}`
+
+    const cleanBase = base.replace(/\/+$/, "")
+    const cleanPath = path.startsWith("/") ? path : `/${path}`
+    const url = new URL(`${cleanBase}${cleanPath}`)
+
+    if (params) {
+        Object.entries(params).forEach(([k, v]) => {
+            if (v !== undefined && v !== null && v !== "") {
+                url.searchParams.append(k, v)
+            }
+        })
+    }
+    return url.toString()
+}
+
 // ---------------------------------------------------------------------------
 // Dev-only logger — silenced in production to prevent backend internals from
 // leaking into browser consoles or log aggregators.
@@ -548,6 +570,23 @@ export async function getRunEquity(runId: string) {
     return mapEquity(parsed.data);
 }
 
+export async function getRunBenchmark(runId: string): Promise<{ date: string; value: number }[] | null> {
+    const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/benchmark`, { cache: "no-store" });
+    if (!res.ok) return null;
+    try {
+        const json = await res.json();
+        if (Array.isArray(json)) {
+            return json.map((pt: any) => ({
+                date: pt.date || pt.time,
+                value: typeof pt.value === "number" ? pt.value : parseFloat(pt.value || pt.close || 0)
+            }));
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
 export function buildValidConfig(config: any) {
     const instruments = config.universe.instruments.map((i: any) => {
         const item: any = {
@@ -824,9 +863,8 @@ export interface AssetOut {
 export async function searchAssets(query: string): Promise<AssetOut[]> {
     if (!query) return []
     try {
-        const url = new URL(`${API_BASE_URL}/assets`)
-        url.searchParams.append("q", query)
-        const res = await runApiFetch(url.toString())
+        const urlStr = buildApiUrl("/assets", { q: query })
+        const res = await runApiFetch(urlStr)
         if (!res.ok) {
             devLog(`[API] Failed to fetch assets: ${res.status}`)
             return []
@@ -1133,11 +1171,8 @@ export async function cloneRun(runId: string, overrides?: any): Promise<string> 
 
 export async function getDataCoverage(symbols?: string[]): Promise<any> {
     try {
-        const url = new URL(`${API_BASE_URL}/data/coverage`)
-        if (symbols && symbols.length > 0) {
-            url.searchParams.append("symbols", symbols.join(","))
-        }
-        const res = await runApiFetch(url.toString(), { cache: "no-store" })
+        const urlStr = buildApiUrl("/data/coverage", { symbols: symbols?.length ? symbols.join(",") : undefined })
+        const res = await runApiFetch(urlStr, { cache: "no-store" })
         if (!res.ok) return []
         return await res.json()
     } catch (e) {
@@ -1148,11 +1183,8 @@ export async function getDataCoverage(symbols?: string[]): Promise<any> {
 
 export async function getDataQuality(symbols?: string[]): Promise<any> {
     try {
-        const url = new URL(`${API_BASE_URL}/data/quality`)
-        if (symbols && symbols.length > 0) {
-            url.searchParams.append("symbols", symbols.join(","))
-        }
-        const res = await runApiFetch(url.toString(), { cache: "no-store" })
+        const urlStr = buildApiUrl("/data/quality", { symbols: symbols?.length ? symbols.join(",") : undefined })
+        const res = await runApiFetch(urlStr, { cache: "no-store" })
         if (!res.ok) return []
         return await res.json()
     } catch (e) {

@@ -4,10 +4,10 @@ import useSWR from "swr"
 import { getRunFills } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ShieldAlert, TrendingUp, TrendingDown, Clock, Activity, Award, Percent, DollarSign } from "lucide-react"
+import { ShieldAlert, TrendingUp, TrendingDown, Activity, Award } from "lucide-react"
 import { useMemo } from "react"
+import { ContributionTable } from "./ContributionTable"
 
 interface Trade {
     symbol: string
@@ -215,6 +215,9 @@ export function TradeAnalyticsTab({ runId, baseCurrency = "USD" }: { runId: stri
                     </CardContent>
                 </Card>
             </div>
+
+            {/* Symbol Performance Contribution Table Card (F5) */}
+            <ContributionTable fills={fills} />
 
             {/* Performance Averages */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
