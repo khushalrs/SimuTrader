@@ -21,9 +21,11 @@ import { KPIGrid } from "@/components/run/KPIGrid"
 import { RunRetryButton } from "@/components/run/RunRetryButton"
 import { MonthlyReturnsTab } from "@/components/run/MonthlyReturnsTab"
 import { RollingMetricsTab } from "@/components/run/RollingMetricsTab"
+import { PortfolioReplayTab } from "@/components/run/PortfolioReplayTab"
+import { SignalPipelineTimeline } from "@/components/run/SignalPipelineTimeline"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AlertCircle, Loader2, Lightbulb, ArrowRight } from "lucide-react"
-import { RunData, getRun, getRunMetrics, getRunEquity, getRunStatus, getRunExplain, getRunBenchmark } from "@/lib/api"
+import { RunData, RunFillOut, getRun, getRunMetrics, getRunEquity, getRunStatus, getRunExplain, getRunBenchmark } from "@/lib/api"
 
 export function RunDashboardClient({ runId }: { runId: string }) {
     const [activeTab, setActiveTab] = useState<string>("performance")
@@ -96,6 +98,7 @@ export function RunDashboardClient({ runId }: { runId: string }) {
     const latestPoint = equityData.length > 0 ? equityData[equityData.length - 1] : null;
 
     const [hoveredPoint, setHoveredPoint] = useState<{ date: string; value: number } | null>(null);
+    const [selectedFill, setSelectedFill] = useState<RunFillOut | null>(null);
 
     const inspectorDate = hoveredPoint ? hoveredPoint.date : (latestPoint ? latestPoint.date : undefined);
     const inspectorEquity = hoveredPoint ? hoveredPoint.value : (latestPoint ? latestPoint.value : undefined);
@@ -207,6 +210,8 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                         <div className="flex items-center justify-between mb-4">
                             <TabsList className="flex flex-wrap h-auto gap-1">
                                 <TabsTrigger value="performance">Performance</TabsTrigger>
+                                <TabsTrigger value="replay" disabled={isPending || isFailed}>Replay Scrubber</TabsTrigger>
+                                <TabsTrigger value="timeline" disabled={isPending || isFailed}>Pipeline Timeline</TabsTrigger>
                                 <TabsTrigger value="monthly" disabled={isPending || isFailed}>Monthly Heatmap</TabsTrigger>
                                 <TabsTrigger value="rolling" disabled={isPending || isFailed}>Rolling Metrics</TabsTrigger>
                                 <TabsTrigger value="explain" disabled={isPending || isFailed}>Explain</TabsTrigger>
@@ -232,6 +237,20 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                                     onHover={setHoveredPoint}
                                 />
                             )}
+                        </TabsContent>
+                        <TabsContent value="replay" className="mt-0 min-h-[450px]">
+                            <PortfolioReplayTab
+                                runId={runData.id as string}
+                                equity={runData.equity}
+                                baseCurrency={runData.baseCurrency || "USD"}
+                                status={status}
+                            />
+                        </TabsContent>
+                        <TabsContent value="timeline" className="mt-0 min-h-[450px]">
+                            <SignalPipelineTimeline
+                                runId={runData.id as string}
+                                baseCurrency={runData.baseCurrency || "USD"}
+                            />
                         </TabsContent>
                         <TabsContent value="monthly" className="mt-0 min-h-[450px]">
                             <MonthlyReturnsTab
@@ -264,7 +283,13 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                             <PortfolioTab runId={runData.id as string} equity={runData.equity} baseCurrency={runData.baseCurrency || "USD"} status={status} />
                         </TabsContent>
                         <TabsContent value="fills" className="mt-0 min-h-[450px]">
-                            <FillsTab runId={runData.id as string} baseCurrency={runData.baseCurrency || "USD"} status={status} />
+                            <FillsTab
+                                runId={runData.id as string}
+                                baseCurrency={runData.baseCurrency || "USD"}
+                                status={status}
+                                onSelectFill={setSelectedFill}
+                                selectedFillId={selectedFill?.id || (selectedFill ? `${selectedFill.symbol}-${selectedFill.date}` : undefined)}
+                            />
                         </TabsContent>
                         <TabsContent value="taxes" className="mt-0 min-h-[450px]">
                             <TaxesTab runId={runData.id as string} baseCurrency={runData.baseCurrency || "USD"} status={status} />
@@ -285,6 +310,8 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                             equity={inspectorEquity}
                             baseCurrency={runData.baseCurrency || "USD"}
                             status={status}
+                            selectedFill={selectedFill}
+                            onClearSelectedFill={() => setSelectedFill(null)}
                         />
                     )}
                 </div>

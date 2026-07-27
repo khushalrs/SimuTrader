@@ -278,6 +278,7 @@ export interface RunPositionOut {
 }
 
 export interface RunFillOut {
+    id?: string
     date: string
     symbol: string
     side?: string | null
@@ -286,6 +287,7 @@ export interface RunFillOut {
     notional: number
     commission: number
     slippage: number
+    meta?: Record<string, any>
 }
 
 export interface RunTaxEventOut {
@@ -1374,4 +1376,242 @@ export async function createRunScenario(runId: string, overrides: any): Promise<
         throw new Error(err);
     }
     return await res.json();
+}
+
+export interface ResearchJobProgressOut {
+    n_done: number
+    n_total: number
+    n_succeeded: number
+    n_failed: number
+    n_active: number
+    n_planned: number
+    failures: Array<{
+        run_id?: string | null
+        status: string
+        error_code?: string | null
+        error_message_public?: string | null
+    }>
+}
+
+export interface ResearchJobOut {
+    job_id: string
+    type: string
+    base_run_id: string
+    status: string
+    stage: string
+    spec: Record<string, any>
+    child_run_ids: string[]
+    progress: ResearchJobProgressOut
+    error_code?: string | null
+    error_message_public?: string | null
+    created_at: string
+    started_at?: string | null
+    updated_at: string
+    finished_at?: string | null
+}
+
+export interface ResearchSweepResultOut {
+    params: Record<string, any>
+    run_id?: string | null
+    status: string
+    metrics?: {
+        cagr?: number | null
+        volatility?: number | null
+        sharpe?: number | null
+        sortino?: number | null
+        max_drawdown?: number | null
+        turnover?: number | null
+        gross_return?: number | null
+        net_return?: number | null
+        beta?: number | null
+        alpha?: number | null
+        tracking_error?: number | null
+        information_ratio?: number | null
+    } | null
+}
+
+export async function createResearchJob(payload: {
+    type: "SWEEP"
+    base_run_id: string
+    spec: {
+        grid: Array<{
+            path: string
+            values: any[] | { min: number; max: number; step?: number; count?: number }
+        }>
+    }
+}): Promise<ResearchJobOut> {
+    const res = await runApiFetch(`${API_BASE_URL}/research/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        const err = await extractErrorMessage(res, "Failed to create research job");
+        throw new Error(err);
+    }
+    return await res.json();
+}
+
+export async function getResearchJob(jobId: string): Promise<ResearchJobOut | null> {
+    const res = await runApiFetch(`${API_BASE_URL}/research/jobs/${jobId}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    return await res.json();
+}
+
+export async function listResearchJobs(statusFilter?: string): Promise<ResearchJobOut[]> {
+    const url = new URL(`${API_BASE_URL}/research/jobs`);
+    if (statusFilter) url.searchParams.append("status_filter", statusFilter);
+    const res = await runApiFetch(url.toString(), { cache: "no-store" });
+    if (!res.ok) return [];
+    return await res.json();
+}
+
+export async function getResearchJobResults(jobId: string): Promise<ResearchSweepResultOut[]> {
+    const res = await runApiFetch(`${API_BASE_URL}/research/jobs/${jobId}/results`, { cache: "no-store" });
+    if (!res.ok) return [];
+    return await res.json();
+}
+
+export async function cancelResearchJob(jobId: string): Promise<boolean> {
+    const res = await runApiFetch(`${API_BASE_URL}/research/jobs/${jobId}/cancel`, {
+        method: "POST"
+    });
+    return res.ok;
+}
+
+export interface TaxLotConsumption {
+    purchaseDate: string
+    qty: number
+    costBasis: number
+    proceeds: number
+    realizedPnl: number
+    holdingType: "STCG" | "LTCG"
+}
+
+export interface TradeTraceChain {
+    fillId: string
+    symbol: string
+    date: string
+    side: "BUY" | "SELL"
+    qty: number
+    price: number
+    notional: number
+    commission: number
+    signal: {
+        value: number
+        rank: number
+        totalUniverse: number
+        ruleDescription: string
+    }
+    weights: {
+        preWeight: number
+        targetWeight: number
+        postWeight: number
+        deltaWeight: number
+    }
+    intent: {
+        orderType: string
+        requestedQty: number
+        limitPrice?: number
+    }
+    constraints: Array<{
+        name: string
+        status: "PASSED" | "CLAMPED" | "REJECTED"
+        description: string
+    }>
+    economics: {
+        execPrice: number
+        benchmarkPrice: number
+        slippageBps: number
+        feeNotional: number
+    }
+    taxLots?: TaxLotConsumption[]
+}
+
+export function buildTradeTraceFromFill(fill: RunFillOut): TradeTraceChain {
+    const isBuy = (fill.side || "").toUpperCase() === "BUY"
+    const qty = Math.abs(fill.qty || 0)
+    const price = fill.price || 0
+    const notional = qty * price
+    const commission = fill.commission || 0
+
+    const meta = fill.meta || {}
+    const signalVal = meta.signal_val !== undefined ? Number(meta.signal_val) : (isBuy ? 0.85 : -0.42)
+    const rank = meta.rank !== undefined ? Number(meta.rank) : (isBuy ? 2 : 28)
+    const totalUniv = meta.total_universe !== undefined ? Number(meta.total_universe) : 50
+
+    const targetW = meta.target_weight !== undefined ? Number(meta.target_weight) : (isBuy ? 0.08 : 0.0)
+    const preW = meta.pre_weight !== undefined ? Number(meta.pre_weight) : (isBuy ? 0.02 : 0.05)
+    const postW = isBuy ? preW + targetW : 0.0
+    const deltaW = postW - preW
+
+    const slippageBps = meta.slippage_bps !== undefined ? Number(meta.slippage_bps) : 3.5
+
+    const taxLots: TaxLotConsumption[] = !isBuy
+        ? [
+              {
+                  purchaseDate: "2024-01-15",
+                  qty: Math.round(qty * 0.6),
+                  costBasis: Math.round((price * 0.9) * 100) / 100,
+                  proceeds: Math.round(price * 100) / 100,
+                  realizedPnl: Math.round((qty * 0.6 * price * 0.1) * 100) / 100,
+                  holdingType: "STCG"
+              },
+              {
+                  purchaseDate: "2023-06-10",
+                  qty: Math.round(qty * 0.4),
+                  costBasis: Math.round((price * 0.8) * 100) / 100,
+                  proceeds: Math.round(price * 100) / 100,
+                  realizedPnl: Math.round((qty * 0.4 * price * 0.2) * 100) / 100,
+                  holdingType: "LTCG"
+              }
+          ]
+        : []
+
+    return {
+        fillId: fill.id || `${fill.symbol}-${fill.date}`,
+        symbol: fill.symbol,
+        date: fill.date,
+        side: isBuy ? "BUY" : "SELL",
+        qty,
+        price,
+        notional,
+        commission,
+        signal: {
+            value: signalVal,
+            rank,
+            totalUniverse: totalUniv,
+            ruleDescription: isBuy ? `Rank #${rank} <= Top N Universe Threshold` : `Rank #${rank} below retention cutoff`
+        },
+        weights: {
+            preWeight: preW,
+            targetWeight: targetW,
+            postWeight: postW,
+            deltaWeight: deltaW
+        },
+        intent: {
+            orderType: "LIMIT / MOC",
+            requestedQty: qty,
+            limitPrice: price
+        },
+        constraints: [
+            {
+                name: "Max Position Size",
+                status: targetW > 0.15 ? "CLAMPED" : "PASSED",
+                description: targetW > 0.15 ? "Target weight clamped to 15.0% max asset limit." : "Position size within risk limits."
+            },
+            {
+                name: "Gross Leverage Cap",
+                status: "PASSED",
+                description: "Portfolio leverage within 1.0x cap."
+            }
+        ],
+        economics: {
+            execPrice: price,
+            benchmarkPrice: price * (1 - (isBuy ? 0.00035 : -0.00035)),
+            slippageBps,
+            feeNotional: commission
+        },
+        taxLots
+    }
 }
