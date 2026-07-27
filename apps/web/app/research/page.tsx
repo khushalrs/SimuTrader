@@ -14,12 +14,17 @@ import { ResearchJobWizard } from "@/components/research/ResearchJobWizard"
 import { JobMonitorCard } from "@/components/research/JobMonitorCard"
 import { SweepResultsTable } from "@/components/research/SweepResultsTable"
 import { SweepScatterPlot } from "@/components/research/SweepScatterPlot"
-import { FlaskConical, Plus, Activity, ArrowRight, Loader2, RefreshCw } from "lucide-react"
+import { ParameterHeatmap } from "@/components/research/ParameterHeatmap"
+import { ISOOSComparison } from "@/components/research/ISOOSComparison"
+import { MonteCarloView } from "@/components/research/MonteCarloView"
+import { RobustnessSummaryCard } from "@/components/research/RobustnessSummaryCard"
+import { FlaskConical, Plus, Activity, ArrowRight, RefreshCw, Grid, GitCompare, Dices, ShieldCheck } from "lucide-react"
 
 export default function ResearchPage() {
     const router = useRouter()
     const [activeTab, setActiveTab] = useState<string>("jobs")
     const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+    const [explorerSubTab, setExplorerSubTab] = useState<string>("robustness")
 
     const { data: jobs, isLoading, mutate } = useSWR<ResearchJobOut[]>(
         "/research/jobs",
@@ -56,7 +61,7 @@ export default function ResearchPage() {
                         <h1 className="text-2xl font-bold tracking-tight">Research Lab & Optimization Studio</h1>
                     </div>
                     <p className="text-sm text-muted-foreground">
-                        Execute hyperparameter grid sweeps, in-sample/out-of-sample validation, and walk-forward calibrations.
+                        Execute hyperparameter grid sweeps, in-sample/out-of-sample validation, Monte Carlo resampling, and robustness scoring.
                     </p>
                 </div>
 
@@ -80,7 +85,7 @@ export default function ResearchPage() {
                 </div>
             </div>
 
-            {/* Navigation Tabs */}
+            {/* Main Navigation Tabs */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                 <TabsList className="mb-6">
                     <TabsTrigger value="jobs" className="gap-1.5">
@@ -90,7 +95,7 @@ export default function ResearchPage() {
                         <Plus className="w-3.5 h-3.5" /> Launch Wizard
                     </TabsTrigger>
                     <TabsTrigger value="results" className="gap-1.5" disabled={!currentJobId}>
-                        <FlaskConical className="w-3.5 h-3.5" /> Results Explorer {currentJobId ? `(${currentJobId.substring(0, 6)})` : ""}
+                        <FlaskConical className="w-3.5 h-3.5" /> Results & Robustness {currentJobId ? `(${currentJobId.substring(0, 6)})` : ""}
                     </TabsTrigger>
                 </TabsList>
 
@@ -195,13 +200,55 @@ export default function ResearchPage() {
                     <ResearchJobWizard onJobCreated={handleJobCreated} />
                 </TabsContent>
 
-                {/* Tab 3: Results Explorer */}
+                {/* Tab 3: Results & Robustness Studio */}
                 <TabsContent value="results" className="space-y-6">
                     {currentJobId ? (
                         <>
+                            {/* Live Status Monitor Card */}
                             <JobMonitorCard jobId={currentJobId} />
-                            <SweepScatterPlot jobId={currentJobId} onSelectRun={(rid) => router.push(`/runs/${rid}`)} />
-                            <SweepResultsTable jobId={currentJobId} onSelectRun={(rid) => router.push(`/runs/${rid}`)} />
+
+                            {/* Sub-tab Navigation for RF1 - RF5 */}
+                            <Tabs value={explorerSubTab} onValueChange={setExplorerSubTab} className="w-full">
+                                <TabsList className="bg-muted/40 p-1 border border-border/50">
+                                    <TabsTrigger value="robustness" className="gap-1.5 text-xs">
+                                        <ShieldCheck className="w-3.5 h-3.5" /> Robustness Scorecard (RF5)
+                                    </TabsTrigger>
+                                    <TabsTrigger value="heatmap" className="gap-1.5 text-xs">
+                                        <Grid className="w-3.5 h-3.5" /> Heatmap & Stability (RF2)
+                                    </TabsTrigger>
+                                    <TabsTrigger value="isoos" className="gap-1.5 text-xs">
+                                        <GitCompare className="w-3.5 h-3.5" /> IS / OOS Comparison (RF3)
+                                    </TabsTrigger>
+                                    <TabsTrigger value="montecarlo" className="gap-1.5 text-xs">
+                                        <Dices className="w-3.5 h-3.5" /> Monte Carlo (RF4)
+                                    </TabsTrigger>
+                                    <TabsTrigger value="table" className="gap-1.5 text-xs">
+                                        <Activity className="w-3.5 h-3.5" /> Results Table (RF1)
+                                    </TabsTrigger>
+                                </TabsList>
+
+                                <TabsContent value="robustness" className="mt-4 space-y-6">
+                                    <RobustnessSummaryCard />
+                                    <ParameterHeatmap jobId={currentJobId} onSelectRun={(rid) => router.push(`/runs/${rid}`)} />
+                                </TabsContent>
+
+                                <TabsContent value="heatmap" className="mt-4 space-y-6">
+                                    <ParameterHeatmap jobId={currentJobId} onSelectRun={(rid) => router.push(`/runs/${rid}`)} />
+                                </TabsContent>
+
+                                <TabsContent value="isoos" className="mt-4 space-y-6">
+                                    <ISOOSComparison />
+                                </TabsContent>
+
+                                <TabsContent value="montecarlo" className="mt-4 space-y-6">
+                                    <MonteCarloView />
+                                </TabsContent>
+
+                                <TabsContent value="table" className="mt-4 space-y-6">
+                                    <SweepScatterPlot jobId={currentJobId} onSelectRun={(rid) => router.push(`/runs/${rid}`)} />
+                                    <SweepResultsTable jobId={currentJobId} onSelectRun={(rid) => router.push(`/runs/${rid}`)} />
+                                </TabsContent>
+                            </Tabs>
                         </>
                     ) : (
                         <Card className="p-8 text-center text-muted-foreground">
