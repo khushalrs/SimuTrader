@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import logging
+import math
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.backtests import BacktestRun
+from app.models.backtests import BacktestRun, RunMetric
 from app.models.research import ResearchJob, ResearchJobRun
 from app.security import ActorContext, ActorTier
+from app.services.research import EvaluationWindow, build_windowed_plan
 from app.services.run_dispatch import dispatch_run
 from app.settings import get_settings
 
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 TERMINAL_RUN_STATUSES = {"SUCCEEDED", "FAILED", "ENQUEUE_FAILED"}
 TERMINAL_JOB_STATUSES = {"SUCCEEDED", "PARTIAL_FAILED", "FAILED"}
 ACTIVE_RUN_STATUSES = {"QUEUED", "RUNNING"}
+MINIMIZE_METRICS = {"volatility", "tracking_error"}
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,7 @@ def aggregate_research_job(job: ResearchJob, db: Session) -> ResearchAggregate:
     n_succeeded = 0
     n_failed = 0
     n_active = 0
-    n_planned = 0
+    n_planned_rows = 0
     failures: list[dict] = []
     child_run_ids: list[UUID] = []
     for plan in plans:
@@ -68,7 +71,7 @@ def aggregate_research_job(job: ResearchJob, db: Session) -> ResearchAggregate:
                     }
                 )
             else:
-                n_planned += 1
+                n_planned_rows += 1
             continue
         child_run_ids.append(plan.run_id)
         run = runs_by_id.get(plan.run_id)
@@ -99,6 +102,7 @@ def aggregate_research_job(job: ResearchJob, db: Session) -> ResearchAggregate:
 
     n_total = int(job.planned_child_count)
     n_done = n_succeeded + n_failed
+    n_planned = max(n_total - n_done - n_active, n_planned_rows)
     if job.status == "FAILED" and job.error_code:
         aggregate_status = "FAILED"
     elif n_done >= n_total:
@@ -125,6 +129,176 @@ def aggregate_research_job(job: ResearchJob, db: Session) -> ResearchAggregate:
     )
 
 
+def _window_from_dict(value: dict) -> EvaluationWindow:
+    return EvaluationWindow(
+        start_date=date.fromisoformat(value["start_date"]),
+        evaluation_start_date=date.fromisoformat(value["evaluation_start_date"]),
+        end_date=date.fromisoformat(value["end_date"]),
+    )
+
+
+def _plan_is_terminal(plan: ResearchJobRun, run: BacktestRun | None) -> bool:
+    if plan.dispatch_status == "FAILED":
+        return True
+    return run is not None and run.status in TERMINAL_RUN_STATUSES
+
+
+def _pick_winner(
+    db: Session,
+    plans: list[ResearchJobRun],
+    metric_name: str,
+) -> ResearchJobRun | None:
+    candidates: list[tuple[float, int, ResearchJobRun]] = []
+    for plan in plans:
+        if plan.run_id is None:
+            continue
+        run, metric = (
+            db.query(BacktestRun, RunMetric)
+            .outerjoin(RunMetric, RunMetric.run_id == BacktestRun.run_id)
+            .filter(BacktestRun.run_id == plan.run_id)
+            .first()
+            or (None, None)
+        )
+        if run is None or run.status != "SUCCEEDED" or metric is None:
+            continue
+        value = getattr(metric, metric_name, None)
+        if value is None or not math.isfinite(float(value)):
+            continue
+        score = -float(value) if metric_name in MINIMIZE_METRICS else float(value)
+        candidates.append((score, -int(plan.ordinal), plan))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
+def _mark_job_no_winner(job: ResearchJob, db: Session) -> None:
+    now = datetime.now(timezone.utc)
+    job.status = "FAILED"
+    job.stage = "COMPLETE"
+    job.error_code = "E_RESEARCH_NO_WINNER"
+    job.error_message_public = (
+        "No successful child run produced the requested optimization metric."
+    )
+    job.finished_at = now
+    job.updated_at = now
+    db.commit()
+
+
+def _materialize_dependent_plans(job: ResearchJob, db: Session) -> None:
+    if job.type not in {"IS_OOS", "WALK_FORWARD"}:
+        return
+    plans = (
+        db.query(ResearchJobRun)
+        .filter(ResearchJobRun.job_id == job.job_id)
+        .order_by(ResearchJobRun.ordinal.asc())
+        .all()
+    )
+    run_ids = [plan.run_id for plan in plans if plan.run_id is not None]
+    runs_by_id = {
+        run.run_id: run
+        for run in (
+            db.query(BacktestRun).filter(BacktestRun.run_id.in_(run_ids)).all()
+            if run_ids
+            else []
+        )
+    }
+    metric_name = str((job.spec or {}).get("optimize_metric") or "sharpe")
+    next_ordinal = max((plan.ordinal for plan in plans), default=-1) + 1
+
+    if job.type == "IS_OOS":
+        if any(plan.role == "OOS" for plan in plans):
+            return
+        is_plans = [plan for plan in plans if plan.role == "IS"]
+        if not is_plans or not all(
+            _plan_is_terminal(plan, runs_by_id.get(plan.run_id))
+            for plan in is_plans
+        ):
+            return
+        winner = _pick_winner(db, is_plans, metric_name)
+        if winner is None:
+            _mark_job_no_winner(job, db)
+            return
+        winner.is_selected = True
+        window = _window_from_dict((job.spec or {})["windows"]["oos"])
+        plan = build_windowed_plan(
+            base_config=job.base_config,
+            base_run_id=job.base_run_id,
+            params=winner.params_json or {},
+            window=window,
+            data_snapshot_id=job.data_snapshot_id,
+            seed=job.seed,
+            ordinal=next_ordinal,
+        )
+        db.add(
+            ResearchJobRun(
+                job_id=job.job_id,
+                ordinal=plan.ordinal,
+                role="OOS",
+                params_json=plan.params,
+                config_json=plan.config,
+                config_hash=plan.config_hash,
+                dispatch_status="PLANNED",
+            )
+        )
+        job.stage = "OOS"
+        job.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return
+
+    segments = (job.spec or {}).get("segments") or []
+    created = False
+    for segment in segments:
+        segment_index = int(segment["index"])
+        if any(
+            plan.role == "TEST" and plan.segment_index == segment_index
+            for plan in plans
+        ):
+            continue
+        train_plans = [
+            plan
+            for plan in plans
+            if plan.role == "TRAIN" and plan.segment_index == segment_index
+        ]
+        if not train_plans or not all(
+            _plan_is_terminal(plan, runs_by_id.get(plan.run_id))
+            for plan in train_plans
+        ):
+            continue
+        winner = _pick_winner(db, train_plans, metric_name)
+        if winner is None:
+            _mark_job_no_winner(job, db)
+            return
+        winner.is_selected = True
+        window = _window_from_dict(segment["test"])
+        plan = build_windowed_plan(
+            base_config=job.base_config,
+            base_run_id=job.base_run_id,
+            params=winner.params_json or {},
+            window=window,
+            data_snapshot_id=job.data_snapshot_id,
+            seed=job.seed,
+            ordinal=next_ordinal,
+        )
+        db.add(
+            ResearchJobRun(
+                job_id=job.job_id,
+                ordinal=plan.ordinal,
+                role="TEST",
+                params_json=plan.params,
+                config_json=plan.config,
+                config_hash=plan.config_hash,
+                dispatch_status="PLANNED",
+                segment_index=segment_index,
+            )
+        )
+        next_ordinal += 1
+        created = True
+    if created:
+        job.stage = "TEST"
+        job.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+
 def _persist_aggregate_status(
     job: ResearchJob,
     aggregate: ResearchAggregate,
@@ -145,6 +319,8 @@ def advance_research_job(db: Session, job_id: UUID) -> ResearchAggregate | None:
     job = db.query(ResearchJob).filter(ResearchJob.job_id == job_id).first()
     if not job:
         return None
+    _materialize_dependent_plans(job, db)
+    db.refresh(job)
     aggregate = aggregate_research_job(job, db)
     if aggregate.status in TERMINAL_JOB_STATUSES:
         _persist_aggregate_status(job, aggregate, db)
@@ -208,7 +384,6 @@ def advance_research_job(db: Session, job_id: UUID) -> ResearchAggregate | None:
             plan.run_id = result.run.run_id
             plan.dispatch_status = "DISPATCHED"
             job.status = "RUNNING"
-            job.stage = "FANOUT"
             job.started_at = job.started_at or datetime.now(timezone.utc)
             job.updated_at = datetime.now(timezone.utc)
             db.commit()

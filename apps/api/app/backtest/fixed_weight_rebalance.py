@@ -209,6 +209,8 @@ def run_fixed_weight_rebalance(
         return False
 
     def target_allocations(ctx: DayContext):
+        if ctx.is_warmup:
+            return None
         if not _is_rebalance_day(ctx.date):
             return None
         if ctx.equity_base <= 0:

@@ -230,6 +230,8 @@ def run_dca(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> i
 
     def target_allocations(ctx: DayContext):
         nonlocal last_contribution, last_buy
+        if ctx.is_warmup:
+            return None
 
         contribution_base = 0.0
         if contrib_enabled and _should_run(last_contribution, ctx.date, contrib_frequency):

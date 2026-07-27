@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -38,13 +38,72 @@ class ResearchGridDimensionIn(BaseModel):
 
 
 class ResearchSweepSpecIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     grid: list[ResearchGridDimensionIn] = Field(min_length=1, max_length=20)
 
 
+ResearchOptimizeMetric = Literal[
+    "sharpe",
+    "cagr",
+    "sortino",
+    "max_drawdown",
+    "volatility",
+    "net_return",
+    "alpha",
+    "tracking_error",
+    "information_ratio",
+]
+
+
+class ResearchIsOosSpecIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    split_pct: float = Field(default=0.7, gt=0.0, lt=1.0)
+    grid: list[ResearchGridDimensionIn] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=20,
+    )
+    optimize_metric: ResearchOptimizeMetric = "sharpe"
+
+
+class ResearchWalkForwardSpecIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    train_len: int = Field(gt=0)
+    test_len: int = Field(gt=0)
+    step: int | None = Field(default=None, gt=0)
+    mode: Literal["anchored", "rolling"] = "rolling"
+    optimize_metric: ResearchOptimizeMetric = "sharpe"
+    grid: list[ResearchGridDimensionIn] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_step(self):
+        if self.step is None:
+            self.step = self.test_len
+        if self.step != self.test_len:
+            raise ValueError(
+                "walk-forward step must equal test_len so OOS segments do not overlap or gap"
+            )
+        return self
+
+
 class ResearchJobCreate(BaseModel):
-    type: Literal["SWEEP"]
+    type: Literal["SWEEP", "IS_OOS", "WALK_FORWARD"]
     base_run_id: UUID
-    spec: ResearchSweepSpecIn
+    spec: ResearchSweepSpecIn | ResearchIsOosSpecIn | ResearchWalkForwardSpecIn
+
+    @model_validator(mode="after")
+    def validate_spec_for_type(self):
+        expected = {
+            "SWEEP": ResearchSweepSpecIn,
+            "IS_OOS": ResearchIsOosSpecIn,
+            "WALK_FORWARD": ResearchWalkForwardSpecIn,
+        }[self.type]
+        if not isinstance(self.spec, expected):
+            raise ValueError(f"{self.type} requires a matching research spec")
+        return self
 
 
 class ResearchJobFailureOut(BaseModel):
@@ -100,5 +159,27 @@ class ResearchSweepResultOut(BaseModel):
     params: dict[str, Any]
     run_id: UUID | None = None
     status: str
+    role: str = "SWEEP"
+    segment_index: int | None = None
+    is_selected: bool = False
+    start_date: date | None = None
+    evaluation_start_date: date | None = None
+    end_date: date | None = None
     metrics: ResearchResultMetricOut | None = None
+    degradation: dict[str, float | None] | None = None
 
+
+class ResearchEquityPointOut(BaseModel):
+    date: date
+    equity_base: float
+    return_: float = Field(alias="return")
+
+
+class ResearchWalkForwardEquityOut(BaseModel):
+    job_id: UUID
+    stitching_method: Literal["segment_return_rebase"]
+    points: list[ResearchEquityPointOut]
+    metrics: ResearchResultMetricOut | None = None
+    is_return: float | None = None
+    oos_return: float | None = None
+    walk_forward_efficiency: float | None = None

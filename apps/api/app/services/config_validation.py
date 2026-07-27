@@ -189,6 +189,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
             "properties": {
                 "start_date": {"type": "string", "format": "date"},
                 "end_date": {"type": "string", "format": "date"},
+                "evaluation_start_date": {"type": "string", "format": "date"},
                 "initial_cash": {"type": "number", "exclusiveMinimum": 0},
                 "initial_cash_by_currency": {
                     "type": "object",
@@ -335,7 +336,7 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         config["universe"] = universe
 
     backtest = config.get("backtest") or {}
-    for key in ("start_date", "end_date", "initial_cash"):
+    for key in ("start_date", "end_date", "evaluation_start_date", "initial_cash"):
         if key not in backtest and key in config:
             backtest[key] = config[key]
     if "initial_cash_by_currency" not in backtest and "initial_cash_by_currency" in config:
@@ -362,6 +363,7 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         "weight",
         "start_date",
         "end_date",
+        "evaluation_start_date",
         "initial_cash",
         "initial_cash_by_currency",
         "contributions",
@@ -407,6 +409,20 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
     end_date = _parse_date(backtest.get("end_date"), "end_date")
     if end_date < start_date:
         raise ValueError("Invalid config: end_date must be >= start_date")
+    evaluation_start_value = backtest.get("evaluation_start_date")
+    if evaluation_start_value is not None:
+        evaluation_start_date = _parse_date(
+            evaluation_start_value,
+            "evaluation_start_date",
+        )
+        if evaluation_start_date < start_date:
+            raise ValueError(
+                "Invalid config: evaluation_start_date must be >= start_date"
+            )
+        if evaluation_start_date > end_date:
+            raise ValueError(
+                "Invalid config: evaluation_start_date must be <= end_date"
+            )
 
 
     instruments = (config.get("universe") or {}).get("instruments") or []

@@ -181,6 +181,8 @@ def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, A
     amount_alloc: dict[str, float] = {inst["symbol"]: inst["amount"] for inst in instruments}
 
     def target_allocations(ctx):
+        if ctx.is_warmup:
+            return None
         allocations: dict[str, float] = {}
         for symbol, amount in amount_alloc.items():
             if ctx.state.positions[symbol].qty == 0:

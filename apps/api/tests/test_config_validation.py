@@ -145,3 +145,14 @@ def test_config_accepts_explicit_or_null_benchmark() -> None:
     disabled = _base_config()
     disabled["benchmark"] = None
     assert validate_and_resolve_config(disabled)["benchmark"] is None
+
+
+def test_evaluation_start_date_is_validated_within_backtest_window() -> None:
+    config = _base_config()
+    config["backtest"]["evaluation_start_date"] = "2024-01-15"
+    resolved = validate_and_resolve_config(config)
+    assert resolved["backtest"]["evaluation_start_date"] == "2024-01-15"
+
+    config["backtest"]["evaluation_start_date"] = "2024-02-01"
+    with pytest.raises(ValueError, match="evaluation_start_date must be <= end_date"):
+        validate_and_resolve_config(config)

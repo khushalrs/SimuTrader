@@ -4,9 +4,9 @@ from datetime import date, timedelta
 from uuid import uuid4
 
 import duckdb
+import pytest
 
 from app.backtest.executor import execute_run
-import pytest
 from app.models.backtests import (
     BacktestRun,
     RunDailyEquity,
@@ -287,6 +287,57 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     )
     assert metric_meta["turnover_convention"] == "two_way_annualized"
     assert db.metrics_rows[0].turnover is not None
+
+
+def test_evaluation_window_warms_up_without_trading_or_persistence(
+    tmp_path,
+    monkeypatch,
+):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 2)
+    evaluation_start = date(2024, 1, 8)
+    end = date(2024, 1, 12)
+    _seed_duckdb(str(duckdb_path), ["TESTA"], start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "strategy": "BUY_AND_HOLD",
+            "base_currency": "USD",
+            "universe": {
+                "instruments": [
+                    {
+                        "symbol": "TESTA",
+                        "asset_class": "US_EQUITY",
+                        "amount": 5000.0,
+                    }
+                ]
+            },
+            "backtest": {
+                "start_date": start.isoformat(),
+                "evaluation_start_date": evaluation_start.isoformat(),
+                "end_date": end.isoformat(),
+                "initial_cash": 10_000.0,
+            },
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.equity_rows[0].date == evaluation_start
+    assert all(row.date >= evaluation_start for row in db.equity_rows)
+    assert db.fill_rows[0].date == evaluation_start
+    assert all(row.date >= evaluation_start for row in db.order_rows)
+    assert all(row.date >= evaluation_start for row in db.position_rows)
+    assert db.metrics_rows[0].meta["evaluation_start_date"] == (
+        evaluation_start.isoformat()
+    )
 
 
 def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):

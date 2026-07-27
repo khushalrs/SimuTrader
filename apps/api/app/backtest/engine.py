@@ -10,8 +10,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.data.duckdb import get_duckdb_conn
 from app.backtest.errors import DataUnavailableError, NoTradingDaysError
+from app.data.duckdb import get_duckdb_conn
 from app.models.backtests import (
     BacktestRun,
     RunDailyEquity,
@@ -49,6 +49,7 @@ class DayContext:
     cash_base_total: float
     position_value_base: Dict[str, float]
     fx_rate: Dict[str, float]
+    is_warmup: bool = False
 
 
 @dataclass
@@ -789,6 +790,17 @@ def run_engine(
     policy = _normalize_missing_bar_policy(missing_bar_policy)
     _ = _normalize_fill_price_policy(fill_price_policy)
     config_snapshot = run.config_snapshot or {}
+    backtest_config = config_snapshot.get("backtest") or {}
+    evaluation_start_value = backtest_config.get("evaluation_start_date")
+    evaluation_start_date = (
+        date.fromisoformat(str(evaluation_start_value))
+        if evaluation_start_value is not None
+        else start_date
+    )
+    if not start_date <= evaluation_start_date <= end_date:
+        raise ValueError(
+            "evaluation_start_date must be between start_date and end_date"
+        )
     base_currency = str(config_snapshot.get("base_currency") or "USD").upper()
     benchmark_value = config_snapshot.get("benchmark")
     benchmark = str(benchmark_value).strip().upper() if benchmark_value else None
@@ -946,6 +958,7 @@ def run_engine(
     previous_attribution_price_base: Dict[str, float] = {}
     previous_attribution_equity_base: float | None = None
     peak_equity_base: float | None = None
+    initial_cash_base_at_evaluation: float | None = None
 
     first_observed_usd_inr = next(iter(usd_inr_by_date.values()), None)
     usd_inr_last: float | None = None
@@ -1236,7 +1249,7 @@ def run_engine(
     ) -> None:
         nonlocal borrow_cum_base, margin_cum_base, peak_equity_base
         nonlocal turnover_notional_base
-        nonlocal previous_attribution_equity_base
+        nonlocal previous_attribution_equity_base, initial_cash_base_at_evaluation
         if day is None:
             return
         if flags is None:
@@ -1311,8 +1324,21 @@ def run_engine(
             cash_base_total=cash_base_total,
             position_value_base=position_value_base,
             fx_rate=fx_rate,
+            is_warmup=day < evaluation_start_date,
         )
         target_allocations = target_allocations_fn(ctx)
+        if ctx.is_warmup:
+            return
+        if initial_cash_base_at_evaluation is None:
+            initial_cash_base_at_evaluation = sum(
+                _convert_native_to_base(
+                    amount,
+                    currency,
+                    base_currency,
+                    usd_inr,
+                )
+                for currency, amount in initial_cash_snapshot.items()
+            )
 
         if target_allocations:
             if allocation_kind == "BASE_WEIGHT":
@@ -1733,10 +1759,10 @@ def run_engine(
 
     if any(ccy != base_currency for ccy in currencies) and first_observed_usd_inr is None:
         raise DataUnavailableError("Missing USDINR history for mixed-currency base conversion.")
-    initial_cash_base = 0.0
-    for currency, amount in initial_cash_snapshot.items():
-        initial_cash_base += _convert_native_to_base(
-            amount, currency, base_currency, first_observed_usd_inr
+    initial_cash_base = initial_cash_base_at_evaluation
+    if initial_cash_base is None:
+        raise NoTradingDaysError(
+            "No evaluation days found on or after evaluation_start_date."
         )
 
     benchmark_series_base = _align_benchmark_to_base(
@@ -1842,6 +1868,7 @@ def run_engine(
         {
             "requested_start_date": requested_start_date.isoformat(),
             "requested_end_date": requested_end_date.isoformat(),
+            "evaluation_start_date": evaluation_start_date.isoformat(),
             "effective_start_date": effective_start_date.isoformat(),
             "effective_end_date": effective_end_date.isoformat(),
             "date_shift_warnings": date_shift_warnings,

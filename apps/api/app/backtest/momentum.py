@@ -186,6 +186,8 @@ def run_momentum(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any])
                 continue
             price_history[symbol].append(price)
 
+        if ctx.is_warmup:
+            return None
         if not _should_rebalance(last_rebalance, ctx.date, rebalance_frequency):
             return None
 
