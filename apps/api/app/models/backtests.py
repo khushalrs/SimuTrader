@@ -145,6 +145,87 @@ class RunOrder(Base):
     )
 
 
+class RunSignalSnapshot(Base):
+    __tablename__ = "run_signal_snapshots"
+
+    signal_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id = Column(UUID(as_uuid=True), ForeignKey("backtest_runs.run_id"), nullable=False)
+    date = Column(Date, nullable=False)
+    symbol = Column(String, nullable=False)
+    signal_name = Column(String, nullable=False)
+    value = Column(Float, nullable=False)
+    rank = Column(Integer)
+    selected = Column(Boolean, nullable=False, server_default=text("false"))
+    meta = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+
+    __table_args__ = (
+        Index("run_signal_snapshots_run_date_idx", "run_id", "date"),
+        Index(
+            "run_signal_snapshots_run_date_symbol_idx",
+            "run_id",
+            "date",
+            "symbol",
+        ),
+    )
+
+
+class RunOrderDecision(Base):
+    __tablename__ = "run_order_decisions"
+
+    decision_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("run_orders.order_id"))
+    run_id = Column(UUID(as_uuid=True), ForeignKey("backtest_runs.run_id"), nullable=False)
+    date = Column(Date, nullable=False)
+    symbol = Column(String, nullable=False)
+    requested_target_weight = Column(Float)
+    target_weight = Column(Float)
+    target_qty = Column(Float)
+    current_qty = Column(Float, nullable=False)
+    delta_qty = Column(Float)
+    intended_side = Column(String)
+    intended_qty = Column(Float)
+    executable_qty = Column(Float)
+    outcome = Column(String, nullable=False)
+    reason = Column(String)
+    meta = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+
+    __table_args__ = (
+        Index("run_order_decisions_run_date_idx", "run_id", "date"),
+        Index("run_order_decisions_order_id_idx", "order_id"),
+        Index(
+            "run_order_decisions_run_date_symbol_idx",
+            "run_id",
+            "date",
+            "symbol",
+        ),
+    )
+
+
+class RunConstraintEvent(Base):
+    __tablename__ = "run_constraint_events"
+
+    constraint_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    decision_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("run_order_decisions.decision_id"),
+        nullable=False,
+    )
+    run_id = Column(UUID(as_uuid=True), ForeignKey("backtest_runs.run_id"), nullable=False)
+    date = Column(Date, nullable=False)
+    symbol = Column(String, nullable=False)
+    constraint_name = Column(String, nullable=False)
+    bound_value = Column(Float)
+    pre_clamp_value = Column(Float, nullable=False)
+    applied_value = Column(Float, nullable=False)
+    reason = Column(String, nullable=False)
+    meta = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+
+    __table_args__ = (
+        Index("run_constraint_events_run_date_idx", "run_id", "date"),
+        Index("run_constraint_events_decision_idx", "decision_id"),
+    )
+
+
 class RunFill(Base):
     __tablename__ = "run_fills"
 
@@ -182,6 +263,31 @@ class RunTaxEvent(Base):
 
     __table_args__ = (
         Index("run_tax_events_run_date_idx", "run_id", "date"),
+    )
+
+
+class RunTaxLotConsumption(Base):
+    __tablename__ = "run_tax_lot_consumptions"
+
+    consumption_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tax_event_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("run_tax_events.tax_event_id"),
+        nullable=False,
+    )
+    run_id = Column(UUID(as_uuid=True), ForeignKey("backtest_runs.run_id"), nullable=False)
+    date = Column(Date, nullable=False)
+    symbol = Column(String, nullable=False)
+    lot_opened_on = Column(Date, nullable=False)
+    lot_unit_cost_native = Column(Float, nullable=False)
+    qty_consumed = Column(Float, nullable=False)
+    holding_days = Column(Integer, nullable=False)
+    bucket = Column(String, nullable=False)
+    realized_pnl_base = Column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("run_tax_lot_consumptions_run_date_idx", "run_id", "date"),
+        Index("run_tax_lot_consumptions_event_idx", "tax_event_id"),
     )
 
 

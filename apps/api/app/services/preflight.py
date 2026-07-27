@@ -415,6 +415,47 @@ def run_preflight(raw_config: dict[str, Any]) -> dict[str, Any]:
         effective_start_date or start_date,
         effective_end_date or end_date,
     )
+    explain_config = config.get("explain")
+    explain_enabled = explain_config is True or (
+        isinstance(explain_config, dict)
+        and bool(explain_config.get("enabled"))
+    )
+    if explain_enabled:
+        explain_options = (
+            explain_config if isinstance(explain_config, dict) else {}
+        )
+        capture = str(
+            explain_options.get("capture") or "REBALANCE_ONLY"
+        ).upper()
+        capture_days = (
+            estimated_trading_days
+            if capture == "ALL_BARS"
+            else estimated_rebalance_count
+        )
+        max_records = int(explain_options.get("max_records") or 250_000)
+        if capture_days is not None:
+            # Signal, order-decision, and potentially binding-constraint rows
+            # are each approximately universe × captured decision bars.
+            estimated_explain_records = (
+                estimated_symbols * capture_days * 3
+            )
+            if estimated_explain_records > max_records:
+                message = (
+                    "Explain capture is estimated to produce "
+                    f"{estimated_explain_records:,} records and will be truncated "
+                    f"at the configured {max_records:,}-record cap."
+                )
+                warnings.append(message)
+                risk_flags.append(
+                    _flag(
+                        "EXPLAIN_CAPTURE_WILL_TRUNCATE",
+                        "warning",
+                        message,
+                        capture=capture,
+                        estimated_records=estimated_explain_records,
+                        max_records=max_records,
+                    )
+                )
 
     if strategy == "MOMENTUM":
         params = config.get("strategy_params") or {}

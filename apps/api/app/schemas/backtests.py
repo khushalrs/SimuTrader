@@ -189,6 +189,53 @@ class RunFillOut(BaseModel):
     slippage: float
 
 
+class RunSignalSnapshotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    date: date
+    symbol: str
+    signal_name: str
+    value: float
+    rank: Optional[int] = None
+    selected: bool
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunOrderDecisionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    decision_id: UUID
+    order_id: Optional[UUID] = None
+    date: date
+    symbol: str
+    requested_target_weight: Optional[float] = None
+    target_weight: Optional[float] = None
+    target_qty: Optional[float] = None
+    current_qty: float
+    delta_qty: Optional[float] = None
+    intended_side: Optional[str] = None
+    intended_qty: Optional[float] = None
+    executable_qty: Optional[float] = None
+    outcome: str
+    reason: Optional[str] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunConstraintEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    constraint_id: UUID
+    decision_id: UUID
+    date: date
+    symbol: str
+    constraint_name: str
+    bound_value: Optional[float] = None
+    pre_clamp_value: float
+    applied_value: float
+    reason: str
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
 class RunCostsSummaryOut(BaseModel):
     commissions_native: Dict[str, float] = Field(default_factory=dict)
     slippage_native: Dict[str, float] = Field(default_factory=dict)
@@ -259,6 +306,67 @@ class RunTaxEventOut(BaseModel):
     tax_rate: float
     tax_due_base: float
     meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunTaxLotConsumptionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    consumption_id: UUID
+    tax_event_id: UUID
+    date: date
+    symbol: str
+    lot_opened_on: date
+    lot_unit_cost_native: float
+    qty_consumed: float
+    holding_days: int
+    bucket: str
+    realized_pnl_base: float
+
+
+class RunTraceOrderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    order_id: UUID
+    date: date
+    symbol: str
+    side: str
+    qty: float
+    order_type: str
+    limit_price: Optional[float] = None
+    status: str
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunTraceFillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    fill_id: UUID
+    order_id: Optional[UUID] = None
+    date: date
+    symbol: str
+    qty: float
+    price_native: float
+    commission_native: float
+    slippage_native: float
+    notional_native: float
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunTraceTaxEventOut(RunTaxEventOut):
+    tax_event_id: UUID
+    lots: list[RunTaxLotConsumptionOut] = Field(default_factory=list)
+
+
+class RunTradeTraceOut(BaseModel):
+    run_id: UUID
+    date: date
+    symbol: str
+    signals: list[RunSignalSnapshotOut] = Field(default_factory=list)
+    decisions: list[RunOrderDecisionOut] = Field(default_factory=list)
+    constraints: list[RunConstraintEventOut] = Field(default_factory=list)
+    orders: list[RunTraceOrderOut] = Field(default_factory=list)
+    fills: list[RunTraceFillOut] = Field(default_factory=list)
+    tax_events: list[RunTraceTaxEventOut] = Field(default_factory=list)
 
 
 class RunTaxesOut(BaseModel):

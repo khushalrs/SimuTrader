@@ -190,6 +190,10 @@ def run_momentum(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any])
             return None
         if not _should_rebalance(last_rebalance, ctx.date, rebalance_frequency):
             return None
+        ctx.recorder.mark_decision_cycle(
+            strategy="MOMENTUM",
+            frequency=rebalance_frequency,
+        )
 
         returns: list[tuple[str, float]] = []
         min_len = lookback_days + skip_days + 1
@@ -206,13 +210,40 @@ def run_momentum(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any])
                 continue
             returns.append((symbol, end_price / start_price - 1.0))
 
+        returns.sort(key=lambda item: item[1], reverse=True)
+        winners = {symbol for symbol, _ in returns[:top_k]}
+        for rank, (symbol, momentum_return) in enumerate(returns, start=1):
+            ctx.recorder.signal(
+                symbol,
+                "momentum_return",
+                momentum_return,
+                rank=rank,
+                selected=symbol in winners and len(returns) >= top_k,
+                meta={
+                    "lookback_days": lookback_days,
+                    "skip_days": skip_days,
+                },
+            )
+
         if len(returns) < top_k:
             return None
 
-        returns.sort(key=lambda item: item[1], reverse=True)
-        winners = {symbol for symbol, _ in returns[:top_k]}
-
         if ctx.equity_base <= 0:
+            for symbol in winners:
+                ctx.recorder.order_decision(
+                    symbol=symbol,
+                    requested_target_weight=1.0 / len(winners),
+                    target_weight=1.0 / len(winners),
+                    target_qty=None,
+                    current_qty=ctx.state.positions[symbol].qty,
+                    delta_qty=None,
+                    intended_side=None,
+                    intended_qty=None,
+                    executable_qty=0.0,
+                    outcome="REJECTED_CONSTRAINT",
+                    reason="Portfolio equity must be positive to allocate momentum winners.",
+                    meta={},
+                )
             return None
 
         weight = 1.0 / len(winners)

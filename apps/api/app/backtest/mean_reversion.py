@@ -201,8 +201,13 @@ def run_mean_reversion(db: Session, run: BacktestRun, config_snapshot: Dict[str,
             return None
         if not _should_rebalance(last_rebalance, ctx.date, rebalance_frequency):
             return None
+        ctx.recorder.mark_decision_cycle(
+            strategy="MEAN_REVERSION",
+            frequency=rebalance_frequency,
+        )
 
         active: list[str] = []
+        z_scores: Dict[str, float] = {}
         for symbol in symbols:
             history = price_history[symbol]
             if len(history) < lookback_days:
@@ -213,6 +218,7 @@ def run_mean_reversion(db: Session, run: BacktestRun, config_snapshot: Dict[str,
             if std == 0:
                 continue
             z_score = (window[-1] - mean) / std
+            z_scores[symbol] = z_score
 
             if symbol in holding_days:
                 holding_days[symbol] += 1
@@ -233,6 +239,21 @@ def run_mean_reversion(db: Session, run: BacktestRun, config_snapshot: Dict[str,
             if z_score <= -entry_threshold:
                 active.append(symbol)
                 holding_days[symbol] = 0
+
+        ranked_signals = sorted(z_scores.items(), key=lambda item: item[1])
+        for rank, (symbol, z_score) in enumerate(ranked_signals, start=1):
+            ctx.recorder.signal(
+                symbol,
+                "z_score",
+                z_score,
+                rank=rank,
+                selected=symbol in active,
+                meta={
+                    "lookback_days": lookback_days,
+                    "entry_threshold": entry_threshold,
+                    "exit_threshold": exit_threshold,
+                },
+            )
 
         if not active:
             last_rebalance = ctx.date

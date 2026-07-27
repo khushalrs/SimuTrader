@@ -18,19 +18,27 @@ from app.api.routes.runs import (
     get_run_exposure,
     get_run_fills,
     get_run_metrics,
+    get_run_order_decisions,
     get_run_positions,
+    get_run_signals,
+    get_run_tax_event_lots,
+    get_run_trade_trace,
     run_monte_carlo,
 )
 from app.db import get_db
 from app.models.assets import Asset
 from app.models.backtests import (
     BacktestRun,
+    RunConstraintEvent,
     RunDailyEquity,
     RunFill,
     RunMetric,
     RunOrder,
+    RunOrderDecision,
     RunPosition,
+    RunSignalSnapshot,
     RunTaxEvent,
+    RunTaxLotConsumption,
 )
 from app.schemas.backtests import RunMonteCarloRequest
 from app.security import ActorContext, ActorTier, get_current_actor
@@ -89,10 +97,15 @@ class _FakeDB:
         positions: list | None = None,
         equity_base: float | None = None,
         fills: list | None = None,
+        orders: list | None = None,
         order_sides: list[tuple] | None = None,
         metrics: object | None = None,
         equity_rows: list | None = None,
         tax_rows: list | None = None,
+        signal_rows: list | None = None,
+        order_decision_rows: list | None = None,
+        constraint_rows: list | None = None,
+        tax_lot_rows: list | None = None,
         run_config: dict | None = None,
         run_status: str = "SUCCEEDED",
         assets: list | None = None,
@@ -102,10 +115,15 @@ class _FakeDB:
         self.positions = positions or []
         self.equity_base = equity_base
         self.fills = fills or []
+        self.orders = orders or []
         self.order_sides = order_sides or []
         self.metrics = metrics
         self.equity_rows = equity_rows or []
         self.tax_rows = tax_rows or []
+        self.signal_rows = signal_rows or []
+        self.order_decision_rows = order_decision_rows or []
+        self.constraint_rows = constraint_rows or []
+        self.tax_lot_rows = tax_lot_rows or []
         self.run_config = run_config or {"tax": {"regime": "US"}}
         self.run_status = run_status
         self.assets = assets or []
@@ -136,10 +154,20 @@ class _FakeDB:
                 return _FakeQuery(all_values=self.positions)
             if entity is RunFill:
                 return _FakeQuery(all_values=self.fills)
+            if entity is RunOrder:
+                return _FakeQuery(all_values=self.orders)
             if entity is RunDailyEquity:
                 return _FakeQuery(all_values=self.equity_rows)
             if entity is RunTaxEvent:
                 return _FakeQuery(all_values=self.tax_rows)
+            if entity is RunSignalSnapshot:
+                return _FakeQuery(all_values=self.signal_rows)
+            if entity is RunOrderDecision:
+                return _FakeQuery(all_values=self.order_decision_rows)
+            if entity is RunConstraintEvent:
+                return _FakeQuery(all_values=self.constraint_rows)
+            if entity is RunTaxLotConsumption:
+                return _FakeQuery(all_values=self.tax_lot_rows)
             if entity is Asset:
                 return _FakeQuery(all_values=self.assets)
             if entity is RunDailyEquity.equity_base:
@@ -171,6 +199,184 @@ def test_get_run_positions_returns_empty_when_no_positions_exist():
     actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
     result = get_run_positions(run_id=uuid4(), actor=actor, db=db)
     assert result == []
+
+
+def test_signal_and_order_decision_routes_return_captured_records() -> None:
+    captured_date = date(2024, 1, 2)
+    signal = SimpleNamespace(
+        date=captured_date,
+        symbol="AAPL",
+        signal_name="momentum_return",
+        value=0.12,
+        rank=1,
+        selected=True,
+        meta={},
+    )
+    decision = SimpleNamespace(
+        date=captured_date,
+        symbol="AAPL",
+        requested_target_weight=1.0,
+        target_weight=0.99,
+        target_qty=10.0,
+        current_qty=0.0,
+        delta_qty=10.0,
+        intended_side="BUY",
+        intended_qty=10.0,
+        executable_qty=10.0,
+        outcome="TRIMMED_CASH_BUFFER",
+        reason="Target allocation was reduced by the configured cash buffer.",
+        meta={"terminal_status": "FILLED"},
+    )
+    db = _FakeDB(signal_rows=[signal], order_decision_rows=[decision])
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+
+    signals = get_run_signals(
+        run_id=uuid4(),
+        date_value=captured_date,
+        symbol=None,
+        signal_name=None,
+        limit=100,
+        actor=actor,
+        db=db,
+    )
+    decisions = get_run_order_decisions(
+        run_id=uuid4(),
+        date_value=captured_date,
+        symbol=None,
+        outcome=None,
+        limit=100,
+        actor=actor,
+        db=db,
+    )
+
+    assert signals == [signal]
+    assert decisions == [decision]
+
+
+def test_tax_lots_and_trade_trace_assemble_provenance() -> None:
+    captured_date = date(2024, 1, 2)
+    decision_id = uuid4()
+    order_id = uuid4()
+    event_id = uuid4()
+    signal = SimpleNamespace(
+        date=captured_date,
+        symbol="AAPL",
+        signal_name="momentum_return",
+        value=0.12,
+        rank=1,
+        selected=True,
+        meta={},
+    )
+    decision = SimpleNamespace(
+        decision_id=decision_id,
+        order_id=order_id,
+        date=captured_date,
+        symbol="AAPL",
+        requested_target_weight=1.0,
+        target_weight=0.5,
+        target_qty=5.0,
+        current_qty=0.0,
+        delta_qty=5.0,
+        intended_side="BUY",
+        intended_qty=5.0,
+        executable_qty=5.0,
+        outcome="FILLED",
+        reason=None,
+        meta={},
+    )
+    constraint = SimpleNamespace(
+        constraint_id=uuid4(),
+        decision_id=decision_id,
+        date=captured_date,
+        symbol="AAPL",
+        constraint_name="max_weight",
+        bound_value=0.5,
+        pre_clamp_value=1.0,
+        applied_value=0.5,
+        reason="Target exceeded max weight.",
+        meta={},
+    )
+    order = SimpleNamespace(
+        order_id=order_id,
+        date=captured_date,
+        symbol="AAPL",
+        side="BUY",
+        qty=5.0,
+        order_type="MKT",
+        limit_price=None,
+        status="FILLED",
+        meta={},
+    )
+    fill = SimpleNamespace(
+        fill_id=uuid4(),
+        order_id=order_id,
+        date=captured_date,
+        symbol="AAPL",
+        qty=5.0,
+        price_native=100.0,
+        commission_native=1.0,
+        slippage_native=0.5,
+        notional_native=500.0,
+        meta={},
+    )
+    tax_event = SimpleNamespace(
+        tax_event_id=event_id,
+        date=captured_date,
+        symbol="AAPL",
+        quantity=5.0,
+        realized_pnl_base=20.0,
+        holding_period_days=30,
+        bucket="US_ST",
+        tax_rate=0.3,
+        tax_due_base=6.0,
+        meta={},
+    )
+    lot = SimpleNamespace(
+        consumption_id=uuid4(),
+        tax_event_id=event_id,
+        date=captured_date,
+        symbol="AAPL",
+        lot_opened_on=date(2023, 12, 1),
+        lot_unit_cost_native=96.0,
+        qty_consumed=5.0,
+        holding_days=30,
+        bucket="US_ST",
+        realized_pnl_base=20.0,
+    )
+    db = _FakeDB(
+        signal_rows=[signal],
+        order_decision_rows=[decision],
+        constraint_rows=[constraint],
+        orders=[order],
+        fills=[fill],
+        tax_rows=[tax_event],
+        tax_lot_rows=[lot],
+    )
+    actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+
+    lots = get_run_tax_event_lots(
+        run_id=uuid4(),
+        event_id=event_id,
+        actor=actor,
+        db=db,
+    )
+    trace = get_run_trade_trace(
+        run_id=uuid4(),
+        date_value=captured_date,
+        symbol="aapl",
+        actor=actor,
+        db=db,
+    )
+
+    assert lots == [lot]
+    assert trace.symbol == "AAPL"
+    assert trace.signals[0].signal_name == "momentum_return"
+    assert trace.decisions[0].decision_id == decision_id
+    assert trace.constraints[0].decision_id == decision_id
+    assert trace.orders[0].order_id == order_id
+    assert trace.fills[0].order_id == order_id
+    assert trace.tax_events[0].tax_event_id == event_id
+    assert trace.tax_events[0].lots[0].lot_opened_on == date(2023, 12, 1)
 
 
 def test_run_monte_carlo_uses_finished_run_equity_and_cache(

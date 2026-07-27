@@ -243,16 +243,48 @@ def run_dca(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> i
 
         if not _should_run(last_buy, ctx.date, buy_frequency):
             return None
+        ctx.recorder.mark_decision_cycle(
+            strategy="DCA",
+            frequency=buy_frequency,
+        )
 
         available_cash_base = ctx.cash_base_total + contribution_base
         equity_base = ctx.equity_base + contribution_base
         if available_cash_base <= 0 or equity_base <= 0:
+            for symbol, weight in weights.items():
+                ctx.recorder.signal(
+                    symbol,
+                    "target_weight",
+                    weight,
+                    selected=False,
+                )
+                ctx.recorder.order_decision(
+                    symbol=symbol,
+                    requested_target_weight=weight,
+                    target_weight=weight,
+                    target_qty=None,
+                    current_qty=ctx.state.positions[symbol].qty,
+                    delta_qty=None,
+                    intended_side=None,
+                    intended_qty=None,
+                    executable_qty=0.0,
+                    outcome="REJECTED_CONSTRAINT",
+                    reason="Available cash and portfolio equity must both be positive.",
+                    meta={},
+                )
             last_buy = ctx.date
             return None
 
         allocations: Dict[str, float] = {}
         investable_cash_base = available_cash_base * (1.0 - cash_buffer_pct)
         for symbol, weight in weights.items():
+            ctx.recorder.signal(
+                symbol,
+                "target_weight",
+                weight,
+                selected=True,
+                meta={"contribution_base": contribution_base},
+            )
             target_base = ctx.position_value_base.get(symbol, 0.0) + (
                 investable_cash_base * weight
             )

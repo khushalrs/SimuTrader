@@ -9,13 +9,17 @@ import pytest
 from app.backtest.executor import execute_run
 from app.models.backtests import (
     BacktestRun,
+    RunConstraintEvent,
     RunDailyEquity,
     RunFill,
     RunFinancing,
     RunMetric,
     RunOrder,
+    RunOrderDecision,
     RunPosition,
+    RunSignalSnapshot,
     RunTaxEvent,
+    RunTaxLotConsumption,
 )
 
 
@@ -34,6 +38,12 @@ class _FakeQuery:
             self._session.metrics_rows = []
         elif self._model is RunOrder:
             self._session.order_rows = []
+        elif self._model is RunOrderDecision:
+            self._session.order_decision_rows = []
+        elif self._model is RunConstraintEvent:
+            self._session.constraint_rows = []
+        elif self._model is RunSignalSnapshot:
+            self._session.signal_rows = []
         elif self._model is RunFill:
             self._session.fill_rows = []
         elif self._model is RunPosition:
@@ -42,6 +52,8 @@ class _FakeQuery:
             self._session.financing_rows = []
         elif self._model is RunTaxEvent:
             self._session.tax_rows = []
+        elif self._model is RunTaxLotConsumption:
+            self._session.tax_lot_rows = []
         return 0
 
 
@@ -50,10 +62,14 @@ class _FakeSession:
         self.equity_rows: list[RunDailyEquity] = []
         self.metrics_rows: list[RunMetric] = []
         self.order_rows: list[RunOrder] = []
+        self.order_decision_rows: list[RunOrderDecision] = []
+        self.constraint_rows: list[RunConstraintEvent] = []
+        self.signal_rows: list[RunSignalSnapshot] = []
         self.fill_rows: list[RunFill] = []
         self.position_rows: list[RunPosition] = []
         self.financing_rows: list[RunFinancing] = []
         self.tax_rows: list[RunTaxEvent] = []
+        self.tax_lot_rows: list[RunTaxLotConsumption] = []
 
     def query(self, model):
         return _FakeQuery(self, model)
@@ -66,6 +82,12 @@ class _FakeSession:
             self.equity_rows.extend(records)
         elif isinstance(first, RunOrder):
             self.order_rows.extend(records)
+        elif isinstance(first, RunOrderDecision):
+            self.order_decision_rows.extend(records)
+        elif isinstance(first, RunConstraintEvent):
+            self.constraint_rows.extend(records)
+        elif isinstance(first, RunSignalSnapshot):
+            self.signal_rows.extend(records)
         elif isinstance(first, RunFill):
             self.fill_rows.extend(records)
         elif isinstance(first, RunPosition):
@@ -74,6 +96,8 @@ class _FakeSession:
             self.financing_rows.extend(records)
         elif isinstance(first, RunTaxEvent):
             self.tax_rows.extend(records)
+        elif isinstance(first, RunTaxLotConsumption):
+            self.tax_lot_rows.extend(records)
 
     def add(self, obj):
         if isinstance(obj, RunMetric):
@@ -289,6 +313,125 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert db.metrics_rows[0].turnover is not None
 
 
+def test_explain_capture_records_signals_and_order_decisions(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "simutrader.duckdb"
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 5)
+    _seed_duckdb(str(duckdb_path), ["EXPLAIN"], start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "strategy": "BUY_AND_HOLD",
+            "explain": True,
+            "base_currency": "USD",
+            "universe": {
+                "instruments": [
+                    {
+                        "symbol": "EXPLAIN",
+                        "asset_class": "US_EQUITY",
+                        "amount": 5_000.0,
+                    }
+                ]
+            },
+            "backtest": {
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "initial_cash": 10_000.0,
+            },
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert len(db.signal_rows) == 1
+    assert db.signal_rows[0].signal_name == "target_value_native"
+    assert db.signal_rows[0].selected is True
+    assert len(db.order_decision_rows) == 1
+    assert db.order_decision_rows[0].outcome == "FILLED"
+    assert db.order_decision_rows[0].executable_qty == pytest.approx(50.0)
+    assert db.metrics_rows[0].meta["explain_capture"] == {
+        "enabled": True,
+        "signal_records": 1,
+        "order_decision_records": 1,
+        "constraint_records": 0,
+        "truncated": False,
+    }
+
+
+def test_explain_mode_records_and_clamps_max_weight_constraint(
+    tmp_path,
+    monkeypatch,
+):
+    duckdb_path = tmp_path / "constraint_clamp.duckdb"
+    start = date(2024, 1, 2)
+    _seed_duckdb(str(duckdb_path), ["CLAMP"], start, start)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    def make_run(*, explain):
+        return BacktestRun(
+            run_id=uuid4(),
+            status="QUEUED",
+            config_snapshot={
+                "strategy": "BUY_AND_HOLD",
+                "explain": explain,
+                "risk": {
+                    "max_gross_leverage": 1.0,
+                    "max_net_leverage": 1.0,
+                    "max_weight": 0.4,
+                },
+                "universe": {
+                    "instruments": [
+                        {
+                            "symbol": "CLAMP",
+                            "asset_class": "US_EQUITY",
+                            "amount": 1_000.0,
+                        }
+                    ]
+                },
+                "backtest": {
+                    "start_date": start.isoformat(),
+                    "end_date": start.isoformat(),
+                    "initial_cash": 1_000.0,
+                },
+            },
+            data_snapshot_id="test_snapshot",
+            seed=42,
+        )
+
+    clamped_db = _FakeSession()
+    clamped_run = make_run(explain=True)
+    execute_run(clamped_db, clamped_run)
+
+    assert clamped_run.status == "SUCCEEDED"
+    assert clamped_db.fill_rows[0].qty == pytest.approx(4.0)
+    assert clamped_db.order_decision_rows[0].requested_target_weight == pytest.approx(
+        1.0
+    )
+    assert clamped_db.order_decision_rows[0].target_weight == pytest.approx(0.4)
+    assert clamped_db.constraint_rows[0].constraint_name == "max_weight"
+    assert clamped_db.constraint_rows[0].pre_clamp_value == pytest.approx(1.0)
+    assert clamped_db.constraint_rows[0].applied_value == pytest.approx(0.4)
+    assert (
+        clamped_db.constraint_rows[0].decision_id
+        == clamped_db.order_decision_rows[0].decision_id
+    )
+
+    failing_db = _FakeSession()
+    failing_run = make_run(explain=False)
+    execute_run(failing_db, failing_run)
+
+    assert failing_run.status == "FAILED"
+    assert failing_run.error_code == "E_CONFIG_INVALID"
+    assert failing_db.fill_rows == []
+
+
 def test_evaluation_window_warms_up_without_trading_or_persistence(
     tmp_path,
     monkeypatch,
@@ -394,6 +537,54 @@ def test_buy_and_hold_commission_and_slippage(tmp_path, monkeypatch):
     assert metric.gross_return > metric.net_return
 
 
+def test_explain_capture_records_partial_cash_trim(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "partial_trim.duckdb"
+    start = date(2024, 1, 2)
+    _seed_duckdb(str(duckdb_path), ["TRIM"], start, start)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    db = _FakeSession()
+    run = BacktestRun(
+        run_id=uuid4(),
+        status="QUEUED",
+        config_snapshot={
+            "strategy": "BUY_AND_HOLD",
+            "explain": True,
+            "universe": {
+                "instruments": [
+                    {
+                        "symbol": "TRIM",
+                        "asset_class": "US_EQUITY",
+                        "amount": 1_000.0,
+                    }
+                ]
+            },
+            "backtest": {
+                "start_date": start.isoformat(),
+                "end_date": start.isoformat(),
+                "initial_cash": 1_000.0,
+            },
+            "commission": {
+                "model": "BPS",
+                "bps": 100,
+                "min_fee_native": 0.0,
+            },
+        },
+        data_snapshot_id="test_snapshot",
+        seed=42,
+    )
+
+    execute_run(db, run)
+
+    assert run.status == "SUCCEEDED"
+    assert db.order_rows[0].status == "TRIMMED_PARTIAL"
+    assert db.order_rows[0].qty < 10.0
+    assert db.order_decision_rows[0].outcome == "TRIMMED_PARTIAL"
+    assert db.order_decision_rows[0].executable_qty == pytest.approx(
+        db.order_rows[0].qty
+    )
+
+
 def test_buy_and_hold_equal_weight_default(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "simutrader.duckdb"
     start = date(2024, 1, 2)
@@ -428,6 +619,8 @@ def test_buy_and_hold_equal_weight_default(tmp_path, monkeypatch):
     assert db.equity_rows, "Expected equity rows to be persisted"
     # Strategies now keep a 1% cash buffer (99% deployment).
     assert db.equity_rows[-1].cash_base == pytest.approx(100.0, rel=1e-6)
+    assert {row.status for row in db.order_rows} == {"TRIMMED_CASH_BUFFER"}
+    assert all(row.meta["terminal_status"] == "FILLED" for row in db.order_rows)
 
 
 def test_buy_and_hold_missing_bars_carry_forward(tmp_path, monkeypatch):

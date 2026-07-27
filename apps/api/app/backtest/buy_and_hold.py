@@ -187,6 +187,15 @@ def run_buy_and_hold(db: Session, run: BacktestRun, config_snapshot: Dict[str, A
         for symbol, amount in amount_alloc.items():
             if ctx.state.positions[symbol].qty == 0:
                 allocations[symbol] = amount
+        if allocations:
+            ctx.recorder.mark_decision_cycle(strategy="BUY_AND_HOLD")
+            for symbol, amount in allocations.items():
+                ctx.recorder.signal(
+                    symbol,
+                    "target_value_native",
+                    amount,
+                    selected=True,
+                )
         return allocations or None
 
     return run_engine(

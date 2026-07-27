@@ -10,17 +10,26 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.backtest.decision_recorder import (
+    DecisionRecorder,
+    OrderDecisionDraft,
+    build_decision_recorder,
+)
 from app.backtest.errors import DataUnavailableError, NoTradingDaysError
 from app.data.duckdb import get_duckdb_conn
 from app.models.backtests import (
     BacktestRun,
+    RunConstraintEvent,
     RunDailyEquity,
     RunFill,
     RunFinancing,
     RunMetric,
     RunOrder,
+    RunOrderDecision,
     RunPosition,
+    RunSignalSnapshot,
     RunTaxEvent,
+    RunTaxLotConsumption,
 )
 from app.services import calendar_policy
 
@@ -49,6 +58,7 @@ class DayContext:
     cash_base_total: float
     position_value_base: Dict[str, float]
     fx_rate: Dict[str, float]
+    recorder: DecisionRecorder
     is_warmup: bool = False
 
 
@@ -58,6 +68,8 @@ class OrderSpec:
     side: str
     qty: float
     price: float
+    decision: OrderDecisionDraft | None = None
+    cash_buffer_trimmed: bool = False
 
 
 @dataclass
@@ -86,6 +98,18 @@ class FinancingSpec:
 class RiskSpec:
     max_gross_leverage: float
     max_net_leverage: float
+    max_weight: float | None = None
+
+
+@dataclass
+class TargetConstraint:
+    symbol: str
+    constraint_name: str
+    bound_value: float | None
+    pre_clamp_value: float
+    applied_value: float
+    reason: str
+    meta: dict[str, Any]
 
 
 @dataclass
@@ -330,7 +354,110 @@ def _parse_risk(config: Dict[str, Any] | None, financing: FinancingSpec) -> Risk
         raise ValueError("risk.max_net_leverage must be >= 0")
     if max_net > max_gross + 1e-12:
         raise ValueError("risk.max_net_leverage cannot exceed risk.max_gross_leverage")
-    return RiskSpec(max_gross_leverage=max_gross, max_net_leverage=max_net)
+    max_weight_value = config.get("max_weight")
+    max_weight = (
+        float(max_weight_value)
+        if max_weight_value is not None
+        else None
+    )
+    if max_weight is not None and max_weight <= 0:
+        raise ValueError("risk.max_weight must be > 0")
+    return RiskSpec(
+        max_gross_leverage=max_gross,
+        max_net_leverage=max_net,
+        max_weight=max_weight,
+    )
+
+
+def _clamp_target_weights(
+    weights: Dict[str, float],
+    risk: RiskSpec,
+    financing: FinancingSpec,
+) -> tuple[Dict[str, float], list[TargetConstraint]]:
+    applied = {symbol: float(weight) for symbol, weight in weights.items()}
+    constraints: list[TargetConstraint] = []
+
+    if risk.max_weight is not None:
+        for symbol, weight in list(applied.items()):
+            clamped = max(-risk.max_weight, min(risk.max_weight, weight))
+            if abs(clamped - weight) <= 1e-12:
+                continue
+            applied[symbol] = clamped
+            constraints.append(
+                TargetConstraint(
+                    symbol=symbol,
+                    constraint_name="max_weight",
+                    bound_value=risk.max_weight,
+                    pre_clamp_value=weight,
+                    applied_value=clamped,
+                    reason=(
+                        f"Absolute target weight exceeded the configured "
+                        f"{risk.max_weight:.6f} maximum."
+                    ),
+                    meta={},
+                )
+            )
+
+    max_gross = risk.max_gross_leverage
+    if financing.margin_enabled:
+        max_gross = min(max_gross, financing.max_leverage)
+    else:
+        max_gross = min(max_gross, 1.0)
+    gross = sum(abs(weight) for weight in applied.values())
+    if gross > max_gross + 1e-12:
+        scale = max_gross / gross
+        before = dict(applied)
+        applied = {
+            symbol: weight * scale
+            for symbol, weight in applied.items()
+        }
+        for symbol, weight in before.items():
+            constraints.append(
+                TargetConstraint(
+                    symbol=symbol,
+                    constraint_name="max_gross",
+                    bound_value=max_gross,
+                    pre_clamp_value=weight,
+                    applied_value=applied[symbol],
+                    reason=(
+                        f"Portfolio gross target {gross:.6f} exceeded the "
+                        f"{max_gross:.6f} leverage bound."
+                    ),
+                    meta={
+                        "pre_clamp_portfolio_gross": gross,
+                        "scale": scale,
+                    },
+                )
+            )
+
+    net = sum(applied.values())
+    if abs(net) > risk.max_net_leverage + 1e-12:
+        scale = risk.max_net_leverage / abs(net)
+        before = dict(applied)
+        applied = {
+            symbol: weight * scale
+            for symbol, weight in applied.items()
+        }
+        for symbol, weight in before.items():
+            constraints.append(
+                TargetConstraint(
+                    symbol=symbol,
+                    constraint_name="max_net",
+                    bound_value=risk.max_net_leverage,
+                    pre_clamp_value=weight,
+                    applied_value=applied[symbol],
+                    reason=(
+                        f"Absolute portfolio net target {abs(net):.6f} exceeded "
+                        f"the {risk.max_net_leverage:.6f} leverage bound."
+                    ),
+                    meta={
+                        "pre_clamp_portfolio_net": net,
+                        "scale": scale,
+                    },
+                )
+            )
+
+    return applied, constraints
 
 
 def _convert_native_to_base(
@@ -472,7 +599,9 @@ def _max_affordable_qty(
     # Regime 2: bps fee dominates.
     qty_bps = cash_bucket / (exec_price * (1.0 + bps_rate))
 
-    candidate = max(qty_min_fee, qty_bps, 0.0)
+    # The exact commission is max(bps fee, minimum fee), so both affordability
+    # bounds must hold. The smaller quantity is the binding constraint.
+    candidate = min(qty_min_fee, qty_bps)
     # Ensure strict affordability under the exact commission formula.
     notional = candidate * exec_price
     commission = max(notional * bps_rate, min_fee)
@@ -713,56 +842,264 @@ def _targets_to_orders(
     target_allocations: Dict[str, float],
     prices: Dict[str, float | None],
     market_open: Dict[str, bool],
+    *,
+    recorder: DecisionRecorder,
+    requested_target_weights: Dict[str, float | None] | None = None,
+    target_weights: Dict[str, float | None] | None = None,
+    cash_buffer_trimmed: set[str] | None = None,
+    constraint_specs_by_symbol: Dict[str, list[TargetConstraint]] | None = None,
 ) -> list[OrderSpec]:
     orders: list[OrderSpec] = []
+    requested_target_weights = requested_target_weights or {}
+    target_weights = target_weights or {}
+    cash_buffer_trimmed = cash_buffer_trimmed or set()
+    constraint_specs_by_symbol = constraint_specs_by_symbol or {}
+
+    def decision_for(
+        *,
+        symbol: str,
+        current_qty: float,
+        target_qty: float | None,
+        delta_qty: float | None,
+        intended_side: str | None,
+        intended_qty: float | None,
+        outcome: str,
+        reason: str | None = None,
+    ) -> OrderDecisionDraft | None:
+        adjustments = (
+            ["TRIMMED_CASH_BUFFER"] if symbol in cash_buffer_trimmed else []
+        )
+        decision = recorder.order_decision(
+            symbol=symbol,
+            requested_target_weight=requested_target_weights.get(symbol),
+            target_weight=target_weights.get(symbol),
+            target_qty=target_qty,
+            current_qty=current_qty,
+            delta_qty=delta_qty,
+            intended_side=intended_side,
+            intended_qty=intended_qty,
+            executable_qty=None,
+            outcome=outcome,
+            reason=reason,
+            meta={"adjustments": adjustments} if adjustments else {},
+        )
+        for constraint in constraint_specs_by_symbol.get(symbol, []):
+            recorder.constraint(
+                decision,
+                constraint.constraint_name,
+                bound_value=constraint.bound_value,
+                pre_clamp_value=constraint.pre_clamp_value,
+                applied_value=constraint.applied_value,
+                reason=constraint.reason,
+                meta=constraint.meta,
+            )
+        return decision
+
     for symbol, target_value in target_allocations.items():
         if symbol not in state.positions:
             raise ValueError(f"Unknown symbol in target allocation: {symbol}")
+        current_qty = state.positions[symbol].qty
         if not market_open.get(symbol):
+            decision_for(
+                symbol=symbol,
+                current_qty=current_qty,
+                target_qty=None,
+                delta_qty=None,
+                intended_side=None,
+                intended_qty=None,
+                outcome="SKIPPED_MARKET_CLOSED",
+                reason="The instrument market was closed on the decision date.",
+            )
             continue
         price = prices.get(symbol)
         if price is None:
+            decision_for(
+                symbol=symbol,
+                current_qty=current_qty,
+                target_qty=None,
+                delta_qty=None,
+                intended_side=None,
+                intended_qty=None,
+                outcome="SKIPPED_NO_PRICE",
+                reason="No executable price was available for the instrument.",
+            )
             continue
 
-        current_qty = state.positions[symbol].qty
         target_qty = target_value / price if price else 0.0
-        if abs(target_qty - current_qty) < 1e-9:
+        delta = target_qty - current_qty
+        if abs(delta) < 1e-9:
+            unchanged = abs(delta) <= 1e-12
+            decision_for(
+                symbol=symbol,
+                current_qty=current_qty,
+                target_qty=target_qty,
+                delta_qty=delta,
+                intended_side=None,
+                intended_qty=abs(delta),
+                outcome="HELD_NO_CHANGE" if unchanged else "BELOW_MIN_DELTA",
+                reason=(
+                    "Current quantity already matches the target."
+                    if unchanged
+                    else "The target delta was below the engine minimum quantity."
+                ),
+            )
             continue
 
         if current_qty >= 0 and target_qty >= 0:
-            delta = target_qty - current_qty
             if delta > 1e-9:
-                orders.append(OrderSpec(symbol=symbol, side="BUY", qty=delta, price=price))
-            elif delta < -1e-9:
+                decision = decision_for(
+                    symbol=symbol,
+                    current_qty=current_qty,
+                    target_qty=target_qty,
+                    delta_qty=delta,
+                    intended_side="BUY",
+                    intended_qty=delta,
+                    outcome="PENDING",
+                )
                 orders.append(
-                    OrderSpec(symbol=symbol, side="SELL", qty=abs(delta), price=price)
+                    OrderSpec(
+                        symbol=symbol,
+                        side="BUY",
+                        qty=delta,
+                        price=price,
+                        decision=decision,
+                    )
+                )
+            elif delta < -1e-9:
+                decision = decision_for(
+                    symbol=symbol,
+                    current_qty=current_qty,
+                    target_qty=target_qty,
+                    delta_qty=delta,
+                    intended_side="SELL",
+                    intended_qty=abs(delta),
+                    outcome="PENDING",
+                )
+                orders.append(
+                    OrderSpec(
+                        symbol=symbol,
+                        side="SELL",
+                        qty=abs(delta),
+                        price=price,
+                        decision=decision,
+                    )
                 )
         elif current_qty <= 0 and target_qty <= 0:
             if target_qty < current_qty - 1e-9:
+                decision = decision_for(
+                    symbol=symbol,
+                    current_qty=current_qty,
+                    target_qty=target_qty,
+                    delta_qty=delta,
+                    intended_side="SHORT",
+                    intended_qty=abs(delta),
+                    outcome="PENDING",
+                )
                 orders.append(
                     OrderSpec(
                         symbol=symbol,
                         side="SHORT",
                         qty=abs(target_qty - current_qty),
                         price=price,
+                        decision=decision,
                     )
                 )
             elif target_qty > current_qty + 1e-9:
+                decision = decision_for(
+                    symbol=symbol,
+                    current_qty=current_qty,
+                    target_qty=target_qty,
+                    delta_qty=delta,
+                    intended_side="COVER",
+                    intended_qty=abs(delta),
+                    outcome="PENDING",
+                )
                 orders.append(
                     OrderSpec(
                         symbol=symbol,
                         side="COVER",
                         qty=abs(target_qty - current_qty),
                         price=price,
+                        decision=decision,
                     )
                 )
         elif current_qty > 0 and target_qty < 0:
-            orders.append(OrderSpec(symbol=symbol, side="SELL", qty=current_qty, price=price))
-            orders.append(OrderSpec(symbol=symbol, side="SHORT", qty=abs(target_qty), price=price))
+            sell_decision = decision_for(
+                symbol=symbol,
+                current_qty=current_qty,
+                target_qty=target_qty,
+                delta_qty=delta,
+                intended_side="SELL",
+                intended_qty=current_qty,
+                outcome="PENDING",
+            )
+            short_decision = decision_for(
+                symbol=symbol,
+                current_qty=0.0,
+                target_qty=target_qty,
+                delta_qty=target_qty,
+                intended_side="SHORT",
+                intended_qty=abs(target_qty),
+                outcome="PENDING",
+            )
+            orders.append(
+                OrderSpec(
+                    symbol=symbol,
+                    side="SELL",
+                    qty=current_qty,
+                    price=price,
+                    decision=sell_decision,
+                )
+            )
+            orders.append(
+                OrderSpec(
+                    symbol=symbol,
+                    side="SHORT",
+                    qty=abs(target_qty),
+                    price=price,
+                    decision=short_decision,
+                )
+            )
         elif current_qty < 0 and target_qty > 0:
-            orders.append(OrderSpec(symbol=symbol, side="COVER", qty=abs(current_qty), price=price))
-            orders.append(OrderSpec(symbol=symbol, side="BUY", qty=target_qty, price=price))
+            cover_decision = decision_for(
+                symbol=symbol,
+                current_qty=current_qty,
+                target_qty=target_qty,
+                delta_qty=delta,
+                intended_side="COVER",
+                intended_qty=abs(current_qty),
+                outcome="PENDING",
+            )
+            buy_decision = decision_for(
+                symbol=symbol,
+                current_qty=0.0,
+                target_qty=target_qty,
+                delta_qty=target_qty,
+                intended_side="BUY",
+                intended_qty=target_qty,
+                outcome="PENDING",
+            )
+            orders.append(
+                OrderSpec(
+                    symbol=symbol,
+                    side="COVER",
+                    qty=abs(current_qty),
+                    price=price,
+                    decision=cover_decision,
+                )
+            )
+            orders.append(
+                OrderSpec(
+                    symbol=symbol,
+                    side="BUY",
+                    qty=target_qty,
+                    price=price,
+                    decision=buy_decision,
+                )
+            )
 
+    for order in orders:
+        order.cash_buffer_trimmed = order.symbol in cash_buffer_trimmed
     return orders
 
 
@@ -817,6 +1154,7 @@ def run_engine(
     if allocation_kind not in {"NATIVE_VALUE", "BASE_WEIGHT"}:
         raise ValueError(f"Unsupported allocation_kind '{allocation_kind}'.")
     cash_buffer_pct = _parse_cash_buffer_pct(config_snapshot.get("execution"))
+    recorder = build_decision_recorder(run.run_id, config_snapshot.get("explain"))
 
     con = get_duckdb_conn()
     try:
@@ -909,10 +1247,19 @@ def run_engine(
     db.query(RunMetric).filter(RunMetric.run_id == run.run_id).delete(
         synchronize_session=False
     )
-    db.query(RunOrder).filter(RunOrder.run_id == run.run_id).delete(
+    db.query(RunConstraintEvent).filter(
+        RunConstraintEvent.run_id == run.run_id
+    ).delete(synchronize_session=False)
+    db.query(RunOrderDecision).filter(
+        RunOrderDecision.run_id == run.run_id
+    ).delete(synchronize_session=False)
+    db.query(RunSignalSnapshot).filter(
+        RunSignalSnapshot.run_id == run.run_id
+    ).delete(synchronize_session=False)
+    db.query(RunFill).filter(RunFill.run_id == run.run_id).delete(
         synchronize_session=False
     )
-    db.query(RunFill).filter(RunFill.run_id == run.run_id).delete(
+    db.query(RunOrder).filter(RunOrder.run_id == run.run_id).delete(
         synchronize_session=False
     )
     db.query(RunPosition).filter(RunPosition.run_id == run.run_id).delete(
@@ -921,6 +1268,9 @@ def run_engine(
     db.query(RunFinancing).filter(RunFinancing.run_id == run.run_id).delete(
         synchronize_session=False
     )
+    db.query(RunTaxLotConsumption).filter(
+        RunTaxLotConsumption.run_id == run.run_id
+    ).delete(synchronize_session=False)
     db.query(RunTaxEvent).filter(RunTaxEvent.run_id == run.run_id).delete(
         synchronize_session=False
     )
@@ -938,6 +1288,7 @@ def run_engine(
     position_rows: list[RunPosition] = []
     financing_rows: list[RunFinancing] = []
     tax_event_rows: list[RunTaxEvent] = []
+    tax_lot_consumption_rows: list[RunTaxLotConsumption] = []
     fees_cum_by_currency: Dict[str, float] = {currency: 0.0 for currency in currencies}
     equity_series_base: list[float] = []
     fees_cum_series_base: list[float] = []
@@ -1215,9 +1566,10 @@ def run_engine(
                 state.cash_by_currency.get(symbol_currency, 0.0) - tax_due_native
             )
 
+            tax_event_id = uuid4()
             tax_event_rows.append(
                 RunTaxEvent(
-                    tax_event_id=uuid4(),
+                    tax_event_id=tax_event_id,
                     run_id=run.run_id,
                     date=day,
                     symbol=symbol,
@@ -1233,6 +1585,21 @@ def run_engine(
                         "realized_pnl_native": realized_native,
                         "currency": symbol_currency,
                     },
+                )
+            )
+            tax_lot_consumption_rows.append(
+                RunTaxLotConsumption(
+                    consumption_id=uuid4(),
+                    tax_event_id=tax_event_id,
+                    run_id=run.run_id,
+                    date=day,
+                    symbol=symbol,
+                    lot_opened_on=lot.opened_on,
+                    lot_unit_cost_native=lot.unit_cost_native,
+                    qty_consumed=consume,
+                    holding_days=holding_days,
+                    bucket=bucket,
+                    realized_pnl_base=realized_base,
                 )
             )
 
@@ -1254,6 +1621,8 @@ def run_engine(
             return
         if flags is None:
             flags = {"is_us_trading": False, "is_in_trading": False, "is_fx_trading": False}
+        is_warmup = day < evaluation_start_date
+        recorder.begin_bar(day, is_warmup=is_warmup)
 
         market_open = {
             symbol: calendar_policy.is_market_open(flags, symbol_calendars[symbol])
@@ -1324,10 +1693,14 @@ def run_engine(
             cash_base_total=cash_base_total,
             position_value_base=position_value_base,
             fx_rate=fx_rate,
-            is_warmup=day < evaluation_start_date,
+            recorder=recorder,
+            is_warmup=is_warmup,
         )
         target_allocations = target_allocations_fn(ctx)
+        if target_allocations is not None:
+            recorder.mark_decision_cycle(source="strategy_allocation")
         if ctx.is_warmup:
+            recorder.finish_bar()
             return
         if initial_cash_base_at_evaluation is None:
             initial_cash_base_at_evaluation = sum(
@@ -1341,9 +1714,19 @@ def run_engine(
             )
 
         if target_allocations:
+            requested_target_weights: Dict[str, float | None] = {}
+            applied_target_weights: Dict[str, float | None] = {}
+            cash_buffer_trimmed: set[str] = set()
+            constraint_specs_by_symbol: Dict[str, list[TargetConstraint]] = {
+                symbol: [] for symbol in target_allocations
+            }
+            # Allocators may add cash (DCA), so value targets after they return.
+            _, target_equity_base, _, _, _, _ = compute_portfolio_values(usd_inr)
             if allocation_kind == "BASE_WEIGHT":
-                # Allocators may add cash (DCA), so value the weights after they return.
-                _, target_equity_base, _, _, _, _ = compute_portfolio_values(usd_inr)
+                requested_target_weights = {
+                    symbol: float(weight)
+                    for symbol, weight in target_allocations.items()
+                }
                 # Hold back a slice of equity so commission and slippage are payable
                 # without every rebalance falling into partial-fill trimming.
                 # Incremental strategies (DCA) opt out and buffer their own new cash
@@ -1351,6 +1734,19 @@ def run_engine(
                 investable_base = target_equity_base * (
                     1.0 - cash_buffer_pct if apply_cash_buffer else 1.0
                 )
+                buffer_multiplier = (
+                    1.0 - cash_buffer_pct if apply_cash_buffer else 1.0
+                )
+                applied_target_weights = {
+                    symbol: float(weight) * buffer_multiplier
+                    for symbol, weight in target_allocations.items()
+                }
+                if buffer_multiplier < 1.0:
+                    cash_buffer_trimmed = {
+                        symbol
+                        for symbol, weight in target_allocations.items()
+                        if abs(float(weight)) > 1e-12
+                    }
                 target_allocations = {
                     symbol: _convert_base_to_native(
                         float(weight) * investable_base,
@@ -1360,7 +1756,106 @@ def run_engine(
                     )
                     for symbol, weight in target_allocations.items()
                 }
-            orders = _targets_to_orders(state, target_allocations, prices, market_open)
+            else:
+                strategy_prebuffered_targets = (
+                    allocation_mode in {"WEIGHT", "EQUAL_WEIGHT"}
+                    and apply_cash_buffer
+                    and cash_buffer_pct > 0.0
+                )
+                for symbol, target_value_native in target_allocations.items():
+                    target_value_base = _convert_native_to_base(
+                        float(target_value_native),
+                        symbol_currencies[symbol],
+                        base_currency,
+                        usd_inr,
+                    )
+                    weight = (
+                        target_value_base / equity_base
+                        if abs(equity_base) > 1e-12
+                        else None
+                    )
+                    requested_target_weights[symbol] = (
+                        weight / (1.0 - cash_buffer_pct)
+                        if strategy_prebuffered_targets and weight is not None
+                        else weight
+                    )
+                    applied_target_weights[symbol] = weight
+                    if (
+                        strategy_prebuffered_targets
+                        and abs(float(target_value_native)) > 1e-12
+                    ):
+                        cash_buffer_trimmed.add(symbol)
+
+            for symbol in cash_buffer_trimmed:
+                requested_weight = requested_target_weights.get(symbol)
+                applied_weight = applied_target_weights.get(symbol)
+                if requested_weight is None or applied_weight is None:
+                    continue
+                constraint_specs_by_symbol[symbol].append(
+                    TargetConstraint(
+                        symbol=symbol,
+                        constraint_name="cash_buffer",
+                        bound_value=cash_buffer_pct,
+                        pre_clamp_value=requested_weight,
+                        applied_value=applied_weight,
+                        reason=(
+                            f"The configured {cash_buffer_pct:.6f} cash buffer "
+                            "reduced the investable target."
+                        ),
+                        meta={"cash_buffer_pct": cash_buffer_pct},
+                    )
+                )
+
+            numeric_applied_weights = {
+                symbol: float(weight)
+                for symbol, weight in applied_target_weights.items()
+                if weight is not None
+            }
+            clamped_weights, risk_constraints = _clamp_target_weights(
+                numeric_applied_weights,
+                risk,
+                financing,
+            )
+            if recorder.constraint_behavior == "FAIL":
+                # max_weight is a new explicit constraint and therefore has no
+                # legacy execution-stage check. Gross/net keep their existing
+                # post-fill hard-fail semantics when clamping is not opted into.
+                max_weight_constraint = next(
+                    (
+                        constraint
+                        for constraint in risk_constraints
+                        if constraint.constraint_name == "max_weight"
+                    ),
+                    None,
+                )
+                if max_weight_constraint is not None:
+                    raise ValueError(max_weight_constraint.reason)
+            if recorder.constraint_behavior == "RECORD_AND_CLAMP":
+                applied_target_weights.update(clamped_weights)
+                for constraint in risk_constraints:
+                    constraint_specs_by_symbol[constraint.symbol].append(
+                        constraint
+                    )
+                target_allocations = {
+                    symbol: _convert_base_to_native(
+                        float(weight) * target_equity_base,
+                        symbol_currencies[symbol],
+                        base_currency,
+                        usd_inr,
+                    )
+                    for symbol, weight in clamped_weights.items()
+                }
+            orders = _targets_to_orders(
+                state,
+                target_allocations,
+                prices,
+                market_open,
+                recorder=recorder,
+                requested_target_weights=requested_target_weights,
+                target_weights=applied_target_weights,
+                cash_buffer_trimmed=cash_buffer_trimmed,
+                constraint_specs_by_symbol=constraint_specs_by_symbol,
+            )
             priority = {"SELL": 0, "COVER": 0, "SHORT": 1, "BUY": 1}
             for order in sorted(orders, key=lambda item: priority.get(item.side, 10)):
                 currency = str(symbol_currencies[order.symbol]).upper()
@@ -1386,6 +1881,29 @@ def run_engine(
 
                 pos = state.positions[order.symbol]
                 cash_bucket = state.cash_by_currency[currency]
+                was_partially_trimmed = False
+                if order.side == "SHORT" and not financing.shorting_enabled:
+                    if recorder.constraint_behavior == "FAIL":
+                        raise ValueError(
+                            f"shorting is disabled but strategy requested a SHORT "
+                            f"for {order.symbol}"
+                        )
+                    if order.decision is not None:
+                        order.decision.outcome = "REJECTED_CONSTRAINT"
+                        order.decision.reason = (
+                            "Shorting is disabled for this run."
+                        )
+                        order.decision.executable_qty = 0.0
+                    recorder.constraint(
+                        order.decision,
+                        "shorting_enabled",
+                        bound_value=0.0,
+                        pre_clamp_value=order.qty,
+                        applied_value=0.0,
+                        reason="Shorting is disabled for this run.",
+                        meta={"side": order.side},
+                    )
+                    continue
                 if order.side in {"BUY", "COVER"}:
                     total_cost = notional + commission_native
                     if not financing.margin_enabled:
@@ -1417,8 +1935,40 @@ def run_engine(
                         if order.side == "COVER":
                             affordable_qty = min(affordable_qty, abs(pos.qty))
                         if affordable_qty <= 1e-9:
+                            if order.decision is not None:
+                                order.decision.outcome = "REJECTED_CONSTRAINT"
+                                order.decision.reason = (
+                                    "Insufficient available cash for the minimum "
+                                    "executable quantity."
+                                )
+                                order.decision.executable_qty = 0.0
+                            recorder.constraint(
+                                order.decision,
+                                "cash_available",
+                                bound_value=affordable_cash_native,
+                                pre_clamp_value=order.qty,
+                                applied_value=0.0,
+                                reason=(
+                                    "Available cash could not fund the minimum "
+                                    "executable quantity."
+                                ),
+                                meta={"value_unit": "quantity"},
+                            )
                             continue
                         trade_qty = affordable_qty
+                        was_partially_trimmed = trade_qty < order.qty - 1e-9
+                        if was_partially_trimmed:
+                            recorder.constraint(
+                                order.decision,
+                                "cash_available",
+                                bound_value=affordable_cash_native,
+                                pre_clamp_value=order.qty,
+                                applied_value=trade_qty,
+                                reason=(
+                                    "Order quantity was clamped to available cash."
+                                ),
+                                meta={"value_unit": "quantity"},
+                            )
                         slippage_native = abs(exec_price - price) * trade_qty
                         notional = trade_qty * exec_price
                         commission_native = 0.0
@@ -1429,6 +1979,24 @@ def run_engine(
                             )
                         total_cost = notional + commission_native
                         if total_cost > affordable_cash_native + 1e-9:
+                            if order.decision is not None:
+                                order.decision.outcome = "REJECTED_CONSTRAINT"
+                                order.decision.reason = (
+                                    "The cash constraint still failed after quantity trimming."
+                                )
+                                order.decision.executable_qty = 0.0
+                            recorder.constraint(
+                                order.decision,
+                                "cash_available",
+                                bound_value=affordable_cash_native,
+                                pre_clamp_value=order.qty,
+                                applied_value=0.0,
+                                reason=(
+                                    "The cash constraint still failed after "
+                                    "quantity trimming."
+                                ),
+                                meta={"value_unit": "quantity"},
+                            )
                             continue
                     fund_native_cash_with_fx(
                         day=day,
@@ -1502,12 +2070,30 @@ def run_engine(
                         pos.qty = 0.0
                         pos.avg_cost_native = 0.0
                 elif order.side == "SHORT":
-                    if not financing.shorting_enabled:
-                        raise ValueError(
-                            f"shorting is disabled but strategy requested a SHORT for {order.symbol}"
-                        )
                     if pos.qty > 1e-9:
-                        raise ValueError("SHORT cannot be used while long inventory is open.")
+                        if recorder.constraint_behavior == "FAIL":
+                            raise ValueError(
+                                "SHORT cannot be used while long inventory is open."
+                            )
+                        if order.decision is not None:
+                            order.decision.outcome = "REJECTED_CONSTRAINT"
+                            order.decision.reason = (
+                                "Short inventory cannot be opened while long inventory remains."
+                            )
+                            order.decision.executable_qty = 0.0
+                        recorder.constraint(
+                            order.decision,
+                            "inventory_side",
+                            bound_value=0.0,
+                            pre_clamp_value=pos.qty,
+                            applied_value=pos.qty,
+                            reason=(
+                                "Short inventory cannot be opened while long "
+                                "inventory remains."
+                            ),
+                            meta={"side": order.side},
+                        )
+                        continue
                     prev_abs = abs(pos.qty)
                     new_abs = prev_abs + trade_qty
                     pos.avg_cost_native = (
@@ -1528,7 +2114,31 @@ def run_engine(
                 else:
                     raise ValueError(f"Unsupported order side '{order.side}'")
 
+                adjustments = (
+                    ["TRIMMED_CASH_BUFFER"] if order.cash_buffer_trimmed else []
+                )
+                if was_partially_trimmed:
+                    adjustments.append("TRIMMED_PARTIAL")
+                    order_status = "TRIMMED_PARTIAL"
+                    order_reason = "Order quantity was reduced to available cash."
+                elif "TRIMMED_CASH_BUFFER" in adjustments:
+                    order_status = "TRIMMED_CASH_BUFFER"
+                    order_reason = (
+                        "Target allocation was reduced by the configured cash buffer."
+                    )
+                else:
+                    order_status = "FILLED"
+                    order_reason = None
+                if order.decision is not None:
+                    order.decision.executable_qty = trade_qty
+                    order.decision.outcome = order_status
+                    order.decision.reason = order_reason
+                    order.decision.meta["adjustments"] = adjustments
+                    order.decision.meta["terminal_status"] = "FILLED"
+
                 order_id = uuid4()
+                if order.decision is not None:
+                    order.decision.order_id = order_id
                 order_rows.append(
                     RunOrder(
                         order_id=order_id,
@@ -1539,8 +2149,14 @@ def run_engine(
                         qty=trade_qty,
                         order_type="MKT",
                         limit_price=None,
-                        status="FILLED",
-                        meta={},
+                        status=order_status,
+                        meta={
+                            "reason": order_reason,
+                            "adjustments": adjustments,
+                            "intended_qty": order.qty,
+                            "executable_qty": trade_qty,
+                            "terminal_status": "FILLED",
+                        },
                     )
                 )
 
@@ -1719,6 +2335,7 @@ def run_engine(
                     borrow_fee_base=borrow_fee_base,
                 )
             )
+        recorder.finish_bar()
 
     symbol_set = set(symbols)
     first_observed_price: Dict[str, float] = {}
@@ -1804,6 +2421,14 @@ def run_engine(
         db.bulk_save_objects(financing_rows)
     if tax_event_rows:
         db.bulk_save_objects(tax_event_rows)
+    if tax_lot_consumption_rows:
+        db.bulk_save_objects(tax_lot_consumption_rows)
+    if recorder.signal_rows:
+        db.bulk_save_objects(recorder.signal_rows)
+    if recorder.decision_rows:
+        db.bulk_save_objects(recorder.decision_rows)
+    if recorder.constraint_rows:
+        db.bulk_save_objects(recorder.constraint_rows)
 
     risk_free_rate_annual = float(
         (config_snapshot.get("risk") or {}).get("risk_free_rate_annual") or 0.0
@@ -1862,6 +2487,13 @@ def run_engine(
             else None
         ),
         "turnover_convention": "two_way_annualized",
+        "explain_capture": {
+            "enabled": recorder.enabled,
+            "signal_records": len(recorder.signal_rows),
+            "order_decision_records": len(recorder.decision_rows),
+            "constraint_records": len(recorder.constraint_rows),
+            "truncated": recorder.truncated,
+        },
     }
 
     metrics_meta.update(

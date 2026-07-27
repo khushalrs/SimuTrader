@@ -30,6 +30,41 @@ CONFIG_SCHEMA: Dict[str, Any] = {
         },
         "base_currency": {"type": "string", "enum": ["USD", "INR"], "default": "USD"},
         "benchmark": {"type": ["string", "null"], "minLength": 1},
+        "explain": {
+            "oneOf": [
+                {"type": "boolean"},
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": False},
+                        "capture": {
+                            "type": "string",
+                            "enum": ["REBALANCE_ONLY", "ALL_BARS"],
+                            "default": "REBALANCE_ONLY",
+                        },
+                        "max_records": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 250000,
+                        },
+                        "constraint_behavior": {
+                            "type": "string",
+                            "enum": ["FAIL", "RECORD_AND_CLAMP"],
+                            "default": "RECORD_AND_CLAMP",
+                        },
+                    },
+                    "default": {
+                        "enabled": False,
+                        "capture": "REBALANCE_ONLY",
+                        "max_records": 250000,
+                        "constraint_behavior": "RECORD_AND_CLAMP",
+                    },
+                },
+            ],
+            "default": False,
+        },
         "execution": {
             "type": "object",
             "additionalProperties": False,
@@ -125,6 +160,11 @@ CONFIG_SCHEMA: Dict[str, Any] = {
             "properties": {
                 "max_gross_leverage": {"type": "number", "exclusiveMinimum": 0, "default": 1.0},
                 "max_net_leverage": {"type": "number", "minimum": 0, "default": 1.0},
+                "max_weight": {
+                    "type": ["number", "null"],
+                    "exclusiveMinimum": 0,
+                    "default": None,
+                },
                 "risk_free_rate_annual": {
                     "type": "number",
                     "exclusiveMinimum": -1.0,

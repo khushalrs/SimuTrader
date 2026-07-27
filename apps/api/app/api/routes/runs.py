@@ -15,12 +15,16 @@ from app.db import get_db
 from app.models.assets import Asset
 from app.models.backtests import (
     BacktestRun,
+    RunConstraintEvent,
     RunDailyEquity,
     RunFill,
     RunMetric,
     RunOrder,
+    RunOrderDecision,
     RunPosition,
+    RunSignalSnapshot,
     RunTaxEvent,
+    RunTaxLotConsumption,
 )
 from app.schemas.backtests import (
     BacktestOut,
@@ -35,9 +39,14 @@ from app.schemas.backtests import (
     RunMetricOut,
     RunMonteCarloOut,
     RunMonteCarloRequest,
+    RunOrderDecisionOut,
     RunPositionOut,
     RunScenarioRequest,
+    RunSignalSnapshotOut,
     RunTaxEventOut,
+    RunTaxLotConsumptionOut,
+    RunTraceTaxEventOut,
+    RunTradeTraceOut,
 )
 from app.security import ActorContext, get_current_actor
 from app.services.capabilities import country_for_asset_class, currency_for_asset_class
@@ -761,6 +770,239 @@ def get_run_equity(
         .all()
     )
     return rows
+
+
+@router.get(
+    "/{run_id}/signals",
+    response_model=list[RunSignalSnapshotOut],
+)
+def get_run_signals(
+    run_id: UUID,
+    date_value: date | None = Query(default=None, alias="date"),
+    symbol: str | None = None,
+    signal_name: str | None = None,
+    limit: int = Query(default=5000, ge=1, le=10000),
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[RunSignalSnapshotOut]:
+    run = _get_actor_run(run_id, actor, db)
+    if not _is_terminal_status(run.status):
+        return []
+    query = db.query(RunSignalSnapshot).filter(
+        RunSignalSnapshot.run_id == run_id
+    )
+    if date_value:
+        query = query.filter(RunSignalSnapshot.date == date_value)
+    if symbol:
+        query = query.filter(RunSignalSnapshot.symbol == symbol.upper())
+    if signal_name:
+        query = query.filter(RunSignalSnapshot.signal_name == signal_name)
+    return (
+        query.order_by(
+            RunSignalSnapshot.date.asc(),
+            RunSignalSnapshot.signal_name.asc(),
+            RunSignalSnapshot.rank.asc().nullslast(),
+            RunSignalSnapshot.symbol.asc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+
+@router.get(
+    "/{run_id}/order-decisions",
+    response_model=list[RunOrderDecisionOut],
+)
+def get_run_order_decisions(
+    run_id: UUID,
+    date_value: date | None = Query(default=None, alias="date"),
+    symbol: str | None = None,
+    outcome: str | None = None,
+    limit: int = Query(default=5000, ge=1, le=10000),
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[RunOrderDecisionOut]:
+    run = _get_actor_run(run_id, actor, db)
+    if not _is_terminal_status(run.status):
+        return []
+    query = db.query(RunOrderDecision).filter(
+        RunOrderDecision.run_id == run_id
+    )
+    if date_value:
+        query = query.filter(RunOrderDecision.date == date_value)
+    if symbol:
+        query = query.filter(RunOrderDecision.symbol == symbol.upper())
+    if outcome:
+        query = query.filter(RunOrderDecision.outcome == outcome.upper())
+    return (
+        query.order_by(
+            RunOrderDecision.date.asc(),
+            RunOrderDecision.symbol.asc(),
+            RunOrderDecision.decision_id.asc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+
+@router.get(
+    "/{run_id}/tax_events/{event_id}/lots",
+    response_model=list[RunTaxLotConsumptionOut],
+)
+def get_run_tax_event_lots(
+    run_id: UUID,
+    event_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[RunTaxLotConsumptionOut]:
+    run = _get_actor_run(run_id, actor, db)
+    if not _is_terminal_status(run.status):
+        return []
+    event = (
+        db.query(RunTaxEvent)
+        .filter(
+            RunTaxEvent.run_id == run_id,
+            RunTaxEvent.tax_event_id == event_id,
+        )
+        .first()
+    )
+    if event is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tax event not found",
+        )
+    return (
+        db.query(RunTaxLotConsumption)
+        .filter(
+            RunTaxLotConsumption.run_id == run_id,
+            RunTaxLotConsumption.tax_event_id == event_id,
+        )
+        .order_by(
+            RunTaxLotConsumption.lot_opened_on.asc(),
+            RunTaxLotConsumption.consumption_id.asc(),
+        )
+        .all()
+    )
+
+
+@router.get("/{run_id}/trace", response_model=RunTradeTraceOut)
+def get_run_trade_trace(
+    run_id: UUID,
+    date_value: date = Query(alias="date"),
+    symbol: str = Query(min_length=1),
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> RunTradeTraceOut:
+    run = _get_actor_run(run_id, actor, db)
+    normalized_symbol = symbol.strip().upper()
+    signals = (
+        db.query(RunSignalSnapshot)
+        .filter(
+            RunSignalSnapshot.run_id == run_id,
+            RunSignalSnapshot.date == date_value,
+            RunSignalSnapshot.symbol == normalized_symbol,
+        )
+        .order_by(
+            RunSignalSnapshot.signal_name.asc(),
+            RunSignalSnapshot.rank.asc().nullslast(),
+        )
+        .all()
+    )
+    decisions = (
+        db.query(RunOrderDecision)
+        .filter(
+            RunOrderDecision.run_id == run_id,
+            RunOrderDecision.date == date_value,
+            RunOrderDecision.symbol == normalized_symbol,
+        )
+        .order_by(RunOrderDecision.decision_id.asc())
+        .all()
+    )
+    constraints = (
+        db.query(RunConstraintEvent)
+        .filter(
+            RunConstraintEvent.run_id == run_id,
+            RunConstraintEvent.date == date_value,
+            RunConstraintEvent.symbol == normalized_symbol,
+        )
+        .order_by(RunConstraintEvent.constraint_id.asc())
+        .all()
+    )
+    orders = (
+        db.query(RunOrder)
+        .filter(
+            RunOrder.run_id == run_id,
+            RunOrder.date == date_value,
+            RunOrder.symbol == normalized_symbol,
+        )
+        .order_by(RunOrder.order_id.asc())
+        .all()
+    )
+    fills = (
+        db.query(RunFill)
+        .filter(
+            RunFill.run_id == run_id,
+            RunFill.date == date_value,
+            RunFill.symbol == normalized_symbol,
+        )
+        .order_by(RunFill.fill_id.asc())
+        .all()
+    )
+    tax_events = (
+        db.query(RunTaxEvent)
+        .filter(
+            RunTaxEvent.run_id == run_id,
+            RunTaxEvent.date == date_value,
+            RunTaxEvent.symbol == normalized_symbol,
+        )
+        .order_by(RunTaxEvent.tax_event_id.asc())
+        .all()
+    )
+    tax_event_ids = [row.tax_event_id for row in tax_events]
+    lot_rows = (
+        db.query(RunTaxLotConsumption)
+        .filter(
+            RunTaxLotConsumption.run_id == run_id,
+            RunTaxLotConsumption.tax_event_id.in_(tax_event_ids),
+        )
+        .order_by(
+            RunTaxLotConsumption.tax_event_id.asc(),
+            RunTaxLotConsumption.lot_opened_on.asc(),
+        )
+        .all()
+        if tax_event_ids
+        else []
+    )
+    lots_by_event: dict[UUID, list[RunTaxLotConsumption]] = {}
+    for lot in lot_rows:
+        lots_by_event.setdefault(lot.tax_event_id, []).append(lot)
+
+    return RunTradeTraceOut(
+        run_id=run.run_id,
+        date=date_value,
+        symbol=normalized_symbol,
+        signals=signals,
+        decisions=decisions,
+        constraints=constraints,
+        orders=orders,
+        fills=fills,
+        tax_events=[
+            RunTraceTaxEventOut(
+                tax_event_id=event.tax_event_id,
+                date=event.date,
+                symbol=event.symbol,
+                quantity=event.quantity,
+                realized_pnl_base=event.realized_pnl_base,
+                holding_period_days=event.holding_period_days,
+                bucket=event.bucket,
+                tax_rate=event.tax_rate,
+                tax_due_base=event.tax_due_base,
+                meta=event.meta or {},
+                lots=lots_by_event.get(event.tax_event_id, []),
+            )
+            for event in tax_events
+        ],
+    )
 
 
 def _add_exposure(

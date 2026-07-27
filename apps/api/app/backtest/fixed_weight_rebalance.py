@@ -213,17 +213,84 @@ def run_fixed_weight_rebalance(
             return None
         if not _is_rebalance_day(ctx.date):
             return None
+        ctx.recorder.mark_decision_cycle(
+            strategy="FIXED_WEIGHT_REBALANCE",
+            frequency=rebalance_frequency,
+        )
         if ctx.equity_base <= 0:
+            for symbol, weight in target_weights.items():
+                ctx.recorder.order_decision(
+                    symbol=symbol,
+                    requested_target_weight=weight,
+                    target_weight=weight,
+                    target_qty=None,
+                    current_qty=ctx.state.positions[symbol].qty,
+                    delta_qty=None,
+                    intended_side=None,
+                    intended_qty=None,
+                    executable_qty=0.0,
+                    outcome="REJECTED_CONSTRAINT",
+                    reason="Portfolio equity must be positive to rebalance.",
+                    meta={},
+                )
             return None
 
+        drift_by_symbol: Dict[str, float] = {}
         if drift_threshold > 0:
             max_drift = 0.0
             for symbol, weight in target_weights.items():
                 current_value = ctx.position_value_base.get(symbol, 0.0)
                 current_weight = current_value / ctx.equity_base
-                max_drift = max(max_drift, abs(current_weight - weight))
+                drift = current_weight - weight
+                drift_by_symbol[symbol] = drift
+                max_drift = max(max_drift, abs(drift))
+                ctx.recorder.signal(
+                    symbol,
+                    "weight_drift",
+                    drift,
+                    selected=abs(drift) >= drift_threshold,
+                    meta={
+                        "current_weight": current_weight,
+                        "target_weight": weight,
+                        "threshold": drift_threshold,
+                    },
+                )
             if max_drift < drift_threshold:
+                for symbol, weight in target_weights.items():
+                    ctx.recorder.order_decision(
+                        symbol=symbol,
+                        requested_target_weight=weight,
+                        target_weight=weight,
+                        target_qty=None,
+                        current_qty=ctx.state.positions[symbol].qty,
+                        delta_qty=None,
+                        intended_side=None,
+                        intended_qty=None,
+                        executable_qty=0.0,
+                        outcome="BELOW_MIN_DELTA",
+                        reason="Portfolio weight drift was below the rebalance threshold.",
+                        meta={
+                            "weight_drift": drift_by_symbol[symbol],
+                            "threshold": drift_threshold,
+                        },
+                    )
                 return None
+        else:
+            for symbol, weight in target_weights.items():
+                current_weight = (
+                    ctx.position_value_base.get(symbol, 0.0) / ctx.equity_base
+                )
+                ctx.recorder.signal(
+                    symbol,
+                    "weight_drift",
+                    current_weight - weight,
+                    selected=True,
+                    meta={
+                        "current_weight": current_weight,
+                        "target_weight": weight,
+                        "threshold": drift_threshold,
+                    },
+                )
 
         return dict(target_weights)
 

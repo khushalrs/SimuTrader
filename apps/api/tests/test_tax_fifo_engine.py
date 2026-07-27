@@ -9,13 +9,17 @@ import pytest
 from app.backtest.engine import run_engine
 from app.models.backtests import (
     BacktestRun,
+    RunConstraintEvent,
     RunDailyEquity,
     RunFill,
     RunFinancing,
     RunMetric,
     RunOrder,
+    RunOrderDecision,
     RunPosition,
+    RunSignalSnapshot,
     RunTaxEvent,
+    RunTaxLotConsumption,
 )
 
 
@@ -34,6 +38,12 @@ class _FakeQuery:
             self._session.metrics_rows = []
         elif self._model is RunOrder:
             self._session.order_rows = []
+        elif self._model is RunOrderDecision:
+            self._session.order_decision_rows = []
+        elif self._model is RunConstraintEvent:
+            self._session.constraint_rows = []
+        elif self._model is RunSignalSnapshot:
+            self._session.signal_rows = []
         elif self._model is RunFill:
             self._session.fill_rows = []
         elif self._model is RunPosition:
@@ -42,6 +52,8 @@ class _FakeQuery:
             self._session.financing_rows = []
         elif self._model is RunTaxEvent:
             self._session.tax_rows = []
+        elif self._model is RunTaxLotConsumption:
+            self._session.tax_lot_rows = []
         return 0
 
 
@@ -50,10 +62,14 @@ class _FakeSession:
         self.equity_rows: list[RunDailyEquity] = []
         self.metrics_rows: list[RunMetric] = []
         self.order_rows: list[RunOrder] = []
+        self.order_decision_rows: list[RunOrderDecision] = []
+        self.constraint_rows: list[RunConstraintEvent] = []
+        self.signal_rows: list[RunSignalSnapshot] = []
         self.fill_rows: list[RunFill] = []
         self.position_rows: list[RunPosition] = []
         self.financing_rows: list[RunFinancing] = []
         self.tax_rows: list[RunTaxEvent] = []
+        self.tax_lot_rows: list[RunTaxLotConsumption] = []
 
     def query(self, model):
         return _FakeQuery(self, model)
@@ -66,6 +82,12 @@ class _FakeSession:
             self.equity_rows.extend(records)
         elif isinstance(first, RunOrder):
             self.order_rows.extend(records)
+        elif isinstance(first, RunOrderDecision):
+            self.order_decision_rows.extend(records)
+        elif isinstance(first, RunConstraintEvent):
+            self.constraint_rows.extend(records)
+        elif isinstance(first, RunSignalSnapshot):
+            self.signal_rows.extend(records)
         elif isinstance(first, RunFill):
             self.fill_rows.extend(records)
         elif isinstance(first, RunPosition):
@@ -74,6 +96,8 @@ class _FakeSession:
             self.financing_rows.extend(records)
         elif isinstance(first, RunTaxEvent):
             self.tax_rows.extend(records)
+        elif isinstance(first, RunTaxLotConsumption):
+            self.tax_lot_rows.extend(records)
 
     def add(self, obj):
         if isinstance(obj, RunMetric):
@@ -264,6 +288,17 @@ def test_fifo_realized_pnl_and_us_tax_events(tmp_path, monkeypatch):
     assert total_realized == 14.0
     assert total_tax_due == pytest.approx(4.2)
     assert all(row.bucket == "US_ST" for row in db.tax_rows)
+    assert len(db.tax_lot_rows) == 2
+    assert {
+        row.tax_event_id for row in db.tax_lot_rows
+    } == {
+        row.tax_event_id for row in db.tax_rows
+    }
+    assert all(row.lot_opened_on == start for row in db.tax_lot_rows)
+    assert sum(row.qty_consumed for row in db.tax_lot_rows) == pytest.approx(10.0)
+    assert sum(
+        row.realized_pnl_base for row in db.tax_lot_rows
+    ) == pytest.approx(total_realized)
     assert db.equity_rows[-1].taxes_cum_base == pytest.approx(4.2)
     assert db.metrics_rows[0].tax_drag == pytest.approx(4.2 / 10000.0)
 

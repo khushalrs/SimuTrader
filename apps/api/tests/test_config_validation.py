@@ -156,3 +156,26 @@ def test_evaluation_start_date_is_validated_within_backtest_window() -> None:
     config["backtest"]["evaluation_start_date"] = "2024-02-01"
     with pytest.raises(ValueError, match="evaluation_start_date must be <= end_date"):
         validate_and_resolve_config(config)
+
+
+def test_explain_capture_accepts_shorthand_and_bounded_options() -> None:
+    shorthand = _base_config()
+    shorthand["explain"] = True
+    assert validate_and_resolve_config(shorthand)["explain"] is True
+
+    configured = _base_config()
+    configured["explain"] = {
+        "enabled": True,
+        "capture": "ALL_BARS",
+        "max_records": 500,
+    }
+    assert validate_and_resolve_config(configured)["explain"] == {
+        "enabled": True,
+        "capture": "ALL_BARS",
+        "max_records": 500,
+        "constraint_behavior": "RECORD_AND_CLAMP",
+    }
+
+    configured["explain"]["max_records"] = 1_000_001
+    with pytest.raises(ValueError, match="max_records"):
+        validate_and_resolve_config(configured)

@@ -192,6 +192,26 @@ def test_mixed_us_india_buy_and_hold_preflights_cleanly(tmp_path, monkeypatch):
     assert result["risk_flags"] == []
 
 
+def test_preflight_warns_when_explain_capture_will_hit_cap(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "explain_cap.duckdb"
+    _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    config = _mixed_buy_and_hold_config()
+    config["explain"] = {
+        "enabled": True,
+        "capture": "REBALANCE_ONLY",
+        "max_records": 1,
+    }
+
+    result = run_preflight(config)
+
+    assert result["ok"] is True
+    assert any(
+        flag["code"] == "EXPLAIN_CAPTURE_WILL_TRUNCATE"
+        for flag in result["risk_flags"]
+    )
+
+
 def test_preflight_rejects_missing_benchmark_data(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "missing_benchmark.duckdb"
     _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
