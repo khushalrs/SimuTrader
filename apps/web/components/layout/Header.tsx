@@ -11,6 +11,7 @@ const navItems = [
     { name: 'Playground', href: '/playground' },
     { name: 'Build', href: '/build_page' },
     { name: 'Explore', href: '/explore' },
+    { name: 'Research Lab', href: '/research' },
     { name: 'Compare', href: '/compare' },
     { name: 'Runs', href: '/runs' },
     { name: 'Strategies', href: '/strategies' },

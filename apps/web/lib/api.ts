@@ -1375,3 +1375,104 @@ export async function createRunScenario(runId: string, overrides: any): Promise<
     }
     return await res.json();
 }
+
+export interface ResearchJobProgressOut {
+    n_done: number
+    n_total: number
+    n_succeeded: number
+    n_failed: number
+    n_active: number
+    n_planned: number
+    failures: Array<{
+        run_id?: string | null
+        status: string
+        error_code?: string | null
+        error_message_public?: string | null
+    }>
+}
+
+export interface ResearchJobOut {
+    job_id: string
+    type: string
+    base_run_id: string
+    status: string
+    stage: string
+    spec: Record<string, any>
+    child_run_ids: string[]
+    progress: ResearchJobProgressOut
+    error_code?: string | null
+    error_message_public?: string | null
+    created_at: string
+    started_at?: string | null
+    updated_at: string
+    finished_at?: string | null
+}
+
+export interface ResearchSweepResultOut {
+    params: Record<string, any>
+    run_id?: string | null
+    status: string
+    metrics?: {
+        cagr?: number | null
+        volatility?: number | null
+        sharpe?: number | null
+        sortino?: number | null
+        max_drawdown?: number | null
+        turnover?: number | null
+        gross_return?: number | null
+        net_return?: number | null
+        beta?: number | null
+        alpha?: number | null
+        tracking_error?: number | null
+        information_ratio?: number | null
+    } | null
+}
+
+export async function createResearchJob(payload: {
+    type: "SWEEP"
+    base_run_id: string
+    spec: {
+        grid: Array<{
+            path: string
+            values: any[] | { min: number; max: number; step?: number; count?: number }
+        }>
+    }
+}): Promise<ResearchJobOut> {
+    const res = await runApiFetch(`${API_BASE_URL}/research/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        const err = await extractErrorMessage(res, "Failed to create research job");
+        throw new Error(err);
+    }
+    return await res.json();
+}
+
+export async function getResearchJob(jobId: string): Promise<ResearchJobOut | null> {
+    const res = await runApiFetch(`${API_BASE_URL}/research/jobs/${jobId}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    return await res.json();
+}
+
+export async function listResearchJobs(statusFilter?: string): Promise<ResearchJobOut[]> {
+    const url = new URL(`${API_BASE_URL}/research/jobs`);
+    if (statusFilter) url.searchParams.append("status_filter", statusFilter);
+    const res = await runApiFetch(url.toString(), { cache: "no-store" });
+    if (!res.ok) return [];
+    return await res.json();
+}
+
+export async function getResearchJobResults(jobId: string): Promise<ResearchSweepResultOut[]> {
+    const res = await runApiFetch(`${API_BASE_URL}/research/jobs/${jobId}/results`, { cache: "no-store" });
+    if (!res.ok) return [];
+    return await res.json();
+}
+
+export async function cancelResearchJob(jobId: string): Promise<boolean> {
+    const res = await runApiFetch(`${API_BASE_URL}/research/jobs/${jobId}/cancel`, {
+        method: "POST"
+    });
+    return res.ok;
+}
