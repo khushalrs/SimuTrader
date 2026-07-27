@@ -78,6 +78,7 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
         setAllocationMode(mode)
         updateConfig((prev: any) => {
             const count = prev.universe.instruments.length
+            const initialCash = parseFloat(prev.backtest?.initial_cash || "100000") || 100000
             const newInst = prev.universe.instruments.map((inst: any) => {
                 const cleaned = { symbol: inst.symbol, asset_class: inst.asset_class } as any
                 const wasShort = (inst.weight ?? inst.amount ?? 1) < 0
@@ -86,7 +87,7 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
                 if (mode === "custom_weight" || mode === "equal_weight") {
                     cleaned.weight = count > 0 ? (sign * (1 / count)).toFixed(4) : (sign * 1.0).toFixed(4)
                 } else if (mode === "custom_amount") {
-                    cleaned.amount = count > 0 ? sign * Math.floor(parseFloat(prev.backtest.initial_cash) / count) : sign * prev.backtest.initial_cash
+                    cleaned.amount = count > 0 ? sign * Math.floor(initialCash / count) : sign * initialCash
                 }
                 return cleaned
             })
@@ -192,12 +193,13 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
 
         updateConfig((prev: any) => {
             const nextInstruments = [...prev.universe.instruments, ...newInstruments]
+            const initialCash = parseFloat(prev.backtest?.initial_cash || "100000") || 100000
             const formatted = nextInstruments.map((inst: any) => {
                 const cleaned = { symbol: inst.symbol, asset_class: inst.asset_class } as any
                 if (allocationMode === "custom_weight") {
                     cleaned.weight = inst.weight !== undefined ? inst.weight : (1 / nextInstruments.length).toFixed(4)
                 } else if (allocationMode === "custom_amount") {
-                    cleaned.amount = inst.amount !== undefined ? inst.amount : Math.floor(parseFloat(prev.backtest.initial_cash) / nextInstruments.length)
+                    cleaned.amount = inst.amount !== undefined ? inst.amount : Math.floor(initialCash / nextInstruments.length)
                 } else if (allocationMode === "equal_weight") {
                     cleaned.weight = (1 / nextInstruments.length).toFixed(4)
                 }
@@ -220,13 +222,14 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
             const currentInstruments = clearExisting ? [] : prev.universe.instruments
             const newInstItem = { symbol: asset.symbol, asset_class: asset.asset_class } as any
             const nextInstruments = [...currentInstruments, newInstItem]
-            
+            const initialCash = parseFloat(prev.backtest?.initial_cash || "100000") || 100000
+
             const formattedInstruments = nextInstruments.map((inst: any) => {
                 const cleaned = { symbol: inst.symbol, asset_class: inst.asset_class } as any
                 if (allocationMode === "custom_weight") {
                     cleaned.weight = inst.weight !== undefined ? inst.weight : (1 / nextInstruments.length).toFixed(4)
                 } else if (allocationMode === "custom_amount") {
-                    cleaned.amount = inst.amount !== undefined ? inst.amount : Math.floor(parseFloat(prev.backtest.initial_cash) / nextInstruments.length)
+                    cleaned.amount = inst.amount !== undefined ? inst.amount : Math.floor(initialCash / nextInstruments.length)
                 } else if (allocationMode === "equal_weight") {
                     cleaned.weight = (1 / nextInstruments.length).toFixed(4)
                 }
@@ -265,14 +268,25 @@ export function UniverseStep({ config, updateConfig, nextStep }: any) {
         })
     }
 
-    const handleAddSymbolObj = (e: React.FormEvent) => {
+    const handleAddSymbolObj = async (e: React.FormEvent) => {
         e.preventDefault()
         if (!symbolInput.trim()) return
-        const exactMatch = results.find(r => r.symbol.toUpperCase() === symbolInput.trim().toUpperCase())
+        const inputUpper = symbolInput.trim().toUpperCase()
+        let exactMatch = results.find(r => r.symbol.toUpperCase() === inputUpper)
+
+        if (!exactMatch) {
+            setIsSearching(true)
+            try {
+                const fetched = await searchAssets(inputUpper)
+                exactMatch = fetched.find(r => r.symbol.toUpperCase() === inputUpper) || fetched[0]
+            } catch {}
+            setIsSearching(false)
+        }
+
         if (exactMatch) {
             validateAndAddAsset(exactMatch)
         } else {
-            setError(`Unknown symbol: ${symbolInput.toUpperCase()}. Please select an instrument from the search results to ensure validity.`)
+            setError(`Unknown symbol: ${inputUpper}. Please select an instrument from the search results to ensure validity.`)
         }
     }
 

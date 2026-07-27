@@ -19,9 +19,11 @@ import { InspectorPanel } from "@/components/run/InspectorPanel"
 import { RunHeader } from "@/components/run/RunHeader"
 import { KPIGrid } from "@/components/run/KPIGrid"
 import { RunRetryButton } from "@/components/run/RunRetryButton"
+import { MonthlyReturnsTab } from "@/components/run/MonthlyReturnsTab"
+import { RollingMetricsTab } from "@/components/run/RollingMetricsTab"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AlertCircle, Loader2, Lightbulb, ArrowRight } from "lucide-react"
-import { RunData, getRun, getRunMetrics, getRunEquity, getRunStatus, getRunExplain } from "@/lib/api"
+import { RunData, getRun, getRunMetrics, getRunEquity, getRunStatus, getRunExplain, getRunBenchmark } from "@/lib/api"
 
 export function RunDashboardClient({ runId }: { runId: string }) {
     const [activeTab, setActiveTab] = useState<string>("performance")
@@ -60,6 +62,12 @@ export function RunDashboardClient({ runId }: { runId: string }) {
     const { data: equityDataList } = useSWR(
         isSucceeded ? `/runs/${runId}/equity` : null,
         () => getRunEquity(runId),
+        { revalidateOnFocus: false }
+    );
+
+    const { data: benchmarkDataList } = useSWR(
+        isSucceeded ? `/runs/${runId}/benchmark` : null,
+        () => getRunBenchmark(runId),
         { revalidateOnFocus: false }
     );
 
@@ -197,8 +205,10 @@ export function RunDashboardClient({ runId }: { runId: string }) {
 
                     <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                         <div className="flex items-center justify-between mb-4">
-                            <TabsList>
+                            <TabsList className="flex flex-wrap h-auto gap-1">
                                 <TabsTrigger value="performance">Performance</TabsTrigger>
+                                <TabsTrigger value="monthly" disabled={isPending || isFailed}>Monthly Heatmap</TabsTrigger>
+                                <TabsTrigger value="rolling" disabled={isPending || isFailed}>Rolling Metrics</TabsTrigger>
                                 <TabsTrigger value="explain" disabled={isPending || isFailed}>Explain</TabsTrigger>
                                 <TabsTrigger value="risk" disabled={isPending || isFailed}>Risk</TabsTrigger>
                                 <TabsTrigger value="exposure" disabled={isPending || isFailed}>Exposure</TabsTrigger>
@@ -217,10 +227,23 @@ export function RunDashboardClient({ runId }: { runId: string }) {
                             ) : (
                                 <PerformanceChart
                                     data={runData.equity}
+                                    benchmarkData={benchmarkDataList || undefined}
                                     baseCurrency={runData.baseCurrency || "USD"}
                                     onHover={setHoveredPoint}
                                 />
                             )}
+                        </TabsContent>
+                        <TabsContent value="monthly" className="mt-0 min-h-[450px]">
+                            <MonthlyReturnsTab
+                                equity={runData.equity}
+                                benchmarkEquity={benchmarkDataList || undefined}
+                            />
+                        </TabsContent>
+                        <TabsContent value="rolling" className="mt-0 min-h-[450px]">
+                            <RollingMetricsTab
+                                equity={runData.equity}
+                                benchmarkEquity={benchmarkDataList || undefined}
+                            />
                         </TabsContent>
                         <TabsContent value="explain" className="mt-0 min-h-[450px]">
                             <ExplainTab runId={runData.id as string} />
