@@ -32,6 +32,12 @@ class Settings:
     max_backtest_creates_per_window_guest: int
     max_backtest_creates_per_window_user: int
     backtest_create_window_seconds: int
+    max_research_children_per_job_guest: int
+    max_research_children_per_job_user: int
+    max_research_inflight_per_job_guest: int
+    max_research_inflight_per_job_user: int
+    max_active_research_jobs_guest: int
+    max_active_research_jobs_user: int
     max_market_requests_per_window_guest: int
     max_market_requests_per_window_user: int
     market_request_window_seconds: int
@@ -89,6 +95,32 @@ class Settings:
             raise RuntimeError("MAX_BACKTEST_CREATES_PER_WINDOW_USER must be > 0.")
         if self.backtest_create_window_seconds <= 0:
             raise RuntimeError("BACKTEST_CREATE_WINDOW_SECONDS must be > 0.")
+        for field_name in (
+            "max_research_children_per_job_guest",
+            "max_research_children_per_job_user",
+            "max_research_inflight_per_job_guest",
+            "max_research_inflight_per_job_user",
+            "max_active_research_jobs_guest",
+            "max_active_research_jobs_user",
+        ):
+            if getattr(self, field_name) <= 0:
+                raise RuntimeError(f"{field_name.upper()} must be > 0.")
+        if (
+            self.max_research_inflight_per_job_guest
+            > self.max_research_children_per_job_guest
+        ):
+            raise RuntimeError(
+                "MAX_RESEARCH_INFLIGHT_PER_JOB_GUEST cannot exceed "
+                "MAX_RESEARCH_CHILDREN_PER_JOB_GUEST."
+            )
+        if (
+            self.max_research_inflight_per_job_user
+            > self.max_research_children_per_job_user
+        ):
+            raise RuntimeError(
+                "MAX_RESEARCH_INFLIGHT_PER_JOB_USER cannot exceed "
+                "MAX_RESEARCH_CHILDREN_PER_JOB_USER."
+            )
         if self.max_market_requests_per_window_guest <= 0:
             raise RuntimeError("MAX_MARKET_REQUESTS_PER_WINDOW_GUEST must be > 0.")
         if self.max_market_requests_per_window_user <= 0:
@@ -155,6 +187,24 @@ def get_settings() -> Settings:
     backtest_create_window_seconds = int(
         os.getenv("BACKTEST_CREATE_WINDOW_SECONDS", "60").strip()
     )
+    max_research_children_per_job_guest = int(
+        os.getenv("MAX_RESEARCH_CHILDREN_PER_JOB_GUEST", "25").strip()
+    )
+    max_research_children_per_job_user = int(
+        os.getenv("MAX_RESEARCH_CHILDREN_PER_JOB_USER", "100").strip()
+    )
+    max_research_inflight_per_job_guest = int(
+        os.getenv("MAX_RESEARCH_INFLIGHT_PER_JOB_GUEST", "2").strip()
+    )
+    max_research_inflight_per_job_user = int(
+        os.getenv("MAX_RESEARCH_INFLIGHT_PER_JOB_USER", "5").strip()
+    )
+    max_active_research_jobs_guest = int(
+        os.getenv("MAX_ACTIVE_RESEARCH_JOBS_GUEST", "1").strip()
+    )
+    max_active_research_jobs_user = int(
+        os.getenv("MAX_ACTIVE_RESEARCH_JOBS_USER", "3").strip()
+    )
     max_market_requests_per_window_guest = int(
         os.getenv("MAX_MARKET_REQUESTS_PER_WINDOW_GUEST", "120").strip()
     )
@@ -220,6 +270,12 @@ def get_settings() -> Settings:
         max_backtest_creates_per_window_guest=max_backtest_creates_per_window_guest,
         max_backtest_creates_per_window_user=max_backtest_creates_per_window_user,
         backtest_create_window_seconds=backtest_create_window_seconds,
+        max_research_children_per_job_guest=max_research_children_per_job_guest,
+        max_research_children_per_job_user=max_research_children_per_job_user,
+        max_research_inflight_per_job_guest=max_research_inflight_per_job_guest,
+        max_research_inflight_per_job_user=max_research_inflight_per_job_user,
+        max_active_research_jobs_guest=max_active_research_jobs_guest,
+        max_active_research_jobs_user=max_active_research_jobs_user,
         max_market_requests_per_window_guest=max_market_requests_per_window_guest,
         max_market_requests_per_window_user=max_market_requests_per_window_user,
         market_request_window_seconds=market_request_window_seconds,

@@ -311,6 +311,8 @@ def run_preflight(raw_config: dict[str, Any]) -> dict[str, Any]:
     start_date = _parse_date(backtest.get("start_date"))
     end_date = _parse_date(backtest.get("end_date"))
     base_currency = str(config.get("base_currency") or "USD").upper()
+    benchmark_value = config.get("benchmark")
+    benchmark = str(benchmark_value).strip().upper() if benchmark_value else None
     symbols = [str(inst.get("symbol") or "").upper() for inst in instruments]
     estimated_symbols = len(symbols)
 
@@ -336,6 +338,74 @@ def run_preflight(raw_config: dict[str, Any]) -> dict[str, Any]:
         if effective_end_date != end_date:
             warnings.append(
                 f"End date will shift from {end_date} to {effective_end_date} based on available market data."
+            )
+
+    benchmark_currency: str | None = None
+    if benchmark:
+        try:
+            benchmark_coverage, benchmark_currencies, _ = _query_symbol_coverage(
+                [benchmark], start_date, end_date
+            )
+            benchmark_row = benchmark_coverage[0]
+            benchmark_currency = benchmark_currencies.get(benchmark)
+            if int(benchmark_row.get("rows") or 0) == 0:
+                message = (
+                    f"No benchmark market data found for {benchmark} in the run window."
+                )
+                errors.append(message)
+                risk_flags.append(
+                    _flag(
+                        "MISSING_BENCHMARK_DATA",
+                        "error",
+                        message,
+                        benchmark=benchmark,
+                        start_date=start_date.isoformat(),
+                        end_date=end_date.isoformat(),
+                    )
+                )
+            else:
+                coverage_start = benchmark_row.get("first_date")
+                coverage_end = benchmark_row.get("last_date")
+                comparison_start = effective_start_date or start_date
+                comparison_end = effective_end_date or end_date
+                partial_start = bool(
+                    coverage_start and coverage_start > comparison_start
+                )
+                partial_end = bool(coverage_end and coverage_end < comparison_end)
+                if partial_start or partial_end:
+                    message = (
+                        f"Benchmark {benchmark} has partial coverage "
+                        f"({coverage_start} through {coverage_end}) over the effective "
+                        f"run window ({comparison_start} through {comparison_end}); "
+                        "available values will be forward-filled."
+                    )
+                    warnings.append(message)
+                    risk_flags.append(
+                        _flag(
+                            "PARTIAL_BENCHMARK_COVERAGE",
+                            "warning",
+                            message,
+                            benchmark=benchmark,
+                            first_date=(
+                                coverage_start.isoformat() if coverage_start else None
+                            ),
+                            last_date=(
+                                coverage_end.isoformat() if coverage_end else None
+                            ),
+                            effective_start_date=comparison_start.isoformat(),
+                            effective_end_date=comparison_end.isoformat(),
+                        )
+                    )
+        except Exception as exc:
+            message = f"Unable to inspect benchmark coverage for {benchmark}: {exc}"
+            errors.append(message)
+            risk_flags.append(
+                _flag(
+                    "BENCHMARK_COVERAGE_CHECK_FAILED",
+                    "error",
+                    message,
+                    benchmark=benchmark,
+                )
             )
 
     estimated_rebalance_count = _estimate_rebalances(
@@ -373,6 +443,8 @@ def run_preflight(raw_config: dict[str, Any]) -> dict[str, Any]:
             )
 
     currencies = set(symbol_currencies.values())
+    if benchmark_currency:
+        currencies.add(benchmark_currency)
     required_pairs = _required_fx_pairs(currencies, base_currency)
     if required_pairs == ["USDINR"] and not _has_usd_inr_history(start_date, end_date):
         message = "Missing USDINR FX history for mixed-currency base conversion."

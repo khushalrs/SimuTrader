@@ -44,6 +44,7 @@ def test_compute_metrics_populates_downside_tail_turnover_and_benchmark_metrics(
     assert metrics["avg_loss_day"] == pytest.approx(-0.075)
     assert metrics["beta"] == pytest.approx(2.0)
     assert metrics["alpha"] == pytest.approx(0.0, abs=1e-12)
+    assert metrics["tracking_error"] is not None
     assert metrics["information_ratio"] is not None
 
 
@@ -80,4 +81,24 @@ def test_missing_benchmark_produces_null_relative_metrics() -> None:
 
     assert metrics["beta"] is None
     assert metrics["alpha"] is None
+    assert metrics["tracking_error"] is None
     assert metrics["information_ratio"] is None
+
+
+def test_risk_free_rate_reduces_sharpe_and_changes_capm_alpha() -> None:
+    equity = [100.0, 101.0, 101.505, 102.52005]
+    benchmark = [100.0, 100.5, 100.75125, 101.507]
+
+    zero_rf = _compute_metrics(
+        equity,
+        benchmark_series_base=benchmark,
+        risk_free_rate_annual=0.0,
+    )
+    positive_rf = _compute_metrics(
+        equity,
+        benchmark_series_base=benchmark,
+        risk_free_rate_annual=0.05,
+    )
+
+    assert positive_rf["sharpe"] < zero_rf["sharpe"]
+    assert positive_rf["alpha"] != pytest.approx(zero_rf["alpha"])

@@ -169,10 +169,18 @@ def _fetch_usd_inr_rates(con, start_date: date, end_date: date) -> Dict[date, fl
         SELECT date, close
         FROM prices
         WHERE symbol = 'USDINR'
-          AND date BETWEEN ? AND ?
+          AND date <= ?
+          AND (
+              date >= ?
+              OR date = (
+                  SELECT max(date)
+                  FROM prices
+                  WHERE symbol = 'USDINR' AND date < ?
+              )
+          )
         ORDER BY date
         """,
-        [start_date, end_date],
+        [end_date, start_date, start_date],
     ).fetchall()
     return {row_date: float(close) for row_date, close in rows if close is not None}
 
@@ -187,10 +195,24 @@ def _fetch_benchmark_prices(
         SELECT date, close, currency
         FROM prices
         WHERE upper(symbol) = ?
-          AND date BETWEEN ? AND ?
+          AND date <= ?
+          AND (
+              date >= ?
+              OR date = (
+                  SELECT max(date)
+                  FROM prices
+                  WHERE upper(symbol) = ? AND date < ?
+              )
+          )
         ORDER BY date
         """,
-        [benchmark.upper(), start_date, end_date],
+        [
+            benchmark.upper(),
+            end_date,
+            start_date,
+            benchmark.upper(),
+            start_date,
+        ],
     ).fetchall()
     prices = {
         row_date: float(close)
@@ -217,6 +239,15 @@ def _align_benchmark_to_base(
         return [None for _date in dates]
     last_price: float | None = None
     last_usd_inr: float | None = None
+    if dates:
+        for price_date in sorted(prices_native):
+            if price_date > dates[0]:
+                break
+            last_price = prices_native[price_date]
+        for fx_date in sorted(usd_inr_by_date):
+            if fx_date > dates[0]:
+                break
+            last_usd_inr = usd_inr_by_date[fx_date]
     first_usd_inr = next(iter(usd_inr_by_date.values()), None)
     aligned: list[float | None] = []
     for observation_date in dates:
@@ -477,6 +508,7 @@ def _compute_metrics(
     initial_cash: float | None = None,
     turnover_notional_base: float = 0.0,
     benchmark_series_base: list[float | None] | None = None,
+    risk_free_rate_annual: float = 0.0,
 ) -> dict[str, float | None]:
     """Compute metrics over every global-calendar observation, including flat days.
 
@@ -507,6 +539,7 @@ def _compute_metrics(
             "avg_loss_day": None,
             "beta": None,
             "alpha": None,
+            "tracking_error": None,
             "information_ratio": None,
         }
 
@@ -520,10 +553,15 @@ def _compute_metrics(
             daily_returns.append(curr / prev - 1.0)
 
     if daily_returns:
+        risk_free_rate_daily = (1.0 + risk_free_rate_annual) ** (1.0 / 252.0) - 1.0
+        excess_returns = [
+            value - risk_free_rate_daily for value in daily_returns
+        ]
         mean_ret = sum(daily_returns) / len(daily_returns)
+        mean_excess_ret = sum(excess_returns) / len(excess_returns)
         std_ret = _sample_std(daily_returns) or 0.0
         volatility = std_ret * sqrt(252.0) if std_ret else 0.0
-        sharpe = (mean_ret * 252.0) / volatility if volatility else None
+        sharpe = (mean_excess_ret * 252.0) / volatility if volatility else None
         negative_returns = [value for value in daily_returns if value < 0.0]
         downside_deviation = sqrt(
             sum(min(value, 0.0) ** 2 for value in daily_returns) / len(daily_returns)
@@ -588,6 +626,7 @@ def _compute_metrics(
 
     beta = None
     alpha = None
+    tracking_error = None
     information_ratio = None
     if benchmark_series_base and len(benchmark_series_base) == len(equity_series):
         paired_returns: list[tuple[float, float]] = []
@@ -622,18 +661,23 @@ def _compute_metrics(
                     for portfolio, benchmark in paired_returns
                 ) / (len(paired_returns) - 1)
                 beta = covariance / benchmark_variance
+                risk_free_rate_daily = (
+                    (1.0 + risk_free_rate_annual) ** (1.0 / 252.0) - 1.0
+                )
                 alpha = sum(
-                    portfolio - beta * benchmark
+                    (portfolio - risk_free_rate_daily)
+                    - beta * (benchmark - risk_free_rate_daily)
                     for portfolio, benchmark in paired_returns
                 ) / len(paired_returns) * 252.0
             active_returns = [
                 portfolio - benchmark for portfolio, benchmark in paired_returns
             ]
-            tracking_error = _sample_std(active_returns)
-            if tracking_error and tracking_error > 0.0:
+            tracking_error_daily = _sample_std(active_returns)
+            if tracking_error_daily and tracking_error_daily > 0.0:
+                tracking_error = tracking_error_daily * sqrt(252.0)
                 information_ratio = (
                     (sum(active_returns) / len(active_returns)) * 252.0
-                ) / (tracking_error * sqrt(252.0))
+                ) / tracking_error
 
     return {
         "cagr": cagr,
@@ -658,6 +702,7 @@ def _compute_metrics(
         "avg_loss_day": sum(losing_days) / len(losing_days) if losing_days else None,
         "beta": beta,
         "alpha": alpha,
+        "tracking_error": tracking_error,
         "information_ratio": information_ratio,
     }
 
@@ -894,6 +939,12 @@ def run_engine(
     turnover_notional_base = 0.0
     realized_trade_pnl_base: list[float] = []
     realized_trade_commissions_base: list[float] = []
+    return_contribution_by_symbol: Dict[str, float] = {
+        symbol: 0.0 for symbol in symbols
+    }
+    previous_attribution_qty: Dict[str, float] = {}
+    previous_attribution_price_base: Dict[str, float] = {}
+    previous_attribution_equity_base: float | None = None
     peak_equity_base: float | None = None
 
     first_observed_usd_inr = next(iter(usd_inr_by_date.values()), None)
@@ -1185,6 +1236,7 @@ def run_engine(
     ) -> None:
         nonlocal borrow_cum_base, margin_cum_base, peak_equity_base
         nonlocal turnover_notional_base
+        nonlocal previous_attribution_equity_base
         if day is None:
             return
         if flags is None:
@@ -1222,6 +1274,30 @@ def run_engine(
                 prices[symbol] = None
 
         usd_inr = resolve_usd_inr(day)
+        current_price_base_by_symbol = {
+            symbol: _convert_native_to_base(
+                float(state.last_price[symbol]),
+                str(symbol_currencies[symbol]).upper(),
+                base_currency,
+                usd_inr,
+            )
+            for symbol in symbols
+            if state.last_price[symbol] is not None
+        }
+        if (
+            previous_attribution_equity_base is not None
+            and abs(previous_attribution_equity_base) > 1e-12
+        ):
+            for symbol, previous_qty in previous_attribution_qty.items():
+                previous_price = previous_attribution_price_base.get(symbol)
+                current_price = current_price_base_by_symbol.get(symbol)
+                if previous_price is None or current_price is None:
+                    continue
+                return_contribution_by_symbol[symbol] += (
+                    previous_qty
+                    * (current_price - previous_price)
+                    / previous_attribution_equity_base
+                )
         equity_base, cash_base_total, position_value_base, fx_rate = allocation_views(
             usd_inr
         )
@@ -1594,6 +1670,18 @@ def run_engine(
             )
         )
 
+        previous_attribution_qty.clear()
+        previous_attribution_qty.update(
+            {
+                symbol: float(position.qty)
+                for symbol, position in state.positions.items()
+                if abs(float(position.qty)) > 1e-12
+            }
+        )
+        previous_attribution_price_base.clear()
+        previous_attribution_price_base.update(current_price_base_by_symbol)
+        previous_attribution_equity_base = equity
+
         if include_financing:
             financing_rows.append(
                 RunFinancing(
@@ -1643,6 +1731,41 @@ def run_engine(
 
     process_day(current_date, flags, day_prices)
 
+    if any(ccy != base_currency for ccy in currencies) and first_observed_usd_inr is None:
+        raise DataUnavailableError("Missing USDINR history for mixed-currency base conversion.")
+    initial_cash_base = 0.0
+    for currency, amount in initial_cash_snapshot.items():
+        initial_cash_base += _convert_native_to_base(
+            amount, currency, base_currency, first_observed_usd_inr
+        )
+
+    benchmark_series_base = _align_benchmark_to_base(
+        equity_dates,
+        benchmark_prices_native,
+        benchmark_currency,
+        base_currency,
+        usd_inr_by_date,
+    )
+    first_benchmark_value = next(
+        (
+            value
+            for value in benchmark_series_base
+            if value is not None and abs(value) > 1e-12
+        ),
+        None,
+    )
+    if first_benchmark_value is not None and initial_cash_base > 0.0:
+        benchmark_scale = initial_cash_base / first_benchmark_value
+        benchmark_series_base = [
+            value * benchmark_scale if value is not None else None
+            for value in benchmark_series_base
+        ]
+    else:
+        benchmark_series_base = [None for _value in benchmark_series_base]
+
+    for equity_row, benchmark_equity in zip(equity_rows, benchmark_series_base):
+        equity_row.benchmark_equity_base = benchmark_equity
+
     if equity_rows:
         db.bulk_save_objects(equity_rows)
     if order_rows:
@@ -1656,26 +1779,16 @@ def run_engine(
     if tax_event_rows:
         db.bulk_save_objects(tax_event_rows)
 
-    if any(ccy != base_currency for ccy in currencies) and first_observed_usd_inr is None:
-        raise DataUnavailableError("Missing USDINR history for mixed-currency base conversion.")
-    initial_cash_base = 0.0
-    for currency, amount in initial_cash_snapshot.items():
-        initial_cash_base += _convert_native_to_base(
-            amount, currency, base_currency, first_observed_usd_inr
-        )
-
+    risk_free_rate_annual = float(
+        (config_snapshot.get("risk") or {}).get("risk_free_rate_annual") or 0.0
+    )
     metrics = _compute_metrics(
         equity_series_base,
         fees_cum_series_base,
         initial_cash=initial_cash_base,
         turnover_notional_base=turnover_notional_base,
-        benchmark_series_base=_align_benchmark_to_base(
-            equity_dates,
-            benchmark_prices_native,
-            benchmark_currency,
-            base_currency,
-            usd_inr_by_date,
-        ),
+        benchmark_series_base=benchmark_series_base,
+        risk_free_rate_annual=risk_free_rate_annual,
     )
     if initial_cash_base:
         metrics["tax_drag"] = taxes_cum_base / initial_cash_base
@@ -1701,7 +1814,11 @@ def run_engine(
         "avg_loss_day": metrics["avg_loss_day"],
         "beta": metrics["beta"],
         "alpha": metrics["alpha"],
+        "tracking_error": metrics["tracking_error"],
         "information_ratio": metrics["information_ratio"],
+        "risk_free_rate_annual": risk_free_rate_annual,
+        "initial_cash_base": initial_cash_base,
+        "return_contribution_by_symbol": return_contribution_by_symbol,
         "avg_winning_trade": (
             sum(winning_trades) / len(winning_trades) if winning_trades else None
         ),
@@ -1751,6 +1868,10 @@ def run_engine(
             tax_drag=metrics["tax_drag"],
             borrow_drag=metrics["borrow_drag"],
             margin_interest_drag=metrics["margin_interest_drag"],
+            beta=metrics["beta"],
+            alpha=metrics["alpha"],
+            tracking_error=metrics["tracking_error"],
+            information_ratio=metrics["information_ratio"],
             meta=metrics_meta,
         )
     )

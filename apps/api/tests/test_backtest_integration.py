@@ -249,6 +249,8 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert run.status == "SUCCEEDED"
     assert db.equity_rows, "Expected equity rows to be persisted"
     assert db.equity_rows[0].equity_base != db.equity_rows[-1].equity_base
+    assert db.equity_rows[0].benchmark_equity_base == pytest.approx(10_000.0)
+    assert db.equity_rows[-1].benchmark_equity_base is not None
     assert db.metrics_rows, "Expected metrics row to be persisted"
     assert db.order_rows, "Expected order rows to be persisted"
     assert db.fill_rows, "Expected fill rows to be persisted"
@@ -271,7 +273,18 @@ def test_buy_and_hold_persists_equity_and_metrics(tmp_path, monkeypatch):
     assert metric_meta["benchmark"] == "SPY"
     assert metric_meta["beta"] is not None
     assert metric_meta["alpha"] is not None
+    assert metric_meta["tracking_error"] is not None
     assert metric_meta["information_ratio"] is not None
+    assert metric_meta["initial_cash_base"] == pytest.approx(10_000.0)
+    assert set(metric_meta["return_contribution_by_symbol"]) == set(symbols)
+    assert db.metrics_rows[0].beta == pytest.approx(metric_meta["beta"])
+    assert db.metrics_rows[0].alpha == pytest.approx(metric_meta["alpha"])
+    assert db.metrics_rows[0].tracking_error == pytest.approx(
+        metric_meta["tracking_error"]
+    )
+    assert db.metrics_rows[0].information_ratio == pytest.approx(
+        metric_meta["information_ratio"]
+    )
     assert metric_meta["turnover_convention"] == "two_way_annualized"
     assert db.metrics_rows[0].turnover is not None
 

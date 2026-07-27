@@ -29,6 +29,11 @@ from app.schemas.backtests import (
     RunTaxEventOut,
 )
 from app.schemas.market import MarketBarOut, MarketCoverageOut, MarketSnapshotOut
+from app.schemas.research import (
+    ResearchJobCreate,
+    ResearchJobOut,
+    ResearchSweepResultOut,
+)
 from app.schemas.strategies import StrategyCreate, StrategyOut
 
 __all__ = [
@@ -46,6 +51,9 @@ __all__ = [
     "MarketBarOut",
     "MarketCoverageOut",
     "MarketSnapshotOut",
+    "ResearchJobCreate",
+    "ResearchJobOut",
+    "ResearchSweepResultOut",
     "RunCompareMetricRowOut",
     "RunCompareOut",
     "RunCompareSeriesOut",

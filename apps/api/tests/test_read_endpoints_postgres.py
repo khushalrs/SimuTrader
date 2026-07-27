@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from app.api.routes import analytics as analytics_routes
 from app.api.routes import runs as runs_routes
 from app.db import engine, get_db
 from app.models.assets import Asset
@@ -63,6 +64,7 @@ def _seed_complete_run(db: Session) -> tuple[BacktestRun, ActorContext]:
             "version": 1,
             "strategy": "FIXED_WEIGHT_REBALANCE",
             "base_currency": "USD",
+            "benchmark": "SPY",
             "commission": {"model": "BPS", "bps": 5, "min_fee_native": 1},
             "slippage": {"model": "BPS", "bps": 2},
             "tax": {"regime": "US"},
@@ -121,7 +123,16 @@ def _seed_complete_run(db: Session) -> tuple[BacktestRun, ActorContext]:
             tax_drag=0.005,
             borrow_drag=0.001,
             margin_interest_drag=0.001,
-            meta={"calmar": 1.5, "var_95": -0.02, "cvar_95": -0.03},
+            beta=1.1,
+            alpha=0.02,
+            tracking_error=0.04,
+            information_ratio=0.5,
+            meta={
+                "calmar": 1.5,
+                "var_95": -0.02,
+                "cvar_95": -0.03,
+                "initial_cash_base": 10_000.0,
+            },
         )
     )
     for offset in range(30):
@@ -140,6 +151,7 @@ def _seed_complete_run(db: Session) -> tuple[BacktestRun, ActorContext]:
                 taxes_cum_base=20.0 if offset == 29 else 0.0,
                 borrow_fees_cum_base=3.0 if offset == 29 else 0.0,
                 margin_interest_cum_base=2.0 if offset == 29 else 0.0,
+                benchmark_equity_base=10_000.0 + offset * 20.0,
                 equity_by_currency={"USD": equity},
                 cash_by_currency={"USD": 5_000.0},
                 fees_cum_by_currency={"USD": 12.0 if offset == 29 else offset * 0.4},
@@ -273,6 +285,7 @@ def test_all_run_read_endpoints_execute_against_postgres(
 
     app = FastAPI()
     app.include_router(runs_routes.router)
+    app.include_router(analytics_routes.router)
     app.dependency_overrides[get_current_actor] = lambda: actor
 
     def override_db():
@@ -294,6 +307,12 @@ def test_all_run_read_endpoints_execute_against_postgres(
         "/costs_summary",
         "/report.json",
         "/top-holdings",
+        "/benchmark",
+        "/returns/periodic?freq=monthly",
+        "/returns/periodic?freq=annual",
+        "/rolling?window=21&metrics=sharpe,vol,beta",
+        "/attribution/returns",
+        "/attribution/costs",
     ]
     responses = {path: client.get(f"{prefix}{path}") for path in json_paths}
     failures = {
@@ -315,6 +334,32 @@ def test_all_run_read_endpoints_execute_against_postgres(
     assert len(report["equity_curve"]) == 30
     assert len(report["trades"]) == 3
     assert len(report["tax_events"]) == 1
+    benchmark = responses["/benchmark"].json()
+    assert len(benchmark) == 30
+    assert benchmark[0]["benchmark_return"] == pytest.approx(0.0)
+    assert benchmark[-1]["benchmark_equity_base"] == pytest.approx(10_580.0)
+    monthly = responses["/returns/periodic?freq=monthly"].json()
+    assert monthly["monthly"]
+    assert monthly["annual"] == []
+    annual = responses["/returns/periodic?freq=annual"].json()
+    assert annual["annual"]
+    rolling = responses["/rolling?window=21&metrics=sharpe,vol,beta"].json()
+    assert len(rolling["data"]) == 9
+    assert rolling["meta"]["reason"] is None
+    return_attribution = responses["/attribution/returns"].json()
+    assert return_attribution[-1]["symbol"] == "CASH_RESIDUAL"
+    assert sum(item["contribution"] for item in return_attribution) == pytest.approx(
+        0.116
+    )
+    cost_items = responses["/attribution/costs"].json()["items"]
+    assert [item["key"] for item in cost_items] == [
+        "gross_return",
+        "fees",
+        "taxes",
+        "borrow",
+        "margin_interest",
+        "net_return",
+    ]
 
     html = client.get(f"{prefix}/report.html")
     assert html.status_code == 200

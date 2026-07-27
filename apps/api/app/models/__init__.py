@@ -11,6 +11,7 @@ from app.models.backtests import (
     RunTaxEvent,
 )
 from app.models.calendar import CalendarDay, TradingCalendar
+from app.models.research import ResearchJob, ResearchJobRun
 from app.models.strategies import Strategy
 
 __all__ = [
@@ -27,4 +28,6 @@ __all__ = [
     "RunFinancing",
     "TradingCalendar",
     "CalendarDay",
+    "ResearchJob",
+    "ResearchJobRun",
 ]

@@ -125,8 +125,17 @@ CONFIG_SCHEMA: Dict[str, Any] = {
             "properties": {
                 "max_gross_leverage": {"type": "number", "exclusiveMinimum": 0, "default": 1.0},
                 "max_net_leverage": {"type": "number", "minimum": 0, "default": 1.0},
+                "risk_free_rate_annual": {
+                    "type": "number",
+                    "exclusiveMinimum": -1.0,
+                    "default": 0.0,
+                },
             },
-            "default": {"max_gross_leverage": 1.0, "max_net_leverage": 1.0},
+            "default": {
+                "max_gross_leverage": 1.0,
+                "max_net_leverage": 1.0,
+                "risk_free_rate_annual": 0.0,
+            },
         },
         "tax": {
             "type": "object",

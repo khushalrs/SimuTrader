@@ -71,6 +71,11 @@ def _lock_key(run_id: str) -> str:
     return f"{settings.redis_lock_prefix}:run_exec:{run_id}"
 
 
+def _research_lock_key(job_id: str) -> str:
+    settings = get_settings()
+    return f"{settings.redis_lock_prefix}:research_job:{job_id}"
+
+
 def _safe_get_json(key: str) -> dict[str, Any] | list[dict[str, Any]] | None:
     try:
         value = get_cache_redis().get(key)
@@ -217,3 +222,41 @@ def release_run_lock(run_id: str, token: str | None) -> None:
             get_lock_redis().delete(key)
     except RedisError:
         logger.debug("Redis lock release failed for run_id=%s", run_id, exc_info=True)
+
+
+def try_acquire_research_job_lock(
+    job_id: str,
+    timeout_seconds: int = 120,
+) -> str | None:
+    token = f"research-lock-{job_id}-{datetime.utcnow().timestamp()}"
+    try:
+        acquired = get_lock_redis().set(
+            _research_lock_key(job_id),
+            token,
+            nx=True,
+            ex=timeout_seconds,
+        )
+        return token if acquired else None
+    except RedisError:
+        logger.debug(
+            "Research lock acquire failed for job_id=%s",
+            job_id,
+            exc_info=True,
+        )
+        return None
+
+
+def release_research_job_lock(job_id: str, token: str | None) -> None:
+    if not token:
+        return
+    try:
+        key = _research_lock_key(job_id)
+        value = get_lock_redis().get(key)
+        if value == token:
+            get_lock_redis().delete(key)
+    except RedisError:
+        logger.debug(
+            "Research lock release failed for job_id=%s",
+            job_id,
+            exc_info=True,
+        )

@@ -116,6 +116,7 @@ class RunDailyEquityOut(BaseModel):
     taxes_cum_base: float
     borrow_fees_cum_base: float
     margin_interest_cum_base: float
+    benchmark_equity_base: Optional[float] = None
     equity_by_currency: Dict[str, float] = Field(default_factory=dict)
     cash_by_currency: Dict[str, float] = Field(default_factory=dict)
     fees_cum_by_currency: Dict[str, float] = Field(default_factory=dict)
@@ -137,6 +138,10 @@ class RunMetricOut(BaseModel):
     tax_drag: Optional[float] = None
     borrow_drag: Optional[float] = None
     margin_interest_drag: Optional[float] = None
+    beta: Optional[float] = None
+    alpha: Optional[float] = None
+    tracking_error: Optional[float] = None
+    information_ratio: Optional[float] = None
     explanation: Optional[str] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
 
@@ -301,3 +306,73 @@ class RunCompareOut(BaseModel):
     run_ids: list[UUID]
     metric_rows: list[RunCompareMetricRowOut] = Field(default_factory=list)
     equity_series: list[RunCompareSeriesOut] = Field(default_factory=list)
+
+
+class RunBenchmarkPointOut(BaseModel):
+    date: date
+    benchmark_equity_base: float
+    benchmark_return: float
+
+
+class RunMonthlyReturnOut(BaseModel):
+    year: int
+    month: int
+    return_value: float = Field(serialization_alias="return")
+    benchmark_return: Optional[float] = None
+
+
+class RunAnnualReturnOut(BaseModel):
+    year: int
+    return_value: float = Field(serialization_alias="return")
+    benchmark_return: Optional[float] = None
+
+
+class RunPeriodReturnSummaryOut(BaseModel):
+    return_value: Optional[float] = Field(default=None, serialization_alias="return")
+    benchmark_return: Optional[float] = None
+
+
+class RunPeriodicReturnsOut(BaseModel):
+    monthly: list[RunMonthlyReturnOut] = Field(default_factory=list)
+    annual: list[RunAnnualReturnOut] = Field(default_factory=list)
+    ytd: RunPeriodReturnSummaryOut
+    full_period: RunPeriodReturnSummaryOut
+
+
+class RunRollingPointOut(BaseModel):
+    date: date
+    sharpe: Optional[float] = None
+    volatility: Optional[float] = None
+    beta: Optional[float] = None
+
+
+class RunRollingMetaOut(BaseModel):
+    window: int
+    metrics: list[str]
+    reason: Optional[str] = None
+    required_observations: int
+    available_observations: int
+
+
+class RunRollingOut(BaseModel):
+    data: list[RunRollingPointOut] = Field(default_factory=list)
+    meta: RunRollingMetaOut
+
+
+class RunReturnAttributionRowOut(BaseModel):
+    symbol: str
+    contribution: float
+    avg_weight: float
+    total_return: Optional[float] = None
+
+
+class RunCostWaterfallItemOut(BaseModel):
+    key: str
+    amount_base: float
+    return_drag_bps: float
+
+
+class RunCostAttributionOut(BaseModel):
+    base_currency: str
+    initial_capital_base: float
+    items: list[RunCostWaterfallItemOut] = Field(default_factory=list)

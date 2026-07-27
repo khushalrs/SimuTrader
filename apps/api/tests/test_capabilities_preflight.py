@@ -142,10 +142,9 @@ def test_strategy_schemas_exposes_runtime_parameter_contracts():
         "rebalance_frequency": "MONTHLY",
         "weighting": "EQUAL",
     }
-    assert momentum["param_types"]["lookback_days"] == {
-        "type": "integer",
-        "min": 1,
-    }
+    assert momentum["param_types"]["lookback_days"]["type"] == "integer"
+    assert momentum["param_types"]["lookback_days"]["min"] == 1
+    assert momentum["param_types"]["lookback_days"]["description"]
     assert momentum["param_types"]["top_k"]["min"] == 1
     assert momentum["supported_allocation_modes"] == ["equal"]
     assert momentum["supported_asset_classes"] == ["US_EQUITY", "IN_EQUITY"]
@@ -155,11 +154,10 @@ def test_strategy_schemas_exposes_runtime_parameter_contracts():
 
     fixed = payload["FIXED_WEIGHT_REBALANCE"]
     assert fixed["required_params"] == ["target_weights"]
-    assert fixed["param_types"]["drift_threshold"] == {
-        "type": "number",
-        "min": 0.0,
-        "max": 1.0,
-    }
+    assert fixed["param_types"]["drift_threshold"]["type"] == "number"
+    assert fixed["param_types"]["drift_threshold"]["min"] == 0.0
+    assert fixed["param_types"]["drift_threshold"]["max"] == 1.0
+    assert fixed["param_types"]["drift_threshold"]["description"]
 
     mean_reversion = payload["MEAN_REVERSION"]
     assert mean_reversion["defaults"] == {"rebalance_frequency": "DAILY"}
@@ -192,6 +190,52 @@ def test_mixed_us_india_buy_and_hold_preflights_cleanly(tmp_path, monkeypatch):
     assert result["estimated_symbols"] == 2
     assert result["estimated_rebalance_count"] == 1
     assert result["risk_flags"] == []
+
+
+def test_preflight_rejects_missing_benchmark_data(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "missing_benchmark.duckdb"
+    _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    config = _mixed_buy_and_hold_config()
+    config["benchmark"] = "DOES_NOT_EXIST"
+
+    result = run_preflight(config)
+
+    assert result["ok"] is False
+    assert any("No benchmark market data" in error for error in result["errors"])
+    assert any(
+        flag["code"] == "MISSING_BENCHMARK_DATA"
+        for flag in result["risk_flags"]
+    )
+
+
+def test_preflight_warns_on_partial_benchmark_coverage(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "partial_benchmark.duckdb"
+    _seed_mixed_duckdb(str(duckdb_path), include_fx=True)
+    con = duckdb.connect(str(duckdb_path))
+    con.execute(
+        """
+        INSERT INTO prices
+        SELECT date, 'SPY', asset_class, currency, open, high, low, close, volume,
+               exchange, data_source
+        FROM prices
+        WHERE symbol = 'AAPL'
+          AND date BETWEEN DATE '2024-01-04' AND DATE '2024-01-08'
+        """
+    )
+    con.close()
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+    config = _mixed_buy_and_hold_config()
+    config["benchmark"] = "SPY"
+
+    result = run_preflight(config)
+
+    assert result["ok"] is True
+    assert any("partial coverage" in warning for warning in result["warnings"])
+    assert any(
+        flag["code"] == "PARTIAL_BENCHMARK_COVERAGE"
+        for flag in result["risk_flags"]
+    )
 
 
 def test_backtest_preflight_route_accepts_raw_config(tmp_path, monkeypatch):
