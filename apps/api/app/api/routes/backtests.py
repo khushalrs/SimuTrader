@@ -1,38 +1,39 @@
-from datetime import date, datetime, timedelta, timezone
-import logging
-from uuid import UUID, uuid4
+from datetime import date
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.backtest import claim_run, execute_run
 from app.db import get_db
 from app.models.backtests import (
-    BacktestRequestIdempotency,
     BacktestRun,
     RunDailyEquity,
     RunMetric,
     RunTaxEvent,
 )
 from app.security import ActorContext, ActorTier, get_current_actor
-from app.services.redis_store import refresh_run_cache
+from app.security.rate_limit import enforce_fixed_window_rate_limit
+from app.security.sanitize import sanitize_ascii_printable
+from app.services.run_dispatch import dispatch_run
 from app.schemas.backtests import (
     BacktestCreate,
     BacktestOut,
+    BacktestPreflightOut,
+    BacktestPreflightRequest,
     RunCompareMetricRowOut,
     RunCompareOut,
     RunCompareSeriesOut,
+    RunFillOut,
     RunNormalizedEquityPointOut,
     RunTaxesOut,
     RunTaxEventOut,
 )
 from app.settings import get_settings
 from app.services.config_validation import validate_and_resolve_config
+from app.services.preflight import run_preflight
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
-logger = logging.getLogger(__name__)
 GLOBAL_PRESET_ACTOR_PREFIX = "preset:global:"
 MAX_COMPARE_RUNS = 5
 DEFAULT_COMPARE_MAX_POINTS = 300
@@ -40,12 +41,7 @@ MAX_COMPARE_MAX_POINTS = 2000
 
 
 def _sanitize_user_string(value: str | None, *, max_len: int = 255) -> str | None:
-    if value is None:
-        return None
-    cleaned = "".join(ch for ch in str(value) if ord(ch) >= 32 or ch in "\t\r\n").strip()
-    if not cleaned:
-        return None
-    return cleaned[:max_len]
+    return sanitize_ascii_printable(value, max_len=max_len)
 
 
 def _to_backtest_out(run: BacktestRun) -> BacktestOut:
@@ -65,6 +61,51 @@ def _to_backtest_out(run: BacktestRun) -> BacktestOut:
         data_snapshot_id=run.data_snapshot_id,
         seed=run.seed,
     )
+
+
+def _compare_config_info(run: BacktestRun) -> dict:
+    config = getattr(run, "config_snapshot", None) or {}
+    strategy = config.get("strategy") or "BUY_AND_HOLD"
+    if isinstance(strategy, dict):
+        strategy_type = str(strategy.get("type") or "BUY_AND_HOLD").upper()
+    else:
+        strategy_type = str(strategy).upper()
+    backtest = config.get("backtest") or {}
+    meta = getattr(run, "metrics_meta", {}) or {}
+    return {
+        "name": getattr(run, "name", None),
+        "strategy_type": strategy_type,
+        "tax_regime": str((config.get("tax") or {}).get("regime") or "NONE").upper(),
+        "base_currency": str(config.get("base_currency") or "USD").upper(),
+        "start_date": meta.get("effective_start_date") or backtest.get("start_date"),
+        "end_date": meta.get("effective_end_date") or backtest.get("end_date"),
+    }
+
+
+def _metric_float(metrics, field: str) -> float | None:
+    value = getattr(metrics, field, None) if metrics is not None else None
+    return None if value is None else float(value)
+
+
+def _delta_vs_base(metrics, base_metrics) -> dict[str, float | None]:
+    fields = (
+        "cagr",
+        "volatility",
+        "sharpe",
+        "max_drawdown",
+        "gross_return",
+        "net_return",
+        "fee_drag",
+        "tax_drag",
+        "borrow_drag",
+        "margin_interest_drag",
+    )
+    deltas: dict[str, float | None] = {}
+    for field in fields:
+        value = _metric_float(metrics, field)
+        base_value = _metric_float(base_metrics, field)
+        deltas[field] = None if value is None or base_value is None else value - base_value
+    return deltas
 
 
 def _get_actor_run(run_id: UUID, actor: ActorContext, db: Session) -> BacktestRun:
@@ -97,73 +138,58 @@ def _normalize_run_ids(run_ids_raw: str | None) -> list[UUID]:
     return values
 
 
-def _find_idempotent_run(
-    db: Session,
-    actor_key: str,
-    idempotency_key: str,
-    now_utc: datetime,
-) -> BacktestRun | None:
-    row = (
-        db.query(BacktestRequestIdempotency)
-        .filter(
-            BacktestRequestIdempotency.actor_key == actor_key,
-            BacktestRequestIdempotency.idempotency_key == idempotency_key,
-            BacktestRequestIdempotency.expires_at > now_utc,
-        )
-        .first()
+@router.post("/preflight", response_model=BacktestPreflightOut)
+def preflight_backtest(
+    payload: BacktestPreflightRequest | dict,
+    actor: ActorContext = Depends(get_current_actor),
+) -> BacktestPreflightOut:
+    settings = get_settings()
+    preflight_rate_limit = (
+        settings.max_market_requests_per_window_user
+        if actor.tier == ActorTier.USER
+        else settings.max_market_requests_per_window_guest
     )
-    if not row:
-        return None
-    return db.query(BacktestRun).filter(BacktestRun.run_id == row.run_id).first()
+    enforce_fixed_window_rate_limit(
+        key=f"backtest:preflight:{actor.tier.value}:{actor.actor_key}",
+        limit=preflight_rate_limit,
+        window_seconds=settings.market_request_window_seconds,
+        redis_url=settings.redis_cache_url,
+        redis_prefix=settings.redis_cache_prefix,
+        detail="Too many preflight requests in a short period. Please retry shortly.",
+    )
+    raw_config = payload.config_snapshot if isinstance(payload, BacktestPreflightRequest) else payload
+    if isinstance(raw_config, dict) and "config_snapshot" in raw_config and "universe" not in raw_config:
+        nested = raw_config.get("config_snapshot")
+        raw_config = nested if isinstance(nested, dict) else raw_config
+    return BacktestPreflightOut.model_validate(run_preflight(raw_config))
 
 
-def _find_reusable_run(
+def _dispatch_run(
     db: Session,
-    actor_key: str,
-    resolved_config: dict,
+    config: dict,
+    actor: ActorContext,
+    name: str | None,
+    *,
+    response: Response,
+    idempotency_key: str | None = None,
+    reuse_succeeded_run: bool = False,
     data_snapshot_id: str,
-    seed: int,
-) -> BacktestRun | None:
-    return (
-        db.query(BacktestRun)
-        .filter(
-            BacktestRun.actor_key == actor_key,
-            BacktestRun.config_snapshot == resolved_config,
-            BacktestRun.data_snapshot_id == data_snapshot_id,
-            BacktestRun.seed == seed,
-            BacktestRun.status.in_(("QUEUED", "RUNNING", "SUCCEEDED")),
-        )
-        .order_by(BacktestRun.created_at.desc())
-        .first()
+    seed: int = 42,
+    strategy_id: UUID | None = None,
+) -> BacktestOut:
+    result = dispatch_run(
+        db,
+        config,
+        actor,
+        name,
+        idempotency_key=idempotency_key,
+        reuse_succeeded_run=reuse_succeeded_run,
+        data_snapshot_id=data_snapshot_id,
+        seed=seed,
+        strategy_id=strategy_id,
     )
-
-
-def _mark_stale_queued_runs(db: Session, stale_after_seconds: int) -> int:
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
-    stale_runs = (
-        db.query(BacktestRun)
-        .filter(
-            BacktestRun.status == "QUEUED",
-            BacktestRun.started_at.is_(None),
-            BacktestRun.created_at < cutoff,
-        )
-        .all()
-    )
-    for stale_run in stale_runs:
-        stale_run.status = "ENQUEUE_FAILED"
-        stale_run.error_code = "E_ENQUEUE_STALE"
-        stale_run.error_message_public = (
-            "This run could not be queued in time. Please retry."
-        )
-        stale_run.error_retryable = True
-        stale_run.error_id = str(uuid4())
-        stale_run.finished_at = datetime.now(timezone.utc)
-    if stale_runs:
-        db.commit()
-        for stale_run in stale_runs:
-            refresh_run_cache(stale_run)
-    return len(stale_runs)
-
+    response.status_code = result.status_code
+    return _to_backtest_out(result.run)
 
 @router.post("", response_model=BacktestOut, status_code=status.HTTP_201_CREATED)
 def create_backtest(
@@ -174,207 +200,24 @@ def create_backtest(
     actor: ActorContext = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ) -> BacktestOut:
-    settings = get_settings()
-    now_utc = datetime.now(timezone.utc)
-    clean_idempotency_key = (idempotency_key or "").strip() or None
-    payload.name = _sanitize_user_string(payload.name, max_len=255)
-    clean_data_snapshot_id = _sanitize_user_string(payload.data_snapshot_id, max_len=128)
-    if not clean_data_snapshot_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="data_snapshot_id must be a non-empty string.",
-        )
-    payload.data_snapshot_id = clean_data_snapshot_id
-    _mark_stale_queued_runs(db, stale_after_seconds=settings.stale_queued_timeout_seconds)
-
     try:
         resolved_config = validate_and_resolve_config(payload.config_snapshot)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-
-    if clean_idempotency_key:
-        # Allow key reuse after dedupe expiry.
-        (
-            db.query(BacktestRequestIdempotency)
-            .filter(
-                BacktestRequestIdempotency.actor_key == actor.actor_key,
-                BacktestRequestIdempotency.idempotency_key == clean_idempotency_key,
-                BacktestRequestIdempotency.expires_at <= now_utc,
-            )
-            .delete(synchronize_session=False)
-        )
-        db.commit()
-
-        existing_run = _find_idempotent_run(
-            db, actor.actor_key, clean_idempotency_key, now_utc
-        )
-        if existing_run:
-            if existing_run.status in {"QUEUED", "RUNNING"}:
-                response.status_code = status.HTTP_202_ACCEPTED
-                return _to_backtest_out(existing_run)
-            (
-                db.query(BacktestRequestIdempotency)
-                .filter(
-                    BacktestRequestIdempotency.actor_key == actor.actor_key,
-                    BacktestRequestIdempotency.idempotency_key == clean_idempotency_key,
-                )
-                .delete(synchronize_session=False)
-            )
-            db.commit()
-
-    if reuse_succeeded_run:
-        reusable = _find_reusable_run(
-            db=db,
-            actor_key=actor.actor_key,
-            resolved_config=resolved_config,
-            data_snapshot_id=payload.data_snapshot_id,
-            seed=payload.seed,
-        )
-        if reusable:
-            if reusable.status in {"QUEUED", "RUNNING"}:
-                response.status_code = status.HTTP_202_ACCEPTED
-            else:
-                response.status_code = status.HTTP_200_OK
-            return _to_backtest_out(reusable)
-
-    max_active_runs = (
-        settings.max_active_runs_per_user
-        if actor.tier == ActorTier.USER
-        else settings.max_active_runs_per_guest
-    )
-    active_run_count = (
-        db.query(func.count(BacktestRun.run_id))
-        .filter(
-            BacktestRun.actor_key == actor.actor_key,
-            BacktestRun.status.in_(("QUEUED", "RUNNING")),
-        )
-        .scalar()
-        or 0
-    )
-    if active_run_count >= max_active_runs:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many active runs. Please wait for current runs to finish.",
-        )
-
-    rate_limit_count = (
-        settings.max_backtest_creates_per_window_user
-        if actor.tier == ActorTier.USER
-        else settings.max_backtest_creates_per_window_guest
-    )
-    window_start = now_utc - timedelta(seconds=settings.backtest_create_window_seconds)
-    recent_create_count = (
-        db.query(func.count(BacktestRun.run_id))
-        .filter(
-            BacktestRun.actor_key == actor.actor_key,
-            BacktestRun.created_at >= window_start,
-        )
-        .scalar()
-        or 0
-    )
-    if recent_create_count >= rate_limit_count:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many backtest creations in a short period. Please retry shortly.",
-        )
-
-    run = BacktestRun(
-        strategy_id=payload.strategy_id,
-        name=payload.name,
-        status="QUEUED",
-        actor_tier=actor.tier.value,
-        actor_key=actor.actor_key,
-        config_snapshot=resolved_config,
+    return _dispatch_run(
+        db,
+        resolved_config,
+        actor,
+        payload.name,
+        response=response,
+        idempotency_key=idempotency_key,
+        reuse_succeeded_run=reuse_succeeded_run,
         data_snapshot_id=payload.data_snapshot_id,
         seed=payload.seed,
+        strategy_id=payload.strategy_id,
     )
-    db.add(run)
-    db.flush()
-
-    if clean_idempotency_key:
-        dedupe_expires_at = now_utc + timedelta(
-            seconds=settings.backtest_idempotency_window_seconds
-        )
-        db.add(
-            BacktestRequestIdempotency(
-                actor_key=actor.actor_key,
-                idempotency_key=clean_idempotency_key,
-                run_id=run.run_id,
-                expires_at=dedupe_expires_at,
-            )
-        )
-
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        if clean_idempotency_key:
-            existing_run = _find_idempotent_run(
-                db, actor.actor_key, clean_idempotency_key, now_utc
-            )
-            if existing_run:
-                if existing_run.status in {"QUEUED", "RUNNING"}:
-                    response.status_code = status.HTTP_202_ACCEPTED
-                    return _to_backtest_out(existing_run)
-        raise
-
-    db.refresh(run)
-    refresh_run_cache(run)
-
-    if settings.backtest_exec_mode == "async":
-        from app.worker import execute_run_task
-
-        try:
-            task_result = execute_run_task.delay(str(run.run_id))
-            run.execution_task_id = task_result.id
-            db.commit()
-            db.refresh(run)
-            refresh_run_cache(run)
-        except Exception:
-            error_id = str(uuid4())
-            logger.exception(
-                "Backtest enqueue failed",
-                extra={
-                    "run_id": str(run.run_id),
-                    "error_id": error_id,
-                    "actor_key": actor.actor_key,
-                },
-            )
-            run.status = "ENQUEUE_FAILED"
-            run.error_code = "E_ENQUEUE_FAILED"
-            run.error_message_public = (
-                "The simulation could not be queued. Please retry."
-            )
-            run.error_retryable = True
-            run.error_id = error_id
-            run.finished_at = datetime.now(timezone.utc)
-            db.commit()
-            db.refresh(run)
-            refresh_run_cache(run)
-            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            return _to_backtest_out(run)
-        response.status_code = status.HTTP_202_ACCEPTED
-        return _to_backtest_out(run)
-
-    if not settings.is_dev_env and not settings.allow_sync_execution:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Synchronous backtest execution is disabled in non-dev environments. "
-                "Use BACKTEST_EXEC_MODE=async."
-            ),
-        )
-
-    claimed_run = claim_run(db, run.run_id)
-    if not claimed_run:
-        response.status_code = status.HTTP_202_ACCEPTED
-        db.refresh(run)
-        refresh_run_cache(run)
-        return _to_backtest_out(run)
-
-    return _to_backtest_out(execute_run(db, claimed_run))
 
 
 @router.get("", response_model=list[BacktestOut])
@@ -394,6 +237,44 @@ def list_backtests(
         query = query.filter(BacktestRun.status == str(status_filter).upper())
     runs = query.order_by(BacktestRun.created_at.desc()).offset(offset).limit(limit).all()
     return [_to_backtest_out(run) for run in runs]
+
+
+@router.get("/{run_id}/trades", response_model=list[RunFillOut])
+def get_backtest_trades(
+    run_id: UUID,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0, le=5000),
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[RunFillOut]:
+    from app.api.routes.runs import get_run_fills
+
+    if not isinstance(limit, int):
+        limit = int(getattr(limit, "default", 200))
+    if not isinstance(offset, int):
+        offset = int(getattr(offset, "default", 0))
+    if limit < 1 or limit > 1000:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="limit must be 1..1000",
+        )
+    if offset < 0 or offset > 5000:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="offset must be 0..5000",
+        )
+
+    return get_run_fills(
+        run_id=run_id,
+        start=start,
+        end=end,
+        limit=limit,
+        offset=offset,
+        actor=actor,
+        db=db,
+    )
 
 
 @router.get("/{run_id}/taxes", response_model=RunTaxesOut)
@@ -509,11 +390,25 @@ def compare_backtests(
     metric_rows: list[RunCompareMetricRowOut] = []
     equity_series: list[RunCompareSeriesOut] = []
 
+    metrics_by_run: dict[UUID, RunMetric | None] = {}
     for run_row in authorized_runs:
         metrics = db.query(RunMetric).filter(RunMetric.run_id == run_row.run_id).first()
+        metrics_by_run[run_row.run_id] = metrics
+        setattr(run_row, "metrics_meta", getattr(metrics, "meta", {}) if metrics else {})
+
+    base_metrics = metrics_by_run.get(run_id)
+    for run_row in authorized_runs:
+        metrics = metrics_by_run.get(run_row.run_id)
+        info = _compare_config_info(run_row)
         metric_rows.append(
             RunCompareMetricRowOut(
                 run_id=run_row.run_id,
+                name=info["name"],
+                strategy_type=info["strategy_type"],
+                tax_regime=info["tax_regime"],
+                base_currency=info["base_currency"],
+                start_date=info["start_date"],
+                end_date=info["end_date"],
                 cagr=metrics.cagr if metrics else None,
                 volatility=metrics.volatility if metrics else None,
                 sharpe=metrics.sharpe if metrics else None,
@@ -524,6 +419,7 @@ def compare_backtests(
                 tax_drag=metrics.tax_drag if metrics else None,
                 borrow_drag=metrics.borrow_drag if metrics else None,
                 margin_interest_drag=metrics.margin_interest_drag if metrics else None,
+                delta_vs_base=_delta_vs_base(metrics, base_metrics),
             )
         )
 

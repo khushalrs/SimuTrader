@@ -7,7 +7,7 @@ from typing import Any, Dict, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.backtest.engine import DayContext, run_engine
+from app.backtest.engine import DayContext, _parse_cash_buffer_pct, run_engine
 from app.models.backtests import BacktestRun
 
 
@@ -223,36 +223,38 @@ def run_dca(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> i
 
     last_contribution: date | None = None
     last_buy: date | None = None
+    base_currency = str(config_snapshot.get("base_currency") or "USD").upper()
+    # DCA buffers its own incoming cash and opts out of the engine-level buffer, which
+    # would otherwise trim already-held positions on every contribution date.
+    cash_buffer_pct = _parse_cash_buffer_pct(config_snapshot.get("execution"))
 
     def target_allocations(ctx: DayContext):
         nonlocal last_contribution, last_buy
 
-        if len(ctx.state.cash_by_currency) != 1:
-            raise ValueError("DCA currently supports single-currency runs only.")
-
-        currency = next(iter(ctx.state.cash_by_currency.keys()))
-
+        contribution_base = 0.0
         if contrib_enabled and _should_run(last_contribution, ctx.date, contrib_frequency):
-            ctx.state.cash_by_currency[currency] += contrib_amount
+            ctx.state.cash_by_currency[base_currency] = (
+                ctx.state.cash_by_currency.get(base_currency, 0.0) + contrib_amount
+            )
+            contribution_base = contrib_amount
             last_contribution = ctx.date
 
         if not _should_run(last_buy, ctx.date, buy_frequency):
             return None
 
-        available_cash = ctx.state.cash_by_currency[currency]
-        if available_cash <= 0:
+        available_cash_base = ctx.cash_base_total + contribution_base
+        equity_base = ctx.equity_base + contribution_base
+        if available_cash_base <= 0 or equity_base <= 0:
             last_buy = ctx.date
             return None
 
         allocations: Dict[str, float] = {}
+        investable_cash_base = available_cash_base * (1.0 - cash_buffer_pct)
         for symbol, weight in weights.items():
-            price = ctx.prices.get(symbol)
-            if price is None:
-                price = ctx.state.last_price.get(symbol)
-            if price is None:
-                continue
-            current_value = ctx.state.positions[symbol].qty * price
-            allocations[symbol] = current_value + (available_cash * 0.99 * weight)
+            target_base = ctx.position_value_base.get(symbol, 0.0) + (
+                investable_cash_base * weight
+            )
+            allocations[symbol] = target_base / equity_base
 
         if allocations:
             last_buy = ctx.date
@@ -274,5 +276,7 @@ def run_dca(db: Session, run: BacktestRun, config_snapshot: Dict[str, Any]) -> i
         slippage_cfg=slippage_cfg,
         fill_price_policy=fill_price_policy,
         allocation_mode=allocation_mode,
+        allocation_kind="BASE_WEIGHT",
+        apply_cash_buffer=False,
         missing_bar_policy=missing_bar_policy,
     )

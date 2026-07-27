@@ -154,7 +154,7 @@ export function PortfolioTab({ runId, status, equity, baseCurrency }: PortfolioT
                                             <td className="px-4 py-3 text-right">
                                                 {formatCurrency(pos.market_value_base, baseCurrency)}
                                             </td>
-                                            <td className={`px-4 py-3 text-right ${pos.unrealized_pnl_base > 0 ? "text-green-500" : pos.unrealized_pnl_base < 0 ? "text-red-500" : ""}`}>
+                                            <td className={`px-4 py-3 text-right ${pos.unrealized_pnl_base > 0 ? "text-green-500" : pos.unrealized_pnl_base < 0 ? "text-red-500" : "text-muted-foreground"}`}>
                                                 {formatCurrency(pos.unrealized_pnl_base, baseCurrency)}
                                             </td>
                                         </tr>

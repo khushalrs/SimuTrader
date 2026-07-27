@@ -1,3 +1,4 @@
+import { Suspense } from "react"
 import { StrategyBuilder } from "@/components/builder/StrategyBuilder"
 
 export const metadata = {
@@ -8,7 +9,9 @@ export const metadata = {
 export default function BuildPage() {
     return (
         <main className="container py-8">
-            <StrategyBuilder />
+            <Suspense fallback={<div>Loading builder...</div>}>
+                <StrategyBuilder />
+            </Suspense>
         </main>
     )
 }

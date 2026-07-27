@@ -14,11 +14,15 @@ from app.backtest import claim_run, execute_run
 from app.backtest.executor import is_transient_exception
 from app.db.session import SessionLocal
 from app.models.backtests import BacktestRun
+from app.models.research import ResearchJob
 from app.services.redis_store import (
     refresh_run_cache,
+    release_research_job_lock,
     release_run_lock,
+    try_acquire_research_job_lock,
     try_acquire_run_lock,
 )
+from app.services.research_jobs import advance_research_job
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -175,3 +179,59 @@ def execute_run_task(self, run_id: str) -> str:
     finally:
         release_run_lock(run_id, lock_token)
         db.close()
+
+
+@celery_app.task(bind=True, name="app.research.advance_job")
+def advance_research_job_task(self, job_id: str) -> str:
+    try:
+        job_uuid = UUID(job_id)
+    except ValueError:
+        return "INVALID"
+    lock_token = try_acquire_research_job_lock(job_id)
+    if lock_token is None:
+        self.apply_async(
+            args=[job_id],
+            countdown=int(os.getenv("RESEARCH_JOB_POLL_SECONDS", "5")),
+        )
+        return "LOCKED"
+    db = SessionLocal()
+    try:
+        aggregate = advance_research_job(db, job_uuid)
+        if (
+            aggregate is not None
+            and aggregate.status not in {"SUCCEEDED", "PARTIAL_FAILED", "FAILED"}
+        ):
+            self.apply_async(
+                args=[job_id],
+                countdown=int(os.getenv("RESEARCH_JOB_POLL_SECONDS", "5")),
+            )
+        return aggregate.status if aggregate is not None else "MISSING"
+    except Exception as exc:
+        if is_transient_exception(exc):
+            delay_seconds = int(os.getenv("CELERY_TASK_RETRY_DELAY_SECONDS", "30"))
+            max_retries = int(os.getenv("CELERY_TASK_MAX_RETRIES", "3"))
+            raise self.retry(
+                exc=exc,
+                countdown=delay_seconds,
+                max_retries=max_retries,
+            ) from exc
+        logger.exception(
+            "Research coordinator failed",
+            extra={"job_id": str(job_uuid)},
+        )
+        db.rollback()
+        job = db.query(ResearchJob).filter(ResearchJob.job_id == job_uuid).first()
+        if job:
+            job.status = "FAILED"
+            job.stage = "COMPLETE"
+            job.error_code = "E_RESEARCH_COORDINATOR"
+            job.error_message_public = (
+                "The research job coordinator failed unexpectedly."
+            )
+            job.finished_at = datetime.now(timezone.utc)
+            job.updated_at = job.finished_at
+            db.commit()
+        return "FAILED"
+    finally:
+        db.close()
+        release_research_job_lock(job_id, lock_token)

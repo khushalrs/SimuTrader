@@ -268,6 +268,69 @@ def test_fifo_realized_pnl_and_us_tax_events(tmp_path, monkeypatch):
     assert db.metrics_rows[0].tax_drag == pytest.approx(4.2 / 10000.0)
 
 
+def test_tax_regime_changes_final_net_result(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "tax_regime_compare.duckdb"
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 5)
+    _seed_duckdb(str(duckdb_path), "TAX", start, end)
+    monkeypatch.setenv("DUCKDB_PATH", str(duckdb_path))
+
+    def run_with_tax(tax_config: dict) -> _FakeSession:
+        run = BacktestRun(
+            run_id=uuid4(),
+            status="QUEUED",
+            config_snapshot={
+                "base_currency": "USD",
+                "financing": {
+                    "margin": {"enabled": False, "max_leverage": 1.0, "daily_interest_bps": 0.0},
+                    "shorting": {"enabled": False, "borrow_fee_daily_bps": 0.0},
+                },
+                "risk": {"max_gross_leverage": 1.0, "max_net_leverage": 1.0},
+                "tax": tax_config,
+                "data_policy": {"missing_fx": "FORWARD_FILL"},
+            },
+            data_snapshot_id="snap",
+            seed=42,
+        )
+        db = _FakeSession()
+        trade_days: list[date] = []
+
+        def target_allocations(ctx):
+            if not trade_days:
+                trade_days.append(ctx.date)
+                return {"TAX": ctx.prices["TAX"] * 10.0}
+            if ctx.date == trade_days[0] + timedelta(days=2):
+                return {"TAX": 0.0}
+            return None
+
+        run_engine(
+            db=db,
+            run=run,
+            instruments=[{"symbol": "TAX", "asset_class": "US_EQUITY"}],
+            calendars_map=None,
+            start_date=start,
+            end_date=end,
+            initial_cash=10000.0,
+            initial_cash_by_currency=None,
+            target_allocations_fn=target_allocations,
+            commission_cfg={"model": "BPS", "bps": 0, "min_fee_native": 0},
+            slippage_cfg={"model": "BPS", "bps": 0},
+            fill_price_policy="CLOSE",
+            allocation_mode="AMOUNT",
+            include_financing=True,
+        )
+        return db
+
+    no_tax_db = run_with_tax({"regime": "NONE"})
+    us_tax_db = run_with_tax(
+        {"regime": "US", "us": {"short_term_days": 365, "short_rate": 0.30, "long_rate": 0.15}}
+    )
+
+    assert us_tax_db.tax_rows
+    assert no_tax_db.equity_rows[-1].equity_base > us_tax_db.equity_rows[-1].equity_base
+    assert no_tax_db.metrics_rows[0].net_return > us_tax_db.metrics_rows[0].net_return
+
+
 def test_short_cover_creates_tax_event_and_india_lt_bucket(tmp_path, monkeypatch):
     duckdb_path = tmp_path / "short_tax.duckdb"
     start = date(2024, 1, 2)

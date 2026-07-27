@@ -83,6 +83,10 @@ class RunMetric(Base):
     tax_drag = Column(Float)
     borrow_drag = Column(Float)
     margin_interest_drag = Column(Float)
+    beta = Column(Float)
+    alpha = Column(Float)
+    tracking_error = Column(Float)
+    information_ratio = Column(Float)
     meta = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
 
 
@@ -100,6 +104,7 @@ class RunDailyEquity(Base):
     taxes_cum_base = Column(Float, nullable=False)
     borrow_fees_cum_base = Column(Float, nullable=False)
     margin_interest_cum_base = Column(Float, nullable=False)
+    benchmark_equity_base = Column(Float)
     equity_by_currency = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     cash_by_currency = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     fees_cum_by_currency = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))

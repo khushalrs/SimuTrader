@@ -8,6 +8,11 @@ from typing import Any, Dict
 
 from jsonschema import Draft202012Validator, FormatChecker, validators
 
+from app.services.capabilities import (
+    currency_for_asset_class,
+    strategy_supports_mixed_currency,
+)
+
 CONFIG_SCHEMA: Dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -24,6 +29,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
             "default": {},
         },
         "base_currency": {"type": "string", "enum": ["USD", "INR"], "default": "USD"},
+        "benchmark": {"type": ["string", "null"], "minLength": 1},
         "execution": {
             "type": "object",
             "additionalProperties": False,
@@ -51,6 +57,12 @@ CONFIG_SCHEMA: Dict[str, Any] = {
                     "type": "string",
                     "enum": ["CLOSE"],
                     "default": "CLOSE",
+                },
+                "cash_buffer_pct": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 0.5,
+                    "default": 0.01,
                 },
             },
         },
@@ -113,8 +125,17 @@ CONFIG_SCHEMA: Dict[str, Any] = {
             "properties": {
                 "max_gross_leverage": {"type": "number", "exclusiveMinimum": 0, "default": 1.0},
                 "max_net_leverage": {"type": "number", "minimum": 0, "default": 1.0},
+                "risk_free_rate_annual": {
+                    "type": "number",
+                    "exclusiveMinimum": -1.0,
+                    "default": 0.0,
+                },
             },
-            "default": {"max_gross_leverage": 1.0, "max_net_leverage": 1.0},
+            "default": {
+                "max_gross_leverage": 1.0,
+                "max_net_leverage": 1.0,
+                "risk_free_rate_annual": 0.0,
+            },
         },
         "tax": {
             "type": "object",
@@ -255,21 +276,33 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     execution = config.get("execution")
     if isinstance(execution, dict):
-        commission = execution.get("commission") or {}
-        slippage = execution.get("slippage") or {}
-        if "commission" not in config and isinstance(commission, dict):
-            config["commission"] = {
-                "model": commission.get("model", "BPS"),
-                "bps": commission.get("bps", 0),
-                "min_fee_native": commission.get("min_fee", commission.get("min_fee_native", 0)),
-            }
-        if "slippage" not in config and isinstance(slippage, dict):
-            config["slippage"] = {
-                "model": slippage.get("model", "BPS"),
-                "bps": slippage.get("bps", 0),
-            }
+        commission = execution.get("commission")
+        slippage = execution.get("slippage")
+        # The engine consumes the top-level fields. Treat an explicit execution
+        # block as the authoritative client-facing form and overlay only the
+        # supplied values so dotted scenario patches cannot become dead config.
+        if isinstance(commission, dict):
+            if "commission" not in config:
+                config["commission"] = {
+                    "model": commission.get("model", "BPS"),
+                    "bps": commission.get("bps", 0),
+                    "min_fee_native": commission.get("min_fee", 0),
+                }
+        if isinstance(slippage, dict):
+            if "slippage" not in config:
+                config["slippage"] = {
+                    "model": slippage.get("model", "BPS"),
+                    "bps": slippage.get("bps", 0),
+                }
         if "fill_price_policy" not in config and execution.get("fill_price"):
             config["fill_price_policy"] = execution.get("fill_price")
+        # These are accepted as input aliases only. Keeping them in a resolved
+        # snapshot lets JSON-schema defaults masquerade as explicit overrides on
+        # the next validation pass (for example min_fee_native 1 -> 0 on clone).
+        for alias in ("commission", "slippage", "fill_price"):
+            execution.pop(alias, None)
+        if not execution:
+            config.pop("execution", None)
 
     strategy = config.get("strategy")
     if isinstance(strategy, dict):
@@ -348,6 +381,12 @@ def validate_and_resolve_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         message = "; ".join(_format_error(err) for err in errors)
         raise ValueError(f"Invalid config: {message}")
     _validate_cross_fields(config)
+    execution = config.get("execution")
+    if isinstance(execution, dict):
+        for alias in ("commission", "slippage", "fill_price"):
+            execution.pop(alias, None)
+        if not execution:
+            config.pop("execution", None)
     return config
 
 
@@ -375,6 +414,16 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
     shorting_enabled = bool((financing.get("shorting") or {}).get("enabled"))
     margin_enabled = bool((financing.get("margin") or {}).get("enabled"))
     risk = config.get("risk") or {}
+    strategy = str(config.get("strategy") or "BUY_AND_HOLD").upper()
+    implied_currencies = {
+        currency
+        for currency in (
+            currency_for_asset_class(str(inst.get("asset_class") or ""))
+            for inst in instruments
+        )
+        if currency is not None
+    }
+    mixed_currency_universe = len(implied_currencies) > 1
     has_amount = any("amount" in inst for inst in instruments)
     has_weight = any("weight" in inst for inst in instruments)
     if has_amount and has_weight:
@@ -414,6 +463,20 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
             raise ValueError(
                 f"Invalid config: total amount {total_amount:.2f} exceeds initial_cash {initial_cash:.2f}"
             )
+    if mixed_currency_universe:
+        if not strategy_supports_mixed_currency(strategy):
+            raise ValueError(
+                f"Invalid config: {strategy} does not support mixed-currency universes."
+            )
+        if strategy == "BUY_AND_HOLD":
+            if "initial_cash_by_currency" not in backtest:
+                raise ValueError(
+                    "Invalid config: initial_cash_by_currency is required when the universe spans multiple currencies."
+                )
+            if not has_amount:
+                raise ValueError(
+                    "Invalid config: mixed-currency BUY_AND_HOLD runs require explicit amount allocations for every instrument."
+                )
 
     max_gross_leverage = float(
         risk.get("max_gross_leverage", (financing.get("margin") or {}).get("max_leverage", 1.0))
@@ -427,7 +490,6 @@ def _validate_cross_fields(config: Dict[str, Any]) -> None:
     if max_net_leverage > max_gross_leverage + 1e-12:
         raise ValueError("Invalid config: max_net_leverage cannot exceed max_gross_leverage")
 
-    strategy = str(config.get("strategy") or "BUY_AND_HOLD").upper()
     if strategy == "FIXED_WEIGHT_REBALANCE":
         params = config.get("strategy_params") or {}
         target_weights = params.get("target_weights") or {}

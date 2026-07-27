@@ -5,9 +5,15 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from app.api.routes import backtests as backtests_routes
 from app.models.backtests import BacktestRun, RunDailyEquity, RunMetric, RunTaxEvent
 from app.security import ActorContext, ActorTier
+
+
+def test_sanitize_user_string_keeps_ascii_printable_only():
+    assert backtests_routes._sanitize_user_string(" Alpha\t\nBeta\u202e ") == "AlphaBeta"
 
 
 @dataclass
@@ -186,6 +192,7 @@ def test_compare_backtests_returns_normalized_series(monkeypatch):
             tax_drag=0.02,
             borrow_drag=0.0,
             margin_interest_drag=0.0,
+            meta={"effective_start_date": "2024-01-02", "effective_end_date": "2024-01-03"},
         ),
         SimpleNamespace(
             cagr=0.2,
@@ -198,6 +205,7 @@ def test_compare_backtests_returns_normalized_series(monkeypatch):
             tax_drag=0.01,
             borrow_drag=0.0,
             margin_interest_drag=0.0,
+            meta={"effective_start_date": "2024-01-02", "effective_end_date": "2024-01-03"},
         ),
     ]
     db.equity_queue = [
@@ -211,10 +219,23 @@ def test_compare_backtests_returns_normalized_series(monkeypatch):
         ],
     ]
     actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
+    def _fake_run(rid, _actor, _db):
+        return SimpleNamespace(
+            run_id=rid,
+            actor_key=_actor.actor_key,
+            name="Base" if rid == run_a else "Candidate",
+            config_snapshot={
+                "strategy": "BUY_AND_HOLD" if rid == run_a else "MOMENTUM",
+                "base_currency": "USD",
+                "tax": {"regime": "US" if rid == run_a else "NONE"},
+                "backtest": {"start_date": "2024-01-01", "end_date": "2024-01-31"},
+            },
+        )
+
     monkeypatch.setattr(
         backtests_routes,
         "_get_actor_run",
-        lambda rid, _actor, _db: SimpleNamespace(run_id=rid, actor_key=_actor.actor_key),
+        _fake_run,
     )
     out = backtests_routes.compare_backtests(
         run_id=run_a,
@@ -225,6 +246,11 @@ def test_compare_backtests_returns_normalized_series(monkeypatch):
     assert out.base_run_id == run_a
     assert out.run_ids == [run_a, run_b]
     assert len(out.metric_rows) == 2
+    assert out.metric_rows[0].name == "Base"
+    assert out.metric_rows[1].strategy_type == "MOMENTUM"
+    assert out.metric_rows[1].tax_regime == "NONE"
+    assert out.metric_rows[1].delta_vs_base["net_return"] == pytest.approx(0.1)
+    assert out.metric_rows[1].delta_vs_base["tax_drag"] == pytest.approx(-0.01)
     assert out.equity_series[0].points[0].value == 1.0
     assert out.equity_series[0].points[1].value == 1.1
     assert out.equity_series[1].points[0].value == 1.0

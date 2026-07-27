@@ -59,8 +59,8 @@ export function MultiSymbolLab() {
         const fetchData = async () => {
             setIsLoading(true);
             try {
-                const end = new Date();
-                const start = new Date();
+                const end = new Date("2026-01-21");
+                const start = new Date("2026-01-21");
                 start.setMonth(end.getMonth() - 3); // Default to 3 months, not a full year
                 
                 const data = await getMarketBars(

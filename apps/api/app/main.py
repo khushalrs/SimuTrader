@@ -1,24 +1,30 @@
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-import logging
 
 from app.api import api_router
+from app.api.routes.data import warm_default_data_quality_cache
 from app.db.session import SessionLocal
 from app.playground.presets import GLOBAL_PRESET_DEFINITIONS
 from app.playground.service import enqueue_global_preset_run
 from app.settings import get_settings
 
-app = FastAPI(title="SimuTrader API")
-app.include_router(api_router)
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
 
-@app.on_event("startup")
-def _validate_runtime_settings() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings.validate()
+    try:
+        warm_default_data_quality_cache()
+    except Exception:
+        logger.exception("Default data-quality cache warm-up failed")
     db = SessionLocal()
     try:
         for preset_id in GLOBAL_PRESET_DEFINITIONS.keys():
@@ -28,6 +34,25 @@ def _validate_runtime_settings() -> None:
                 logger.exception("Global preset warm-up failed for preset_id=%s", preset_id)
     finally:
         db.close()
+    yield
+
+
+app = FastAPI(title="SimuTrader API", lifespan=lifespan)
+app.include_router(api_router)
+
+
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    )
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if not settings.is_dev_env:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 if settings.cors_origins:

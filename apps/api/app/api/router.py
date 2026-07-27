@@ -1,11 +1,26 @@
 from fastapi import APIRouter
 
-from app.api.routes import assets, backtests, market, playground, runs, strategies
+from app.api.routes import (
+    analytics,
+    assets,
+    backtests,
+    capabilities,
+    data,
+    market,
+    playground,
+    research,
+    runs,
+    strategies,
+)
 
 api_router = APIRouter()
 api_router.include_router(assets.router)
+api_router.include_router(capabilities.router)
+api_router.include_router(data.router)
 api_router.include_router(backtests.router)
 api_router.include_router(market.router)
 api_router.include_router(runs.router)
+api_router.include_router(analytics.router)
+api_router.include_router(research.router)
 api_router.include_router(playground.router)
 api_router.include_router(strategies.router)

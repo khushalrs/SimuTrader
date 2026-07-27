@@ -37,8 +37,8 @@ export function AssetDetailDrawer({ asset, open, onOpenChange }: AssetDetailDraw
         const fetchData = async () => {
             setIsLoading(true);
             try {
-                const end = new Date();
-                const start = new Date();
+                const end = new Date("2026-01-21");
+                const start = new Date("2026-01-21");
                 start.setMonth(end.getMonth() - 6);
                 
                 const data = await getMarketBars(

@@ -74,3 +74,29 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Shared entrance animation (replaces framer-motion mount transitions). */
+@keyframes fadeSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.anim-fade-slide {
+  animation: fadeSlideUp 0.5s ease both;
+}
+
+/* Never leave content stuck invisible: if motion is reduced or the animation
+   is otherwise suppressed, show the final state immediately. */
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-slide {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}

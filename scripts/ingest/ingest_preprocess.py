@@ -24,7 +24,8 @@ What this does
     processed/trading_calendars.parquet
     processed/calendar_days.parquet
 
-- Creates a DuckDB file with views over the Parquet lake:
+- Creates a DuckDB file with a materialized prices table plus views for
+  lighter metadata tables:
     processed/simutrader.duckdb
 
 Install
@@ -196,6 +197,63 @@ def _write_symbol_year_partitions(df: pd.DataFrame, out_prices_root: Path) -> No
         g = g[required_cols + optional_cols].sort_values("date")
         table = pa.Table.from_pandas(g, preserve_index=False)
         pq.write_table(table, out_file)
+
+
+def _materialize_duckdb_prices(con, processed_root: Path) -> None:
+    price_root = processed_root / "prices"
+    con.execute("DROP VIEW IF EXISTS prices;")
+    con.execute("DROP TABLE IF EXISTS prices;")
+    con.execute(
+        """
+        CREATE TABLE prices (
+            date DATE,
+            symbol VARCHAR,
+            asset_class VARCHAR,
+            currency VARCHAR,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE,
+            volume DOUBLE,
+            exchange VARCHAR,
+            data_source VARCHAR,
+            base_ccy VARCHAR,
+            quote_ccy VARCHAR,
+            year BIGINT
+        )
+        """
+    )
+
+    symbol_globs: list[str] = []
+    for asset_dir in sorted(price_root.glob("asset_class=*")):
+        if not asset_dir.is_dir():
+            continue
+        for symbol_dir in sorted(asset_dir.glob("symbol=*")):
+            if not symbol_dir.is_dir():
+                continue
+            symbol_globs.append(str(symbol_dir / "year=*" / "ohlcv.parquet"))
+
+    if not symbol_globs:
+        raise RuntimeError(f"No parquet symbol partitions found under {price_root}")
+
+    def _q(s: str) -> str:
+        return s.replace("'", "''")
+
+    for idx, symbol_glob in enumerate(symbol_globs, start=1):
+        con.execute(
+            f"""
+            INSERT INTO prices BY NAME
+            SELECT *
+            FROM read_parquet(
+                '{_q(symbol_glob)}',
+                hive_partitioning=1,
+                union_by_name=1
+            );
+            """
+        )
+        if idx % 500 == 0:
+            print(f"[duckdb] loaded symbol partitions: {idx}")
+    con.execute("ANALYZE prices;")
 
 
 # -----------------------------
@@ -677,24 +735,12 @@ def build_duckdb(processed_root: Path) -> None:
     def _q(s: str) -> str:
         return s.replace("'", "''")
 
-    prices_glob = str(
-        processed_root
-        / "prices"
-        / "asset_class=*"
-        / "symbol=*"
-        / "year=*"
-        / "ohlcv.parquet"
-    )
-
     con = duckdb.connect(str(db_path))
 
-    con.execute(
-        f"""
-        CREATE OR REPLACE VIEW prices AS
-        SELECT *
-        FROM read_parquet('{_q(prices_glob)}', hive_partitioning=1);
-        """
-    )
+    # Materialize prices into DuckDB storage so runtime queries do not need to
+    # rescan the full partitioned parquet tree on every backtest. Load per
+    # symbol directory to avoid wildcard scans opening too many parquet files.
+    _materialize_duckdb_prices(con, processed_root)
 
     assets_path = processed_root / "assets.parquet"
     if assets_path.exists():

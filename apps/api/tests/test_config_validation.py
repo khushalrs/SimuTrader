@@ -63,6 +63,35 @@ def test_negative_amount_requires_shorting_enabled() -> None:
         validate_and_resolve_config(config)
 
 
+def test_negative_weights_require_shorting_enabled() -> None:
+    config = _base_config()
+    config["universe"]["instruments"][0]["weight"] = -0.25
+    config["universe"]["instruments"][1]["weight"] = 0.75
+    with pytest.raises(ValueError, match="negative weights require"):
+        validate_and_resolve_config(config)
+
+
+def test_leverage_requires_margin_enabled() -> None:
+    config = _base_config()
+    config["risk"] = {"max_gross_leverage": 1.5, "max_net_leverage": 1.0}
+    with pytest.raises(ValueError, match="max_gross_leverage > 1 requires"):
+        validate_and_resolve_config(config)
+
+
+def test_mixed_currency_momentum_validation_is_supported() -> None:
+    config = _base_config()
+    config["strategy"] = "MOMENTUM"
+    config["strategy_params"] = {
+        "lookback_days": 5,
+        "skip_days": 1,
+        "top_k": 1,
+        "weighting": "EQUAL",
+    }
+    config["universe"]["instruments"][1]["asset_class"] = "IN_EQUITY"
+    resolved = validate_and_resolve_config(config)
+    assert resolved["strategy"] == "MOMENTUM"
+
+
 def test_execution_block_maps_into_legacy_commission_fields() -> None:
     config = _base_config()
     config["execution"] = {
@@ -77,8 +106,42 @@ def test_execution_block_maps_into_legacy_commission_fields() -> None:
     assert resolved["fill_price_policy"] == "CLOSE"
 
 
+def test_canonical_cost_fields_win_over_stale_execution_aliases() -> None:
+    config = _base_config()
+    config["commission"] = {"model": "BPS", "bps": 5, "min_fee_native": 2}
+    config["slippage"] = {"model": "BPS", "bps": 2}
+    config["execution"] = {
+        "commission": {"bps": 500},
+        "slippage": {"bps": 75},
+    }
+
+    resolved = validate_and_resolve_config(config)
+
+    assert resolved["commission"] == {
+        "model": "BPS",
+        "bps": pytest.approx(5),
+        "min_fee_native": pytest.approx(2),
+    }
+    assert resolved["slippage"] == {
+        "model": "BPS",
+        "bps": pytest.approx(2),
+    }
+    assert "execution" not in resolved
+    assert validate_and_resolve_config(resolved) == resolved
+
+
 def test_config_sanitizes_control_characters() -> None:
     config = _base_config()
     config["universe"]["instruments"][0]["symbol"] = "AAPL\x00\x01"
     resolved = validate_and_resolve_config(config)
     assert resolved["universe"]["instruments"][0]["symbol"] == "AAPL"
+
+
+def test_config_accepts_explicit_or_null_benchmark() -> None:
+    explicit = _base_config()
+    explicit["benchmark"] = "SPY"
+    assert validate_and_resolve_config(explicit)["benchmark"] == "SPY"
+
+    disabled = _base_config()
+    disabled["benchmark"] = None
+    assert validate_and_resolve_config(disabled)["benchmark"] is None

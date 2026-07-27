@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 const DEFAULT_API_BASE_URL = "http://localhost:8000"
 
 const isServer = typeof window === "undefined"
@@ -11,29 +13,152 @@ if (isProd) {
     if (!rawApiBaseUrl) {
         throw new Error("Missing API_BASE_URL or NEXT_PUBLIC_API_BASE_URL in production environment.")
     }
-    if (!rawApiBaseUrl.startsWith("https://")) {
+    const isLocal = rawApiBaseUrl.includes("localhost") || 
+                    rawApiBaseUrl.includes("127.0.0.1") || 
+                    rawApiBaseUrl.includes("host.docker.internal");
+    if (!rawApiBaseUrl.startsWith("https://") && !isLocal) {
         throw new Error(`Production API base URL must use HTTPS. Received: ${rawApiBaseUrl}`)
     }
 } else {
     rawApiBaseUrl = rawApiBaseUrl || DEFAULT_API_BASE_URL
 }
 
-const API_BASE_URL = rawApiBaseUrl as string
+export const API_BASE_URL = rawApiBaseUrl as string
 
+export function buildApiUrl(path: string, params?: Record<string, string | undefined>): string {
+    const isAbs = API_BASE_URL.startsWith("http://") || API_BASE_URL.startsWith("https://")
+    const base = isAbs
+        ? API_BASE_URL
+        : typeof window !== "undefined"
+            ? `${window.location.origin}${API_BASE_URL.startsWith("/") ? "" : "/"}${API_BASE_URL}`
+            : `http://localhost:8000${API_BASE_URL.startsWith("/") ? "" : "/"}${API_BASE_URL}`
+
+    const cleanBase = base.replace(/\/+$/, "")
+    const cleanPath = path.startsWith("/") ? path : `/${path}`
+    const url = new URL(`${cleanBase}${cleanPath}`)
+
+    if (params) {
+        Object.entries(params).forEach(([k, v]) => {
+            if (v !== undefined && v !== null && v !== "") {
+                url.searchParams.append(k, v)
+            }
+        })
+    }
+    return url.toString()
+}
+
+// ---------------------------------------------------------------------------
+// Dev-only logger — silenced in production to prevent backend internals from
+// leaking into browser consoles or log aggregators.
+// ---------------------------------------------------------------------------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function devLog(...args: any[]): void {
+    if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.error(...args)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// extractErrorMessage — returns a safe, generic message for the UI in prod.
+// The raw backend detail is only logged in development.
+// ---------------------------------------------------------------------------
 async function extractErrorMessage(res: Response, fallbackPrefix: string): Promise<string> {
     try {
         const errJson = await res.json();
-        const msg = errJson.error_message_public || errJson.detail || JSON.stringify(errJson);
-        return `${fallbackPrefix}: ${msg}`;
+        const rawMsg = errJson.error_message_public || errJson.detail || JSON.stringify(errJson);
+        devLog(`[API] ${fallbackPrefix}:`, rawMsg)
+        if (isProd) {
+            return `${fallbackPrefix}: An unexpected error occurred. Please try again.`;
+        }
+        return `${fallbackPrefix}: ${rawMsg}`;
     } catch {
         return `${fallbackPrefix}: Server returned status ${res.status}`;
     }
 }
 
+// ---------------------------------------------------------------------------
+// Zod schemas — validate the shapes of critical API responses at runtime.
+// Use .safeParse() so a malformed backend response degrades gracefully
+// instead of crashing the UI with an unhandled exception.
+// ---------------------------------------------------------------------------
+
+const BacktestOutSchema = z.object({
+    run_id: z.string(),
+    name: z.string().nullish(),
+    status: z.string(),
+    error_code: z.string().nullish(),
+    error_message_public: z.string().nullish(),
+    error_retryable: z.boolean().nullish(),
+    error_id: z.string().nullish(),
+    created_at: z.string(),
+    started_at: z.string().nullish(),
+    finished_at: z.string().nullish(),
+    data_snapshot_id: z.string(),
+    seed: z.number(),
+    config_snapshot: z.any().optional(),
+})
+
+const RunMetricOutSchema = z.object({
+    cagr: z.number().nullish(),
+    volatility: z.number().nullish(),
+    sharpe: z.number().nullish(),
+    sortino: z.number().nullish(),
+    max_drawdown: z.number().nullish(),
+    turnover: z.number().nullish(),
+    gross_return: z.number().nullish(),
+    net_return: z.number().nullish(),
+    fee_drag: z.number().nullish(),
+    tax_drag: z.number().nullish(),
+    borrow_drag: z.number().nullish(),
+    margin_interest_drag: z.number().nullish(),
+    explanation: z.string().nullish(),
+})
+
+const RunDailyEquityOutSchema = z.object({
+    date: z.string(),
+    equity_base: z.number(),
+    gross_exposure_base: z.number(),
+    net_exposure_base: z.number(),
+    drawdown: z.number(),
+    fees_cum_base: z.number(),
+    taxes_cum_base: z.number(),
+    borrow_fees_cum_base: z.number(),
+    margin_interest_cum_base: z.number(),
+})
+
+// The /backtests list returns BacktestOut-shaped objects. We keep the schema
+// permissive (passthrough) for extra fields the server may add.
+const RunListItemSchema = z.object({
+    run_id: z.string(),
+}).passthrough()
+
+const RunListSchema = z.array(RunListItemSchema)
+
 function runApiFetch(input: string, init?: RequestInit): Promise<Response> {
+    const headers: Record<string, string> = {}
+    
+    if (isServer) {
+        try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const nextHeaders = require("next/headers")
+            const cookieStore = nextHeaders.cookies()
+            const cookieHeader = cookieStore.toString()
+            if (cookieHeader) {
+                headers["Cookie"] = cookieHeader
+            }
+        } catch {
+            // Ignore if called outside request context (e.g. during build)
+        }
+    }
+
     return fetch(input, {
         credentials: "include",
         ...init,
+        headers: {
+            ...headers,
+            ...init?.headers,
+        }
     })
 }
 
@@ -62,12 +187,15 @@ export interface RunData {
     date: string
     tags: string[]
     metrics: RunMetric[]
+    explanation?: string | null
     equity?: RunEquityPoint[]
     costs?: {
         fee_drag?: number | null
         tax_drag?: number | null
         borrow_drag?: number | null
         margin_interest_drag?: number | null
+        gross_return?: number | null
+        net_return?: number | null
     }
     config_snapshot?: any
     requested_start_date?: string
@@ -124,6 +252,7 @@ interface RunMetricOut {
     tax_drag?: number | null
     borrow_drag?: number | null
     margin_interest_drag?: number | null
+    explanation?: string | null
 }
 
 interface RunDailyEquityOut {
@@ -180,12 +309,37 @@ export interface RunTaxesOut {
     events: RunTaxEventOut[]
 }
 
+/** Numeric metric columns on a compare row -- the keys that are safe to index
+ *  dynamically and that also appear in `delta_vs_base`. */
+export type CompareMetricKey =
+    | "cagr"
+    | "volatility"
+    | "sharpe"
+    | "sortino"
+    | "max_drawdown"
+    | "turnover"
+    | "gross_return"
+    | "net_return"
+    | "fee_drag"
+    | "tax_drag"
+    | "borrow_drag"
+    | "margin_interest_drag"
+
 export interface RunCompareMetricRowOut {
     run_id: string
+    name?: string | null
+    strategy_type?: string | null
+    tax_regime?: string | null
+    base_currency?: string | null
+    start_date?: string | null
+    end_date?: string | null
+    delta_vs_base?: Partial<Record<CompareMetricKey, number | null>> | null
     cagr?: number | null
     volatility?: number | null
     sharpe?: number | null
+    sortino?: number | null
     max_drawdown?: number | null
+    turnover?: number | null
     gross_return?: number | null
     net_return?: number | null
     fee_drag?: number | null
@@ -321,11 +475,16 @@ export async function getRun(runId: string): Promise<RunData | null> {
         const runRes = await runApiFetch(`${API_BASE_URL}/runs/${runId}`, { cache: "no-store" })
 
         if (!runRes.ok) {
-            console.error(`Failed to fetch run ${runId}: ${runRes.status} ${runRes.statusText}`)
+            devLog(`[API] Failed to fetch run ${runId}: ${runRes.status} ${runRes.statusText}`)
             return null
         }
 
-        const run: BacktestOut = await runRes.json()
+        const parsed = BacktestOutSchema.safeParse(await runRes.json())
+        if (!parsed.success) {
+            devLog("[API] getRun: unexpected response shape", parsed.error.format())
+            return null
+        }
+        const run: BacktestOut = parsed.data
 
         const title = run.name?.trim() || `Run ${run.run_id.slice(0, 8)}`
         const dateSource = run.finished_at || run.started_at || run.created_at
@@ -361,7 +520,7 @@ export async function getRun(runId: string): Promise<RunData | null> {
             effective_end_date: undefined,
         }
     } catch (error) {
-        console.error("Error fetching run:", error)
+        devLog("[API] Error fetching run:", error)
         return null
     }
 }
@@ -372,7 +531,7 @@ export async function getRunStatus(runId: string): Promise<RunStatusOut | null> 
         if (!res.ok) return null
         return await res.json()
     } catch (e) {
-        console.error("Error fetching run status:", e)
+        devLog("[API] Error fetching run status:", e)
         return null
     }
 }
@@ -380,14 +539,22 @@ export async function getRunStatus(runId: string): Promise<RunStatusOut | null> 
 export async function getRunMetrics(runId: string) {
     const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/metrics`, { cache: "no-store" });
     if (!res.ok) return null;
-    const data: RunMetricOut = await res.json();
+    const parsed = RunMetricOutSchema.safeParse(await res.json());
+    if (!parsed.success) {
+        devLog("[API] getRunMetrics: unexpected response shape", parsed.error.format())
+        return null
+    }
+    const data: RunMetricOut = parsed.data
     return {
         metrics: mapMetrics(data),
+        explanation: data.explanation,
         costs: {
             fee_drag: data.fee_drag,
             tax_drag: data.tax_drag,
             borrow_drag: data.borrow_drag,
             margin_interest_drag: data.margin_interest_drag,
+            gross_return: data.gross_return,
+            net_return: data.net_return,
         }
     };
 }
@@ -395,21 +562,51 @@ export async function getRunMetrics(runId: string) {
 export async function getRunEquity(runId: string) {
     const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/equity`, { cache: "no-store" });
     if (!res.ok) return null;
-    const data: RunDailyEquityOut[] = await res.json();
-    return mapEquity(data);
+    const parsed = z.array(RunDailyEquityOutSchema).safeParse(await res.json());
+    if (!parsed.success) {
+        devLog("[API] getRunEquity: unexpected response shape", parsed.error.format())
+        return null
+    }
+    return mapEquity(parsed.data);
+}
+
+export async function getRunBenchmark(runId: string): Promise<{ date: string; value: number }[] | null> {
+    const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/benchmark`, { cache: "no-store" });
+    if (!res.ok) return null;
+    try {
+        const json = await res.json();
+        if (Array.isArray(json)) {
+            return json.map((pt: any) => ({
+                date: pt.date || pt.time,
+                value: typeof pt.value === "number" ? pt.value : parseFloat(pt.value || pt.close || 0)
+            }));
+        }
+        return null;
+    } catch {
+        return null;
+    }
 }
 
 export function buildValidConfig(config: any) {
-    const instruments = config.universe.instruments.map((i: any) => ({
-        symbol: i.symbol,
-        asset_class: i.asset_class
-    }));
+    const instruments = config.universe.instruments.map((i: any) => {
+        const item: any = {
+            symbol: i.symbol,
+            asset_class: i.asset_class
+        };
+        if (i.weight !== undefined && i.weight !== null && i.weight !== "") {
+            item.weight = parseFloat(i.weight);
+        }
+        if (i.amount !== undefined && i.amount !== null && i.amount !== "") {
+            item.amount = parseFloat(i.amount);
+        }
+        return item;
+    });
 
     const backtestObj: any = {
         start_date: config.backtest.start_date,
         end_date: config.backtest.end_date,
         initial_cash: parseFloat(config.backtest.initial_cash),
-        cash_currency: config.backtest.cash_currency || "USD",
+        // cash_currency is not accepted by the backend schema
     };
 
     if (config.backtest.contributions?.enabled) {
@@ -424,13 +621,24 @@ export function buildValidConfig(config: any) {
 
     const cleanParams: any = {};
     for (const [key, value] of Object.entries(config.strategy.params || {})) {
-        if (value !== "" && value !== undefined && value !== null && !Number.isNaN(value)) {
-            cleanParams[key] = value;
+        if (value !== "" && value !== undefined && value !== null) {
+            if (typeof value === "object" && !Array.isArray(value)) {
+                const cleanSubObj: any = {};
+                for (const [subKey, subVal] of Object.entries(value || {})) {
+                    if (subVal !== "" && subVal !== undefined && subVal !== null) {
+                        cleanSubObj[subKey] = typeof subVal === "string" ? parseFloat(subVal) : subVal;
+                    }
+                }
+                cleanParams[key] = cleanSubObj;
+            } else if (!Number.isNaN(value)) {
+                cleanParams[key] = value;
+            }
         }
     }
 
     return {
         version: 1,
+        benchmark: config.benchmark?.trim() || null,
         strategy: config.strategy.type,
         strategy_params: cleanParams,
         base_currency: config.universe.base_currency,
@@ -461,7 +669,14 @@ export function buildValidConfig(config: any) {
             calendars: config.universe.calendars
         },
         backtest: backtestObj,
-        financing: config.financing,
+        financing: config.financing ? {
+            ...config.financing,
+            shorting: config.financing.shorting ? {
+                enabled: config.financing.shorting.enabled,
+                borrow_fee_daily_bps: config.financing.shorting.borrow_fee_daily_bps,
+                // locate_required is not accepted by the backend schema
+            } : undefined,
+        } : undefined,
         risk: config.risk,
         tax: config.tax,
         data_policy: {
@@ -554,12 +769,12 @@ export async function getRunPositions(runId: string, date?: string, limit?: numb
         }
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch positions: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch positions: ${res.status} ${res.statusText}`)
             return []
         }
         return await res.json()
     } catch (e) {
-        console.error("Error fetching positions:", e)
+        devLog("[API] Error fetching positions:", e)
         return []
     }
 }
@@ -568,12 +783,12 @@ export async function getRunTaxes(runId: string): Promise<RunTaxesOut | null> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/backtests/${runId}/taxes`, { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch taxes: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch taxes: ${res.status} ${res.statusText}`)
             return null
         }
         return await res.json()
     } catch (e) {
-        console.error("Error fetching taxes:", e)
+        devLog("[API] Error fetching taxes:", e)
         return null
     }
 }
@@ -586,12 +801,12 @@ export async function compareRuns(baseRunId: string, runIds: string[]): Promise<
         }
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to compare runs: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to compare runs: ${res.status} ${res.statusText}`)
             return null
         }
         return await res.json()
     } catch (e) {
-        console.error("Error comparing runs:", e)
+        devLog("[API] Error comparing runs:", e)
         return null
     }
 }
@@ -605,14 +820,20 @@ export async function getRunFills(runId: string, start?: string, end?: string, l
         if (end) {
             url.searchParams.append("end", end)
         }
+        if (limit !== undefined && limit !== null) {
+            url.searchParams.append("limit", limit.toString())
+        }
+        if (offset !== undefined && offset !== null) {
+            url.searchParams.append("offset", offset.toString())
+        }
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch fills: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch fills: ${res.status} ${res.statusText}`)
             return []
         }
         return await res.json()
     } catch (e) {
-        console.error("Error fetching fills:", e)
+        devLog("[API] Error fetching fills:", e)
         return []
     }
 }
@@ -623,12 +844,12 @@ export async function getRunTopHoldings(runId: string, limit: number = 5): Promi
         url.searchParams.append("limit", limit.toString())
         const res = await runApiFetch(url.toString(), { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch top holdings: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch top holdings: ${res.status} ${res.statusText}`)
             return []
         }
         return await res.json()
     } catch (e) {
-        console.error("Error fetching top holdings:", e)
+        devLog("[API] Error fetching top holdings:", e)
         return []
     }
 }
@@ -642,30 +863,52 @@ export interface AssetOut {
 export async function searchAssets(query: string): Promise<AssetOut[]> {
     if (!query) return []
     try {
-        const url = new URL(`${API_BASE_URL}/assets`)
-        url.searchParams.append("q", query)
-        const res = await runApiFetch(url.toString())
+        const urlStr = buildApiUrl("/assets", { q: query })
+        const res = await runApiFetch(urlStr)
         if (!res.ok) {
-            console.error(`Failed to fetch assets: ${res.status}`)
+            devLog(`[API] Failed to fetch assets: ${res.status}`)
             return []
         }
         return await res.json()
     } catch (e) {
-        console.error("Error searching assets", e)
+        devLog("[API] Error searching assets", e)
         return []
     }
 }
 
-export async function getRuns(): Promise<Partial<RunData>[]> {
+export async function getRuns(): Promise<RunData[]> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/backtests`, { cache: "no-store" })
         if (!res.ok) {
-            console.error(`Failed to fetch runs: ${res.status} ${res.statusText}`)
+            devLog(`[API] Failed to fetch runs: ${res.status} ${res.statusText}`)
             return []
         }
-        return await res.json()
+        const raw = await res.json()
+        if (!Array.isArray(raw)) return []
+        return raw.map((item: any) => {
+            const id = item.run_id || item.id
+            const title = item.name?.trim() || item.title?.trim() || `Run ${id ? id.slice(0, 8) : "Untitled"}`
+            const dateSource = item.finished_at || item.started_at || item.created_at
+            const date = dateSource ? `Ran on ${formatDateLabel(dateSource)}` : item.date || ""
+            return {
+                id,
+                title,
+                name: item.name || title,
+                run_id: id,
+                date,
+                tags: [
+                    item.status,
+                    item.data_snapshot_id ? `Snapshot: ${item.data_snapshot_id}` : "",
+                    item.seed !== undefined ? `Seed: ${item.seed}` : "",
+                ].filter(Boolean),
+                metrics: mapMetrics(null),
+                status: item.status,
+                config_snapshot: item.config_snapshot,
+                created_at: item.created_at,
+            }
+        })
     } catch (e) {
-        console.error("Error fetching runs:", e)
+        devLog("[API] Error fetching runs:", e)
         return []
     }
 }
@@ -714,4 +957,421 @@ export async function getStrategy(id: string): Promise<StrategyOut | null> {
     } catch {
         return null;
     }
+}
+
+export interface BacktestPreflightCheck {
+    name: string
+    passed: boolean
+    message?: string
+    severity?: string
+}
+
+export interface BacktestPreflightOut {
+    ok: boolean
+    status: "green" | "yellow" | "red"
+    errors: string[]
+    warnings: string[]
+    checks?: BacktestPreflightCheck[]
+    meta?: Record<string, any>
+    strategy_capability?: Record<string, any>
+    estimated_trading_days?: number | null
+    estimated_symbols?: number
+    estimated_rebalance_count?: number | null
+    risk_flags?: Array<{
+        code: string
+        severity: "error" | "warning" | string
+        message: string
+        details: Record<string, any>
+    }>
+}
+
+export type PreflightResponse = BacktestPreflightOut
+
+export async function preflightBacktest(config: any): Promise<PreflightResponse> {
+    try {
+        const validConfig = buildValidConfig(config)
+        const payload = {
+            config_snapshot: validConfig,
+            data_snapshot_id: "default_snapshot_2026",
+            seed: 42
+        }
+        const res = await runApiFetch(`${API_BASE_URL}/backtests/preflight`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        })
+        if (!res.ok) {
+            return {
+                ok: false,
+                status: "red",
+                errors: [`Preflight request failed with status ${res.status}`],
+                warnings: [],
+                checks: []
+            }
+        }
+        const data = await res.json()
+        let status: "green" | "yellow" | "red" = "green"
+        if (!data.ok || (data.errors && data.errors.length > 0)) {
+            status = "red"
+        } else if (data.warnings && data.warnings.length > 0) {
+            status = "yellow"
+        }
+        return {
+            ok: data.ok ?? status !== "red",
+            status: data.status || status,
+            errors: data.errors || [],
+            warnings: data.warnings || [],
+            checks: data.checks || [],
+            meta: data.meta,
+            strategy_capability: data.strategy_capability || {},
+            estimated_trading_days: data.estimated_trading_days ?? null,
+            estimated_symbols: data.estimated_symbols ?? 0,
+            estimated_rebalance_count: data.estimated_rebalance_count ?? null,
+            risk_flags: data.risk_flags || []
+        }
+    } catch (e: any) {
+        return {
+            ok: false,
+            status: "red",
+            errors: [e.message || "Failed to contact preflight validation engine"],
+            warnings: [],
+            checks: []
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Additional Endpoints
+// ---------------------------------------------------------------------------
+
+/** Mirrors backend RunExplainOut. Keys of `drag_breakdown` and the values of
+ *  `dominant_drag` are fees | taxes | borrow | margin_interest -- NOT the *_drag
+ *  names used by RunMetric. Fields below `summary` arrive with the backend explain
+ *  upgrade and are optional until then. */
+export type DragKey = "fees" | "taxes" | "borrow" | "margin_interest"
+
+export interface RunExplainOut {
+    gross_return: number | null
+    net_return: number | null
+    total_drag: number | null
+    drag_breakdown: Partial<Record<DragKey, number>>
+    dominant_drag: DragKey | null
+    trade_count: number
+    turnover: number | null
+    tax_regime: string
+    summary: string
+    headline?: string | null
+    best_period?: { date_range?: string; return_pct?: number; description?: string } | null
+    worst_period?: { date_range?: string; return_pct?: number; description?: string } | null
+    largest_position?: { symbol?: string; weight_pct?: number } | null
+    largest_trade?: { symbol?: string; notional?: number } | null
+    largest_tax_event?: { symbol?: string; tax_due?: number } | null
+}
+
+export interface RunExposureBreakdown {
+    long_base: number
+    short_base: number
+    gross_base: number
+    net_base: number
+}
+
+export interface RunExposurePointOut {
+    date: string
+    long_base: number
+    short_base: number
+    gross_base: number
+    net_base: number
+    leverage: number | null
+    equity_native_by_currency: Record<string, number>
+    exposure_base_by_currency: Record<string, RunExposureBreakdown>
+    by_asset_class: Record<string, RunExposureBreakdown>
+    by_country: Record<string, RunExposureBreakdown>
+}
+
+export interface RunCostsSummaryOut {
+    commissions_native: Record<string, number>
+    slippage_native: Record<string, number>
+    fees_total_base: number
+    taxes_total_base: number
+    borrow_fees_base: number
+    margin_interest_base: number
+}
+
+export async function getRunExplain(runId: string): Promise<RunExplainOut | null> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/explain`, { cache: "no-store" })
+        if (!res.ok) return null
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching run explain:", e)
+        return null
+    }
+}
+
+export async function getRunExposure(runId: string): Promise<RunExposurePointOut[]> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/exposure`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json()
+        return Array.isArray(data) ? data : []
+    } catch (e) {
+        devLog("[API] Error fetching run exposure:", e)
+        return []
+    }
+}
+
+export async function getRunCostsSummary(runId: string): Promise<RunCostsSummaryOut | null> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/costs_summary`, { cache: "no-store" })
+        if (!res.ok) return null
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching run costs summary:", e)
+        return null
+    }
+}
+
+export async function getStrategySchemas(): Promise<any> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/strategy-schemas`, { cache: "no-store" })
+        if (!res.ok) return []
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching strategy schemas:", e)
+        return []
+    }
+}
+
+export async function getCapabilities(): Promise<any> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/capabilities`, { cache: "no-store" })
+        if (!res.ok) return null
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching capabilities:", e)
+        return null
+    }
+}
+
+export async function cloneRun(runId: string, overrides?: any): Promise<string> {
+    const res = await runApiFetch(`${API_BASE_URL}/backtests/${runId}/clone`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrides || {})
+    })
+    if (!res.ok) {
+        throw new Error(await extractErrorMessage(res, "Failed to clone run"))
+    }
+    const data = await res.json()
+    return data.run_id || data.id
+}
+
+
+export async function getDataCoverage(symbols?: string[]): Promise<any> {
+    try {
+        const urlStr = buildApiUrl("/data/coverage", { symbols: symbols?.length ? symbols.join(",") : undefined })
+        const res = await runApiFetch(urlStr, { cache: "no-store" })
+        if (!res.ok) return []
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching data coverage:", e)
+        return []
+    }
+}
+
+export async function getDataQuality(symbols?: string[]): Promise<any> {
+    try {
+        const urlStr = buildApiUrl("/data/quality", { symbols: symbols?.length ? symbols.join(",") : undefined })
+        const res = await runApiFetch(urlStr, { cache: "no-store" })
+        if (!res.ok) return []
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching data quality:", e)
+        return []
+    }
+}
+
+export interface PlaygroundPreset {
+    id: string
+    name: string
+    description: string
+    strategy_type: string
+    base_currency: string
+    symbols: string[]
+    asset_classes: string[]
+    data_snapshot_id: string
+    config_snapshot: any
+}
+
+export async function getPlaygroundPresets(): Promise<PlaygroundPreset[]> {
+    try {
+        const res = await runApiFetch(`${API_BASE_URL}/playground/presets`, { cache: "no-store" })
+        if (!res.ok) return []
+        return await res.json()
+    } catch (e) {
+        devLog("[API] Error fetching playground presets:", e)
+        return []
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Market API (folded from lib/market.ts)
+// ---------------------------------------------------------------------------
+
+export interface MarketBarOut {
+    date: string
+    symbol: string
+    currency: string
+    exchange: string
+    open?: number | null
+    high?: number | null
+    low?: number | null
+    close?: number | null
+    volume?: number | null
+}
+
+export interface MarketCoverageOut {
+    symbol: string
+    first_date: string
+    last_date: string
+    rows: number
+    missing_ratio?: number | null
+}
+
+export interface MarketSnapshotOut {
+    symbol: string
+    last_date: string
+    last_close: number
+    return_1w?: number | null
+    return_1m?: number | null
+    return_3m?: number | null
+    return_1y?: number | null
+    recent_vol_20d?: number | null
+    median_vol_1y?: number | null
+    meta?: any
+}
+
+const marketCache = new Map<string, { timestamp: number; data: any }>()
+const marketPendingRequests = new Map<string, Promise<any>>()
+const CACHE_TTL_MS = 60000
+
+function getMarketCached<T>(key: string): T | null {
+    const entry = marketCache.get(key)
+    if (entry && Date.now() - entry.timestamp < CACHE_TTL_MS) {
+        return entry.data as T
+    }
+    return null
+}
+
+function setMarketCached(key: string, data: any) {
+    marketCache.set(key, { timestamp: Date.now(), data })
+}
+
+async function deduplicatedMarketFetch<T>(url: URL, cacheKey: string): Promise<T> {
+    const cached = getMarketCached<T>(cacheKey)
+    if (cached) return cached
+
+    if (marketPendingRequests.has(cacheKey)) {
+        return marketPendingRequests.get(cacheKey) as Promise<T>
+    }
+
+    const promise = (async () => {
+        try {
+            const res = await runApiFetch(url.toString())
+            if (!res.ok) {
+                devLog(`[Market API] Failed to fetch ${url.pathname}: ${res.status} ${res.statusText}`)
+                throw new Error(`${res.status} ${res.statusText}`)
+            }
+            const data = await res.json()
+            setMarketCached(cacheKey, data)
+            return data
+        } finally {
+            marketPendingRequests.delete(cacheKey)
+        }
+    })()
+
+    marketPendingRequests.set(cacheKey, promise)
+    return promise
+}
+
+export async function getMarketBars(
+    symbols: string[],
+    startDate?: string,
+    endDate?: string,
+    fields: string = "close",
+    calendar: string = "GLOBAL",
+    missingBar: string = "RAW",
+    interval: string = "1d",
+    maxPoints?: number
+): Promise<MarketBarOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/market/bars`)
+        url.searchParams.append("symbols", symbols.join(","))
+        if (startDate) url.searchParams.append("start_date", startDate)
+        if (endDate) url.searchParams.append("end_date", endDate)
+        if (fields) url.searchParams.append("fields", fields)
+        if (calendar) url.searchParams.append("calendar", calendar)
+        if (missingBar) url.searchParams.append("missing_bar", missingBar)
+        if (interval) url.searchParams.append("interval", interval)
+        if (maxPoints) url.searchParams.append("max_points", String(maxPoints))
+
+        const cacheKey = `bars_${url.toString()}`
+        return await deduplicatedMarketFetch<MarketBarOut[]>(url, cacheKey)
+    } catch (error) {
+        devLog("[Market API] Error fetching market bars:", error)
+        return []
+    }
+}
+
+export async function getMarketCoverage(
+    symbols: string[],
+    startDate?: string,
+    endDate?: string,
+    calendar: string = "GLOBAL"
+): Promise<MarketCoverageOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/market/coverage`)
+        url.searchParams.append("symbols", symbols.join(","))
+        if (startDate) url.searchParams.append("start_date", startDate)
+        if (endDate) url.searchParams.append("end_date", endDate)
+        if (calendar) url.searchParams.append("calendar", calendar)
+
+        const cacheKey = `coverage_${url.toString()}`
+        return await deduplicatedMarketFetch<MarketCoverageOut[]>(url, cacheKey)
+    } catch (error) {
+        devLog("[Market API] Error fetching market coverage:", error)
+        return []
+    }
+}
+
+export async function getMarketSnapshot(
+    symbols: string[],
+    endDate?: string
+): Promise<MarketSnapshotOut[]> {
+    try {
+        const url = new URL(`${API_BASE_URL}/market/snapshot`)
+        url.searchParams.append("symbols", symbols.join(","))
+        if (endDate) url.searchParams.append("end_date", endDate)
+
+        const cacheKey = `snapshot_${url.toString()}`
+        return await deduplicatedMarketFetch<MarketSnapshotOut[]>(url, cacheKey)
+    } catch (error) {
+        devLog("[Market API] Error fetching market snapshot:", error)
+        return []
+    }
+}
+
+export async function createRunScenario(runId: string, overrides: any): Promise<any> {
+    const res = await runApiFetch(`${API_BASE_URL}/runs/${runId}/scenario`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrides)
+    });
+    if (!res.ok) {
+        const err = await extractErrorMessage(res, "Failed to create scenario");
+        throw new Error(err);
+    }
+    return await res.json();
 }

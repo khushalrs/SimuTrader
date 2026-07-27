@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import Request, Response
 from app.settings import get_settings
+from app.security.sanitize import sanitize_ascii_printable
 
 
 class ActorTier(str, Enum):
@@ -26,12 +27,7 @@ TRUSTED_PROXY_SECRET_HEADER = "X-Trusted-Proxy-Secret"
 
 
 def _clean_user_id(value: str | None) -> str | None:
-    if not value:
-        return None
-    cleaned = "".join(ch for ch in str(value) if ord(ch) >= 32 or ch in "\t\r\n").strip()
-    if not cleaned:
-        return None
-    return cleaned[:128]
+    return sanitize_ascii_printable(value, max_len=128)
 
 
 def _guest_signature(guest_id: str, secret: str) -> str:
@@ -65,10 +61,6 @@ def get_current_actor(request: Request, response: Response) -> ActorContext:
                 user_key = _clean_user_id(request.headers.get("X-User-Id"))
                 if user_key:
                     return ActorContext(tier=ActorTier.USER, actor_key=f"user:{user_key}")
-        else:
-            user_key = _clean_user_id(request.headers.get("X-User-Id"))
-            if user_key:
-                return ActorContext(tier=ActorTier.USER, actor_key=f"user:{user_key}")
 
     guest_id = _decode_guest_cookie_value(
         request.cookies.get(GUEST_COOKIE_NAME), settings.guest_cookie_signing_secret

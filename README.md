@@ -70,6 +70,7 @@ The current strategy builder and preset playground both submit runs through this
 - `GET /runs/{run_id}/equity`
 - `GET /runs/{run_id}/metrics`
 - `GET /runs/{run_id}/positions`
+- `GET /runs/{run_id}/exposure`
 - `GET /runs/{run_id}/fills`
 - `GET /runs/{run_id}/costs_summary`
 
@@ -82,6 +83,24 @@ Persisted run data includes:
 - positions
 - financing rows
 - tax events
+
+### Performance Metric Conventions
+
+- Return statistics use every observation in the combined global trading calendar, including
+  flat portfolio days when only another market is open.
+- Sortino downside deviation is `sqrt(sum(min(return, 0)^2) / observations)` and requires at
+  least two negative observations.
+- Historical 95% VaR uses linear interpolation on sorted daily returns; VaR and CVaR are
+  reported as positive loss magnitudes.
+- Turnover is two-way annualized turnover: absolute base-currency notional for buys and sells,
+  excluding FX sweep orders, divided by average equity and trading years (`observations / 252`).
+- Benchmark-relative metrics are calculated only when an explicit benchmark is present in the
+  run config. Foreign benchmark prices are converted to the run's base currency.
+
+Known limitation: using the combined global calendar adds zero-return observations on
+single-market holidays in mixed US/India runs. This can reduce measured volatility and bias
+Sharpe upward. Version 1 intentionally uses those dates consistently across Sharpe, Sortino,
+VaR, win-rate, and benchmark alignment rather than applying metric-specific filtering.
 
 ### Structured Error Contract
 
@@ -276,7 +295,7 @@ Smoke scenarios include:
 
 - valid single-currency strategy runs (BUY_AND_HOLD, FIXED_WEIGHT_REBALANCE, DCA, MOMENTUM, MEAN_REVERSION)
 - valid mixed-currency run (BUY_AND_HOLD with explicit amounts + `initial_cash_by_currency`)
-- expected mixed-currency failure (DCA, which is currently single-currency only)
+- valid mixed-currency DCA run with audited FX funding sweeps
 
 The runner asserts:
 

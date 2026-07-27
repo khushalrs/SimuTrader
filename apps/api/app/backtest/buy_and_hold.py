@@ -7,7 +7,7 @@ from typing import Any, Dict, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.backtest.engine import run_engine
+from app.backtest.engine import _parse_cash_buffer_pct, run_engine
 from app.models.backtests import BacktestRun
 
 
@@ -138,8 +138,9 @@ def _extract_config(
             for inst in parsed:
                 inst["weight"] = equal_weight
 
+        cash_buffer_pct = _parse_cash_buffer_pct(config.get("execution"))
         for inst in parsed:
-            inst["amount"] = inst["weight"] * initial_cash * 0.99
+            inst["amount"] = inst["weight"] * initial_cash * (1.0 - cash_buffer_pct)
 
     if has_amount:
         allocation_mode = "AMOUNT"

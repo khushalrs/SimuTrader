@@ -50,6 +50,19 @@ def test_user_header_not_allowed_in_prod_even_if_enabled(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_user_header_ignored_when_proxy_secret_missing(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.setenv("TRUSTED_USER_HEADER_ENABLED", "true")
+    monkeypatch.delenv("TRUSTED_USER_HEADER_PROXY_SECRET", raising=False)
+
+    req = _request_with_headers([(b"x-user-id", b"user-42")])
+    actor = get_current_actor(req, Response())
+    assert actor.tier == ActorTier.GUEST
+    assert actor.actor_key.startswith("guest:")
+    get_settings.cache_clear()
+
+
 def test_user_header_requires_proxy_secret_when_configured(monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setenv("ENV", "dev")
