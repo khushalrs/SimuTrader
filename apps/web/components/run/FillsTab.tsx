@@ -11,11 +11,13 @@ interface FillsTabProps {
     runId: string
     status?: string
     baseCurrency?: string
+    onSelectFill?: (fill: RunFillOut) => void
+    selectedFillId?: string
 }
 
 const LIMIT = 100
 
-export function FillsTab({ runId, status, baseCurrency = "USD" }: FillsTabProps) {
+export function FillsTab({ runId, status, baseCurrency = "USD", onSelectFill, selectedFillId }: FillsTabProps) {
     const isSucceeded = status === "SUCCEEDED"
 
     const getKey = (pageIndex: number, previousPageData: RunFillOut[] | null) => {
@@ -46,11 +48,11 @@ export function FillsTab({ runId, status, baseCurrency = "USD" }: FillsTabProps)
             <CardHeader>
                 <CardTitle>Trade Fills</CardTitle>
                 <CardDescription>
-                    History of all execution events for this simulation.
+                    History of all execution events for this simulation. Click any row to inspect decision trace.
                 </CardDescription>
             </CardHeader>
             <CardContent>
-                <div className="rounded-md border">
+                <div className="rounded-md border overflow-x-auto">
                     <table className="w-full text-sm text-left">
                         <thead className="bg-muted text-muted-foreground border-b border-border">
                             <tr>
@@ -78,6 +80,9 @@ export function FillsTab({ runId, status, baseCurrency = "USD" }: FillsTabProps)
                                 </tr>
                             ) : (
                                 allFills.map((fill, index) => {
+                                    const fillId = fill.id || `${fill.symbol}-${fill.date}-${index}`
+                                    const isSelected = selectedFillId === fillId
+
                                     const formatFillDate = (dateStr: string) => {
                                         const d = new Date(dateStr)
                                         if (isNaN(d.getTime())) return dateStr
@@ -95,36 +100,41 @@ export function FillsTab({ runId, status, baseCurrency = "USD" }: FillsTabProps)
                                         const seconds = String(d.getUTCSeconds()).padStart(2, '0')
                                         return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC`
                                     }
+
                                     return (
-                                        <tr key={`${fill.symbol}-${fill.date}-${index}`} className="border-b transition-colors hover:bg-muted/50">
+                                        <tr
+                                            key={fillId}
+                                            className={`border-b transition-colors cursor-pointer ${isSelected ? "bg-primary/15 font-semibold" : "hover:bg-muted/50"}`}
+                                            onClick={() => onSelectFill?.(fill)}
+                                        >
                                             <td className="px-4 py-3 whitespace-nowrap">{formatFillDate(fill.date)}</td>
-                                        <td className="px-4 py-3 font-medium">{fill.symbol}</td>
-                                        <td className="px-4 py-3 text-right font-medium">
-                                            <span className={`inline-flex rounded px-2 py-0.5 text-xs font-semibold ${fill.side === "BUY" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" :
-                                                fill.side === "FX" ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300" :
-                                                    "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
-                                                }`}>
-                                                {fill.side || "N/A"}
-                                            </span>
-                                        </td>
-                                        <td className="px-4 py-3 text-right">{fill.qty.toLocaleString()}</td>
-                                        <td className="px-4 py-3 text-right">
-                                            {formatCurrency(fill.price, baseCurrency)}
-                                        </td>
-                                        <td className="px-4 py-3 text-right">
-                                            {formatCurrency(fill.notional, baseCurrency)}
-                                        </td>
-                                        <td className="px-4 py-3 text-right text-muted-foreground">
-                                            {formatCurrency(fill.commission, baseCurrency)}
-                                        </td>
-                                    </tr>
+                                            <td className="px-4 py-3 font-medium">{fill.symbol}</td>
+                                            <td className="px-4 py-3 text-right font-medium">
+                                                <span className={`inline-flex rounded px-2 py-0.5 text-xs font-semibold ${fill.side === "BUY" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" :
+                                                    fill.side === "FX" ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300" :
+                                                        "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                                                    }`}>
+                                                    {fill.side || "N/A"}
+                                                </span>
+                                            </td>
+                                            <td className="px-4 py-3 text-right">{fill.qty.toLocaleString()}</td>
+                                            <td className="px-4 py-3 text-right">
+                                                {formatCurrency(fill.price, baseCurrency)}
+                                            </td>
+                                            <td className="px-4 py-3 text-right">
+                                                {formatCurrency(fill.notional, baseCurrency)}
+                                            </td>
+                                            <td className="px-4 py-3 text-right text-muted-foreground">
+                                                {formatCurrency(fill.commission, baseCurrency)}
+                                            </td>
+                                        </tr>
                                     )
                                 })
                             )}
                         </tbody>
                     </table>
                 </div>
-                
+
                 {data && !isEmpty && !isReachingEnd && (
                     <div className="mt-4 flex justify-center pb-4">
                         <Button
@@ -138,7 +148,7 @@ export function FillsTab({ runId, status, baseCurrency = "USD" }: FillsTabProps)
                                     Loading...
                                 </>
                             ) : (
-                                "Load More"
+                                "Load More Fills"
                             )}
                         </Button>
                     </div>
