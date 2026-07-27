@@ -10,8 +10,9 @@ from jinja2.exceptions import UndefinedError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.db import get_db
 from app.data.duckdb import get_duckdb_conn
+from app.db import get_db
+from app.models.assets import Asset
 from app.models.backtests import (
     BacktestRun,
     RunDailyEquity,
@@ -21,19 +22,10 @@ from app.models.backtests import (
     RunPosition,
     RunTaxEvent,
 )
-from app.models.assets import Asset
-from app.security import ActorContext, get_current_actor
-from app.services.capabilities import country_for_asset_class, currency_for_asset_class
-from app.services.redis_store import (
-    get_cached_run_status,
-    get_cached_top_holdings,
-    set_cached_run_status,
-    set_cached_run_summary,
-    set_cached_top_holdings,
-)
 from app.schemas.backtests import (
     BacktestOut,
     BacktestStatusOut,
+    RunCloneRequest,
     RunCostsSummaryOut,
     RunDailyEquityOut,
     RunExplainOut,
@@ -41,13 +33,31 @@ from app.schemas.backtests import (
     RunExposurePointOut,
     RunFillOut,
     RunMetricOut,
+    RunMonteCarloOut,
+    RunMonteCarloRequest,
     RunPositionOut,
-    RunCloneRequest,
     RunScenarioRequest,
     RunTaxEventOut,
 )
-from app.services.scenario import build_clone_config, build_scenario_config
+from app.security import ActorContext, get_current_actor
+from app.services.capabilities import country_for_asset_class, currency_for_asset_class
+from app.services.monte_carlo import (
+    daily_returns_from_equity,
+    monte_carlo_identity,
+    simulate_daily_returns,
+    simulate_trade_shuffle,
+)
 from app.services.preflight import _query_symbol_coverage
+from app.services.redis_store import (
+    get_cached_monte_carlo,
+    get_cached_run_status,
+    get_cached_top_holdings,
+    set_cached_monte_carlo,
+    set_cached_run_status,
+    set_cached_run_summary,
+    set_cached_top_holdings,
+)
+from app.services.scenario import build_clone_config, build_scenario_config
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 GLOBAL_PRESET_ACTOR_PREFIX = "preset:global:"
@@ -247,6 +257,137 @@ def _get_actor_run(run_id: UUID, actor: ActorContext, db: Session) -> BacktestRu
 
 def _is_terminal_status(status_value: str) -> bool:
     return status_value in {"SUCCEEDED", "FAILED", "ENQUEUE_FAILED"}
+
+
+@router.post(
+    "/{run_id}/montecarlo",
+    response_model=RunMonteCarloOut,
+)
+def run_monte_carlo(
+    run_id: UUID,
+    payload: RunMonteCarloRequest,
+    response: Response,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> RunMonteCarloOut:
+    run = _get_actor_run(run_id, actor, db)
+    if run.status != "SUCCEEDED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Monte Carlo requires a successfully finished run.",
+        )
+    effective_block_len = (
+        payload.block_len if payload.method == "block_bootstrap" else None
+    )
+    cache_identity, effective_seed = monte_carlo_identity(
+        run_seed=run.seed,
+        method=payload.method,
+        n=payload.n,
+        block_len=effective_block_len,
+    )
+    cached = get_cached_monte_carlo(str(run.run_id), cache_identity)
+    if cached is not None:
+        response.headers["X-Cache"] = "HIT"
+        return RunMonteCarloOut.model_validate(cached)
+
+    metric = db.query(RunMetric).filter(RunMetric.run_id == run.run_id).first()
+    initial_cash = float(
+        (metric.meta or {}).get("initial_cash_base")
+        if metric is not None
+        and (metric.meta or {}).get("initial_cash_base") is not None
+        else 0.0
+    )
+    warnings: list[str] = []
+    if payload.method == "trade_shuffle":
+        events = (
+            db.query(RunTaxEvent)
+            .filter(RunTaxEvent.run_id == run.run_id)
+            .order_by(RunTaxEvent.date.asc(), RunTaxEvent.tax_event_id.asc())
+            .all()
+        )
+        pnl_values = [
+            float(event.realized_pnl_base) - float(event.tax_due_base or 0.0)
+            for event in events
+        ]
+        try:
+            result = simulate_trade_shuffle(
+                pnl_values,
+                initial_cash=initial_cash,
+                n=payload.n,
+                seed=effective_seed,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        source = "run_tax_events.realized_pnl_base_minus_tax"
+        frequency = "trade_event"
+        horizon = len(pnl_values)
+        warnings.extend(
+            [
+                "Permuting fixed trade PnL preserves terminal PnL, so terminal-return "
+                "dispersion is expected to be zero.",
+                "Trade-shuffle excludes unrealized ending PnL and cannot allocate fill "
+                "commissions exactly to FIFO tax events.",
+            ]
+        )
+    else:
+        equity_rows = (
+            db.query(RunDailyEquity)
+            .filter(RunDailyEquity.run_id == run.run_id)
+            .order_by(RunDailyEquity.date.asc())
+            .all()
+        )
+        equity_values = [float(row.equity_base) for row in equity_rows]
+        if initial_cash <= 0.0 and equity_values:
+            initial_cash = equity_values[0]
+            warnings.append(
+                "Initial capital metadata was unavailable; the first equity observation "
+                "was used as the simulation base."
+            )
+        try:
+            returns = daily_returns_from_equity(equity_values, initial_cash)
+            result = simulate_daily_returns(
+                returns,
+                method=payload.method,
+                n=payload.n,
+                block_len=payload.block_len,
+                seed=effective_seed,
+                risk_free_rate_annual=float(
+                    (metric.meta or {}).get("risk_free_rate_annual") or 0.0
+                )
+                if metric is not None
+                else 0.0,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        source = "run_daily_equity.equity_base"
+        frequency = "daily"
+        horizon = int(returns.size)
+
+    output = RunMonteCarloOut(
+        run_id=run.run_id,
+        method=payload.method,
+        source=source,
+        frequency=frequency,
+        n=payload.n,
+        horizon=horizon,
+        block_len=effective_block_len,
+        seed=effective_seed,
+        warnings=warnings,
+        **result,
+    )
+    set_cached_monte_carlo(
+        str(run.run_id),
+        cache_identity,
+        output.model_dump(mode="json"),
+    )
+    response.headers["X-Cache"] = "MISS"
+    return output
 
 
 def _strategy_type(config: dict | None) -> str:

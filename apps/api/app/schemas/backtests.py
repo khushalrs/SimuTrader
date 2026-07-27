@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -357,6 +357,46 @@ class RunRollingMetaOut(BaseModel):
 class RunRollingOut(BaseModel):
     data: list[RunRollingPointOut] = Field(default_factory=list)
     meta: RunRollingMetaOut
+
+
+class RunMonteCarloRequest(BaseModel):
+    method: Literal["bootstrap", "block_bootstrap", "trade_shuffle"] = "bootstrap"
+    n: int = Field(default=5000, ge=100, le=50_000)
+    block_len: int = Field(default=5, ge=2, le=252)
+
+
+class RunMonteCarloDistributionOut(BaseModel):
+    p05: Optional[float] = None
+    p25: Optional[float] = None
+    p50: Optional[float] = None
+    p75: Optional[float] = None
+    p95: Optional[float] = None
+    mean: Optional[float] = None
+    std: Optional[float] = None
+    ci95: list[float] = Field(default_factory=list)
+
+
+class RunMonteCarloPathOut(BaseModel):
+    path_id: int
+    values: list[float]
+
+
+class RunMonteCarloOut(BaseModel):
+    run_id: UUID
+    method: str
+    source: str
+    frequency: str
+    n: int
+    horizon: int
+    block_len: Optional[int] = None
+    seed: int
+    terminal_return: RunMonteCarloDistributionOut
+    max_drawdown: RunMonteCarloDistributionOut
+    sharpe: RunMonteCarloDistributionOut
+    probability_positive: float
+    drawdown_at_risk_95: Optional[float] = None
+    paths: list[RunMonteCarloPathOut] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class RunReturnAttributionRowOut(BaseModel):

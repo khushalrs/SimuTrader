@@ -6,11 +6,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
 
 from app.api.routes import runs as runs_routes
-from app.api.routes.backtests import get_backtest_trades, router as backtests_router
+from app.api.routes.backtests import get_backtest_trades
+from app.api.routes.backtests import router as backtests_router
 from app.api.routes.runs import (
     explain_run,
     get_run_costs_summary,
@@ -18,6 +19,7 @@ from app.api.routes.runs import (
     get_run_fills,
     get_run_metrics,
     get_run_positions,
+    run_monte_carlo,
 )
 from app.db import get_db
 from app.models.assets import Asset
@@ -30,8 +32,8 @@ from app.models.backtests import (
     RunPosition,
     RunTaxEvent,
 )
-from app.security import ActorContext, ActorTier
-from app.security import get_current_actor
+from app.schemas.backtests import RunMonteCarloRequest
+from app.security import ActorContext, ActorTier, get_current_actor
 
 
 @dataclass
@@ -122,6 +124,7 @@ class _FakeDB:
                         actor_key="guest:test",
                         status=self.run_status,
                         config_snapshot=self.run_config,
+                        seed=42,
                     )
                     if self.run_exists
                     else None
@@ -168,6 +171,48 @@ def test_get_run_positions_returns_empty_when_no_positions_exist():
     actor = ActorContext(tier=ActorTier.GUEST, actor_key="guest:test")
     result = get_run_positions(run_id=uuid4(), actor=actor, db=db)
     assert result == []
+
+
+def test_run_monte_carlo_uses_finished_run_equity_and_cache(
+    monkeypatch,
+) -> None:
+    start = date(2024, 1, 2)
+    db = _FakeDB(
+        metrics=SimpleNamespace(
+            meta={
+                "initial_cash_base": 100.0,
+                "risk_free_rate_annual": 0.0,
+            }
+        ),
+        equity_rows=[
+            SimpleNamespace(
+                date=start + timedelta(days=index),
+                equity_base=value,
+            )
+            for index, value in enumerate([101.0, 99.0, 103.0, 104.0])
+        ],
+    )
+    cached_payloads: list[dict] = []
+    monkeypatch.setattr(runs_routes, "get_cached_monte_carlo", lambda *_args: None)
+    monkeypatch.setattr(
+        runs_routes,
+        "set_cached_monte_carlo",
+        lambda _run_id, _identity, payload: cached_payloads.append(payload),
+    )
+
+    response = Response()
+    result = run_monte_carlo(
+        run_id=uuid4(),
+        payload=RunMonteCarloRequest(method="bootstrap", n=100),
+        response=response,
+        actor=ActorContext(tier=ActorTier.GUEST, actor_key="guest:test"),
+        db=db,
+    )
+
+    assert response.headers["X-Cache"] == "MISS"
+    assert result.horizon == 4
+    assert len(result.paths) == 30
+    assert cached_payloads[0]["seed"] == result.seed
 
 
 def test_get_run_positions_defaults_to_latest_date_and_computes_weight():

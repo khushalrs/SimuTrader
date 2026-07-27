@@ -66,6 +66,11 @@ def _top_holdings_key(actor_key: str, run_id: str, limit: int) -> str:
     return f"{settings.redis_cache_prefix}:top_holdings:{actor_key}:{run_id}:{limit}"
 
 
+def _monte_carlo_key(run_id: str, identity: str) -> str:
+    settings = get_settings()
+    return f"{settings.redis_cache_prefix}:monte_carlo:v1:{run_id}:{identity}"
+
+
 def _lock_key(run_id: str) -> str:
     settings = get_settings()
     return f"{settings.redis_lock_prefix}:run_exec:{run_id}"
@@ -176,6 +181,20 @@ def set_cached_top_holdings(
         holdings,
         settings.top_holdings_cache_ttl_seconds,
     )
+
+
+def get_cached_monte_carlo(run_id: str, identity: str) -> dict[str, Any] | None:
+    value = _safe_get_json(_monte_carlo_key(run_id, identity))
+    return value if isinstance(value, dict) else None
+
+
+def set_cached_monte_carlo(
+    run_id: str,
+    identity: str,
+    payload: dict[str, Any],
+    ttl_seconds: int = 3600,
+) -> None:
+    _safe_set_json(_monte_carlo_key(run_id, identity), payload, ttl_seconds)
 
 
 def invalidate_run_cache(actor_key: str | None, run_id: str, limits: list[int] | None = None) -> None:

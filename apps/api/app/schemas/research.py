@@ -37,12 +37,6 @@ class ResearchGridDimensionIn(BaseModel):
     values: list[Any] | ResearchRangeSpec
 
 
-class ResearchSweepSpecIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    grid: list[ResearchGridDimensionIn] = Field(min_length=1, max_length=20)
-
-
 ResearchOptimizeMetric = Literal[
     "sharpe",
     "cagr",
@@ -54,6 +48,13 @@ ResearchOptimizeMetric = Literal[
     "tracking_error",
     "information_ratio",
 ]
+
+
+class ResearchSweepSpecIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grid: list[ResearchGridDimensionIn] = Field(min_length=1, max_length=20)
+    optimize_metric: ResearchOptimizeMetric = "sharpe"
 
 
 class ResearchIsOosSpecIn(BaseModel):
@@ -183,3 +184,15 @@ class ResearchWalkForwardEquityOut(BaseModel):
     is_return: float | None = None
     oos_return: float | None = None
     walk_forward_efficiency: float | None = None
+
+
+class ResearchRobustnessOut(BaseModel):
+    job_id: UUID
+    summary_version: int
+    optimize_metric: str
+    sensitivity: dict[str, Any] | None = None
+    is_oos_degradation: dict[str, Any] | None = None
+    walk_forward_efficiency: float | None = None
+    monte_carlo_tail: dict[str, Any] | None = None
+    deflated_sharpe: dict[str, Any]
+    computed_at: datetime

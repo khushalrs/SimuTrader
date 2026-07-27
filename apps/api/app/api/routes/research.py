@@ -19,6 +19,7 @@ from app.schemas.research import (
     ResearchJobOut,
     ResearchJobProgressOut,
     ResearchResultMetricOut,
+    ResearchRobustnessOut,
     ResearchSweepResultOut,
     ResearchSweepSpecIn,
     ResearchWalkForwardEquityOut,
@@ -32,9 +33,14 @@ from app.services.research import (
     generate_walk_forward_segments,
     split_evaluation_windows,
 )
+from app.services.research_analytics import build_stitched_walk_forward_equity
 from app.services.research_jobs import (
     TERMINAL_JOB_STATUSES,
     aggregate_research_job,
+)
+from app.services.robustness import (
+    ROBUSTNESS_SUMMARY_VERSION,
+    compute_research_robustness,
 )
 from app.settings import get_settings
 
@@ -530,82 +536,13 @@ def get_walk_forward_equity(
             status_code=status.HTTP_409_CONFLICT,
             detail="Stitched equity is only available for WALK_FORWARD jobs.",
         )
-    tests = (
-        db.query(ResearchJobRun, BacktestRun, RunMetric)
-        .join(BacktestRun, BacktestRun.run_id == ResearchJobRun.run_id)
-        .outerjoin(RunMetric, RunMetric.run_id == BacktestRun.run_id)
-        .filter(
-            ResearchJobRun.job_id == job.job_id,
-            ResearchJobRun.role == "TEST",
-            BacktestRun.status == "SUCCEEDED",
-        )
-        .order_by(ResearchJobRun.segment_index.asc())
-        .all()
-    )
-    stitched_values: list[float] = []
-    stitched_dates: list = []
-    starting_capital: float | None = None
-    current_capital: float | None = None
-    for plan, run, metrics in tests:
-        equity = (
-            db.query(RunDailyEquity)
-            .filter(RunDailyEquity.run_id == run.run_id)
-            .order_by(RunDailyEquity.date.asc())
-            .all()
-        )
-        if not equity:
-            continue
-        segment_initial = float(
-            (metrics.meta or {}).get("initial_cash_base")
-            if metrics is not None
-            and (metrics.meta or {}).get("initial_cash_base") is not None
-            else equity[0].equity_base
-        )
-        if abs(segment_initial) <= 1e-12:
-            continue
-        if starting_capital is None:
-            starting_capital = segment_initial
-            current_capital = starting_capital
-        segment_base = float(current_capital)
-        for point in equity:
-            stitched_dates.append(point.date)
-            stitched_values.append(
-                segment_base * float(point.equity_base) / segment_initial
-            )
-        current_capital = stitched_values[-1]
-
-    selected_train_metrics = [
-        metrics
-        for plan, _run, metrics in (
-            db.query(ResearchJobRun, BacktestRun, RunMetric)
-            .join(BacktestRun, BacktestRun.run_id == ResearchJobRun.run_id)
-            .outerjoin(RunMetric, RunMetric.run_id == BacktestRun.run_id)
-            .filter(
-                ResearchJobRun.job_id == job.job_id,
-                ResearchJobRun.role == "TRAIN",
-                ResearchJobRun.is_selected.is_(True),
-                BacktestRun.status == "SUCCEEDED",
-            )
-            .order_by(ResearchJobRun.segment_index.asc())
-            .all()
-        )
-        if metrics is not None and metrics.net_return is not None
-    ]
-    is_growth = 1.0
-    for metrics in selected_train_metrics:
-        is_growth *= 1.0 + float(metrics.net_return)
-    is_return = is_growth - 1.0 if selected_train_metrics else None
-    oos_return = (
-        stitched_values[-1] / float(starting_capital) - 1.0
-        if stitched_values and starting_capital
-        else None
-    )
+    stitched = build_stitched_walk_forward_equity(db, job)
     metric_out = None
-    if stitched_values and starting_capital is not None:
+    if stitched.values and stitched.starting_capital is not None:
         computed = _compute_metrics(
-            stitched_values,
-            [0.0] * len(stitched_values),
-            initial_cash=starting_capital,
+            stitched.values,
+            [0.0] * len(stitched.values),
+            initial_cash=stitched.starting_capital,
         )
         metric_out = ResearchResultMetricOut(
             cagr=computed["cagr"],
@@ -626,22 +563,51 @@ def get_walk_forward_equity(
                 equity_base=value,
                 **{
                     "return": (
-                        value / float(starting_capital) - 1.0
-                        if starting_capital
+                        value / float(stitched.starting_capital) - 1.0
+                        if stitched.starting_capital
                         else 0.0
                     )
                 },
             )
-            for day, value in zip(stitched_dates, stitched_values)
+            for day, value in zip(stitched.dates, stitched.values)
         ],
         metrics=metric_out,
-        is_return=is_return,
-        oos_return=oos_return,
-        walk_forward_efficiency=(
-            oos_return / is_return
-            if oos_return is not None
-            and is_return is not None
-            and abs(is_return) > 1e-12
-            else None
-        ),
+        is_return=stitched.is_return,
+        oos_return=stitched.oos_return,
+        walk_forward_efficiency=stitched.walk_forward_efficiency,
+    )
+
+
+@router.get(
+    "/jobs/{job_id}/robustness",
+    response_model=ResearchRobustnessOut,
+)
+def get_research_job_robustness(
+    job_id: UUID,
+    actor: ActorContext = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> ResearchRobustnessOut:
+    job = _get_actor_job(job_id, actor, db)
+    aggregate = aggregate_research_job(job, db)
+    if aggregate.status not in TERMINAL_JOB_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Robustness is available after the research job finishes.",
+        )
+    if (
+        job.robustness_summary is None
+        or job.robustness_computed_at is None
+        or job.robustness_summary.get("summary_version")
+        != ROBUSTNESS_SUMMARY_VERSION
+    ):
+        summary, computed_at = compute_research_robustness(db, job)
+        job.robustness_summary = summary
+        job.robustness_computed_at = computed_at
+        job.updated_at = computed_at
+        db.commit()
+        db.refresh(job)
+    return ResearchRobustnessOut(
+        job_id=job.job_id,
+        computed_at=job.robustness_computed_at,
+        **(job.robustness_summary or {}),
     )

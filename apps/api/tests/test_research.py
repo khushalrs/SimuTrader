@@ -530,6 +530,14 @@ def test_is_oos_winner_and_walk_forward_stitching(
     oos = next(row for row in split_results if row["role"] == "OOS")
     assert oos["params"] == {"commission.bps": 5}
     assert oos["degradation"]["sharpe_ratio"] == pytest.approx(1.0)
+    split_robustness = client.get(
+        f"/research/jobs/{split_job_id}/robustness"
+    )
+    assert split_robustness.status_code == 200, split_robustness.text
+    assert (
+        split_robustness.json()["is_oos_degradation"]["sharpe"]["ratio"]
+        == pytest.approx(1.0)
+    )
 
     walk = client.post(
         "/research/jobs",
@@ -588,3 +596,14 @@ def test_is_oos_winner_and_walk_forward_stitching(
     assert payload["oos_return"] == pytest.approx(0.4641)
     assert payload["is_return"] == pytest.approx(0.4641)
     assert payload["walk_forward_efficiency"] == pytest.approx(1.0)
+    robustness = client.get(f"/research/jobs/{walk_job_id}/robustness")
+    assert robustness.status_code == 200, robustness.text
+    robustness_payload = robustness.json()
+    assert robustness_payload["walk_forward_efficiency"] == pytest.approx(1.0)
+    assert robustness_payload["sensitivity"]["aggregate"]["segment_count"] == 4
+    assert robustness_payload["monte_carlo_tail"]["terminal_return_p05"] is not None
+    assert robustness_payload["deflated_sharpe"] == {
+        "value": None,
+        "status": "not_implemented",
+        "n_trials": 8,
+    }

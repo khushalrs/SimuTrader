@@ -42,6 +42,8 @@ class ResearchJob(Base):
     strategy_id = Column(UUID(as_uuid=True), ForeignKey("strategies.strategy_id"))
     error_code = Column(String)
     error_message_public = Column(Text)
+    robustness_summary = Column(JSONB)
+    robustness_computed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     started_at = Column(DateTime(timezone=True))
     updated_at = Column(
