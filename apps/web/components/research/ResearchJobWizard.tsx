@@ -33,12 +33,12 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
     const [gridDims, setGridDims] = useState<GridDimInput[]>([
         {
             id: "dim-1",
-            path: "universe.top_n",
+            path: "commission.bps",
             mode: "list",
-            listValues: "5, 10, 20",
-            minVal: "5",
-            maxVal: "20",
-            stepVal: "5"
+            listValues: "2, 5, 10",
+            minVal: "0",
+            maxVal: "10",
+            stepVal: "2"
         }
     ])
 
@@ -64,12 +64,12 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
             ...prev,
             {
                 id: `dim-${Date.now()}`,
-                path: "rebalance.frequency",
+                path: "slippage.bps",
                 mode: "list",
-                listValues: "DAILY, WEEKLY, MONTHLY",
-                minVal: "1",
+                listValues: "1, 3, 5",
+                minVal: "0",
                 maxVal: "10",
-                stepVal: "1"
+                stepVal: "2"
             }
         ])
     }
@@ -268,9 +268,12 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                                         <Input
                                             value={dim.path}
                                             onChange={e => updateDimension(dim.id, { path: e.target.value })}
-                                            placeholder="e.g. universe.top_n"
+                                            placeholder="e.g. commission.bps"
                                             className="h-8 text-xs font-mono mt-1"
                                         />
+                                        <p className="text-[10px] text-muted-foreground/70 mt-1 font-mono">
+                                            commission.bps · slippage.bps · strategy_params.top_k · strategy_params.lookback_days
+                                        </p>
                                     </div>
 
                                     {dim.mode === "list" ? (
