@@ -14,7 +14,18 @@ import {
     getConfigPaths,
     getRuns,
 } from "@/lib/api"
+import { FieldHelp } from "@/components/help/FieldHelp"
 import { FlaskConical, Layers, Plus, Trash2, ArrowRight, Loader2, CheckCircle2, ShieldAlert } from "lucide-react"
+
+export const VALID_SWEEP_PATHS = [
+    { path: "universe.top_n", label: "Top N Assets Selected", example: "5, 10, 20" },
+    { path: "strategy.lookback_days", label: "Lookback Window Days", example: "10, 21, 63, 126" },
+    { path: "strategy.weights.max_position_size", label: "Max Position Weight Cap", example: "0.1, 0.2, 0.5" },
+    { path: "execution.slippage_bps", label: "Slippage Friction (bps)", example: "1, 5, 10, 25" },
+    { path: "execution.commission_bps", label: "Commission Fee (bps)", example: "0, 2, 5" },
+    { path: "execution.borrow_rate_bps", label: "Short Borrow Rate (bps)", example: "10, 50, 100" },
+    { path: "rebalance.frequency_days", label: "Rebalance Period (days)", example: "1, 5, 21" }
+]
 
 interface GridDimInput {
     id: string
@@ -154,6 +165,7 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                             const num = Number(v)
                             return isNaN(num) ? v : num
                         })
+
                     return {
                         path: dim.path.trim(),
                         values: parsedValues
@@ -161,17 +173,22 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                 }
             })
 
-            const job = await createResearchJob({
-                type: "SWEEP",
+            const payload = {
+                type: jobType,
+                job_type: jobType,
                 base_run_id: selectedRunId,
-                spec: {
-                    grid: formattedGrid
-                }
-            })
+                grid: formattedGrid,
+                spec: { grid: formattedGrid }
+            }
 
-            onJobCreated(job.job_id)
+            const res = await createResearchJob(payload)
+            if (res && res.job_id) {
+                onJobCreated(res.job_id)
+            } else {
+                setErrorMsg("Failed to create research job. Unexpected response.")
+            }
         } catch (err: any) {
-            setErrorMsg(err.message || "Failed to launch research job.")
+            setErrorMsg(err.message || "Failed to create research job.")
         } finally {
             setIsSubmitting(false)
         }
@@ -179,34 +196,32 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
 
     return (
         <Card className="border border-border shadow-sm">
-            <CardHeader className="border-b border-border/40">
-                <div className="flex items-center gap-2">
-                    <div className="p-2 bg-primary/10 text-primary rounded-lg">
-                        <FlaskConical className="w-5 h-5" />
-                    </div>
-                    <div>
-                        <CardTitle className="text-base font-bold">Research Job Scaffolding Wizard</CardTitle>
-                        <CardDescription className="text-xs">Configure hyperparameter sweeps, cross-validation, or walk-forward windows.</CardDescription>
-                    </div>
-                </div>
+            <CardHeader className="pb-3 border-b border-border/40">
+                <CardTitle className="text-base font-bold flex items-center gap-2">
+                    <FlaskConical className="w-4 h-4 text-primary" /> Scaffold Research Optimization Job
+                </CardTitle>
+                <CardDescription className="text-xs">
+                    Define hyperparameter grid sweep dimensions, split validation windows, or walk-forward windows.
+                </CardDescription>
             </CardHeader>
 
-            <CardContent className="space-y-6 pt-6">
+            <CardContent className="pt-6 space-y-6">
                 {/* Step 1: Job Type */}
                 <div className="space-y-2">
-                    <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        1. Select Job Architecture Type
+                    <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center">
+                        1. Select Job Type <FieldHelp termKey="robustness" />
                     </Label>
+
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div
                             className={`p-3 rounded-lg border cursor-pointer transition-all ${jobType === "SWEEP" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border hover:bg-muted/30"}`}
                             onClick={() => setJobType("SWEEP")}
                         >
                             <div className="flex items-center justify-between">
-                                <span className="font-semibold text-xs text-foreground">Grid Parameter Sweep</span>
-                                <Badge variant={jobType === "SWEEP" ? "default" : "outline"} className="text-[10px]">Sweep</Badge>
+                                <span className="font-semibold text-xs text-foreground">Grid Sweep</span>
+                                <Badge variant={jobType === "SWEEP" ? "default" : "outline"} className="text-[10px]">Matrix</Badge>
                             </div>
-                            <p className="text-[11px] text-muted-foreground mt-1">Exhaustive Cartesian grid optimization across parameters.</p>
+                            <p className="text-[11px] text-muted-foreground mt-1">Multi-parameter grid evaluation for heatmap visualization.</p>
                         </div>
 
                         <div
@@ -215,9 +230,9 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                         >
                             <div className="flex items-center justify-between">
                                 <span className="font-semibold text-xs text-foreground">IS / OOS Split</span>
-                                <Badge variant={jobType === "IS_OOS" ? "default" : "outline"} className="text-[10px]">Split</Badge>
+                                <Badge variant={jobType === "IS_OOS" ? "default" : "outline"} className="text-[10px]">Validation</Badge>
                             </div>
-                            <p className="text-[11px] text-muted-foreground mt-1">In-sample optimization validated on out-of-sample window.</p>
+                            <p className="text-[11px] text-muted-foreground mt-1">In-sample training vs out-of-sample degradation testing.</p>
                         </div>
 
                         <div
@@ -276,8 +291,8 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                         {gridDims.map((dim, idx) => (
                             <div key={dim.id} className="p-3 bg-muted/20 border border-border/60 rounded-lg space-y-3">
                                 <div className="flex items-center justify-between gap-2">
-                                    <span className="text-xs font-bold text-foreground font-mono">
-                                        Dimension #{idx + 1}
+                                    <span className="text-xs font-bold text-foreground font-mono flex items-center">
+                                        Dimension #{idx + 1} <FieldHelp fieldKey={dim.path} />
                                     </span>
                                     <div className="flex items-center gap-2">
                                         <Select
@@ -312,52 +327,28 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
 
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     <div>
-                                        <Label className="text-[11px] text-muted-foreground">Parameter Path</Label>
+                                        <Label className="text-[11px] text-muted-foreground">Select Schema Parameter Path</Label>
                                         <Select
                                             value={dim.path}
-                                            disabled={isLoadingPaths || configPaths.length === 0}
-                                            onValueChange={path => {
-                                                const capability = configPaths.find(item => item.path === path)
-                                                const lowerBound = capability?.minimum
-                                                    ?? capability?.exclusive_minimum
-                                                    ?? 0
+                                            onValueChange={pathVal => {
+                                                const match = VALID_SWEEP_PATHS.find(p => p.path === pathVal)
                                                 updateDimension(dim.id, {
-                                                    path,
-                                                    mode: capability?.range_supported ? dim.mode : "list",
-                                                    listValues: capability?.enum?.length
-                                                        ? capability.enum.join(", ")
-                                                        : dim.listValues,
-                                                    minVal: capability?.range_supported
-                                                        ? String(lowerBound)
-                                                        : dim.minVal,
-                                                    maxVal: capability?.maximum !== undefined
-                                                        && capability.maximum !== null
-                                                        ? String(capability.maximum)
-                                                        : dim.maxVal,
+                                                    path: pathVal,
+                                                    listValues: match?.example || dim.listValues
                                                 })
                                             }}
                                         >
                                             <SelectTrigger className="h-8 text-xs font-mono mt-1">
-                                                <SelectValue placeholder={isLoadingPaths ? "Loading paths..." : "Choose a parameter"} />
+                                                <SelectValue />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {configPaths.map(capability => (
-                                                    <SelectItem
-                                                        key={`${capability.strategy || "global"}:${capability.path}`}
-                                                        value={capability.path}
-                                                        className="text-xs font-mono"
-                                                    >
-                                                        {capability.path}
-                                                        {capability.unit ? ` · ${capability.unit.replaceAll("_", " ")}` : ""}
+                                                {VALID_SWEEP_PATHS.map(p => (
+                                                    <SelectItem key={p.path} value={p.path} className="text-xs font-mono">
+                                                        {p.path} ({p.label})
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
                                         </Select>
-                                        {configPaths.find(item => item.path === dim.path)?.description && (
-                                            <p className="text-[10px] text-muted-foreground mt-1 leading-normal">
-                                                {configPaths.find(item => item.path === dim.path)?.description}
-                                            </p>
-                                        )}
                                     </div>
 
                                     {dim.mode === "list" ? (
@@ -405,26 +396,22 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                 </div>
 
                 {errorMsg && (
-                    <div className="p-3 rounded-lg border border-destructive/20 bg-destructive/10 text-destructive text-xs flex items-center gap-2">
+                    <div className="p-3 rounded-lg border border-destructive/30 bg-destructive/10 text-destructive text-xs flex items-center gap-2">
                         <ShieldAlert className="w-4 h-4 shrink-0" />
                         <span>{errorMsg}</span>
                     </div>
                 )}
             </CardContent>
 
-            <CardFooter className="border-t border-border/40 pt-4 flex justify-between">
-                <span className="text-xs text-muted-foreground">
-                    Job will dispatch worker child tasks in parallel.
-                </span>
+            <CardFooter className="pt-3 border-t border-border/40 flex justify-end">
                 <Button
-                    size="sm"
-                    className="gap-2 text-xs font-semibold"
-                    disabled={isSubmitting || !selectedRunId}
                     onClick={handleSubmit}
+                    disabled={isSubmitting || !selectedRunId}
+                    className="font-bold text-xs gap-1.5"
                 >
                     {isSubmitting ? (
                         <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Launching Job...
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Submitting Job...
                         </>
                     ) : (
                         <>

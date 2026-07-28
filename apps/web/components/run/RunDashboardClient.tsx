@@ -23,6 +23,7 @@ import { MonthlyReturnsTab } from "@/components/run/MonthlyReturnsTab"
 import { RollingMetricsTab } from "@/components/run/RollingMetricsTab"
 import { PortfolioReplayTab } from "@/components/run/PortfolioReplayTab"
 import { SignalPipelineTimeline } from "@/components/run/SignalPipelineTimeline"
+import { PageIntro } from "@/components/help/PageIntro"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AlertCircle, Loader2, Lightbulb, ArrowRight } from "lucide-react"
 import { RunData, RunFillOut, getRun, getRunMetrics, getRunEquity, getRunStatus, getRunExplain, getRunBenchmark } from "@/lib/api"
@@ -121,7 +122,8 @@ export function RunDashboardClient({ runId }: { runId: string }) {
     }
 
     return (
-        <div className="space-y-8 animate-in fade-in duration-500">
+        <div className="space-y-6 animate-in fade-in duration-500">
+            <PageIntro slug="run_detail" />
             {isPending && (
                 <div className="flex items-center gap-2 p-4 bg-primary/10 text-primary border border-primary/20 rounded-lg">
                     <Loader2 className="w-5 h-5 animate-spin" />

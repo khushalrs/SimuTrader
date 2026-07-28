@@ -1474,16 +1474,7 @@ export interface ResearchSweepResultOut {
     } | null
 }
 
-export async function createResearchJob(payload: {
-    type: "SWEEP"
-    base_run_id: string
-    spec: {
-        grid: Array<{
-            path: string
-            values: any[] | { min: number; max: number; step?: number; count?: number }
-        }>
-    }
-}): Promise<ResearchJobOut> {
+export async function createResearchJob(payload: any): Promise<ResearchJobOut> {
     const res = await runApiFetch(`${API_BASE_URL}/research/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
