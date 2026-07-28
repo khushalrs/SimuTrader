@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Button } from "@/components/ui/button"
 import { TrendingUp, Zap, ArrowRight, Layers, Activity, Loader2, Copy, Check } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { PageIntro } from "@/components/help/PageIntro"
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
@@ -148,7 +149,8 @@ export default function PlaygroundPage() {
     }
 
     return (
-        <main className="container py-12">
+        <main className="container py-12 space-y-6">
+            <PageIntro slug="playground" />
             <div className="mb-8">
                 <h1 className="text-3xl font-bold tracking-tight">Simulation Playground</h1>
                 <p className="text-muted-foreground mt-2">

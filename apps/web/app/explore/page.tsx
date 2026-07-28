@@ -14,11 +14,14 @@ const MarketSnapshot = dynamic(() => import("./MarketSnapshot").then(mod => mod.
 const AssetSearchSection = dynamic(() => import("./AssetSearchSection").then(mod => mod.AssetSearchSection), { ssr: false, loading: () => <TabSkeleton /> });
 const MultiSymbolLab = dynamic(() => import("./MultiSymbolLab").then(mod => mod.MultiSymbolLab), { ssr: false, loading: () => <TabSkeleton /> });
 
+import { PageIntro } from "@/components/help/PageIntro";
+
 export default function ExplorePage() {
     const [activeTab, setActiveTab] = useState("snapshot");
 
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">
+            <PageIntro slug="explore" />
             <div className="flex items-center justify-between space-y-2">
                 <h2 className="text-3xl font-bold tracking-tight">Market Explore</h2>
             </div>

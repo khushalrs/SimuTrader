@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
+import { FieldHelp } from "@/components/help/FieldHelp"
 import { Scale, Receipt, ShieldCheck, TrendingUp } from "lucide-react"
 
 export function RealismStep({ config, updateConfig, nextStep, prevStep }: any) {
@@ -130,7 +131,7 @@ export function RealismStep({ config, updateConfig, nextStep, prevStep }: any) {
                 {/* Fee Presets Cards */}
                 <div className="space-y-3">
                     <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-1 border-b">
-                        <Scale className="w-3.5 h-3.5 text-primary" /> Execution Fee Presets
+                        <Scale className="w-3.5 h-3.5 text-primary" /> Execution Fee Presets <FieldHelp termKey="friction_bps" />
                     </h3>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                         {/* Free Card */}

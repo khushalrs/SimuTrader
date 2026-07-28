@@ -18,6 +18,7 @@ import { ParameterHeatmap } from "@/components/research/ParameterHeatmap"
 import { ISOOSComparison } from "@/components/research/ISOOSComparison"
 import { MonteCarloView } from "@/components/research/MonteCarloView"
 import { RobustnessSummaryCard } from "@/components/research/RobustnessSummaryCard"
+import { PageIntro } from "@/components/help/PageIntro"
 import { FlaskConical, Plus, Activity, ArrowRight, RefreshCw, Grid, GitCompare, Dices, ShieldCheck } from "lucide-react"
 
 export default function ResearchPage() {
@@ -50,7 +51,8 @@ export default function ResearchPage() {
     const currentJobId = activeJob?.job_id || selectedJobId
 
     return (
-        <div className="container max-w-7xl py-8 space-y-8 animate-in fade-in duration-500">
+        <div className="container max-w-7xl py-8 space-y-6 animate-in fade-in duration-500">
+            <PageIntro slug="research" />
             {/* Page Header */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/40 pb-6">
                 <div className="space-y-1">
