@@ -162,6 +162,61 @@ def test_build_sweep_plans_is_deterministic_and_validated() -> None:
     assert first[1].config["commission"]["bps"] == 5
 
 
+def test_build_sweep_plans_rejects_unknown_or_wrong_strategy_path() -> None:
+    base_run_id = uuid4()
+    unknown = ResearchSweepSpecIn.model_validate(
+        {
+            "grid": [
+                {"path": "universe.top_n", "values": [5, 10]},
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="not a valid sweep dimension"):
+        build_sweep_plans(
+            base_config=_base_config(),
+            base_run_id=base_run_id,
+            spec=unknown,
+            data_snapshot_id="snapshot",
+            seed=42,
+            max_points=10,
+        )
+
+    momentum_only = ResearchSweepSpecIn.model_validate(
+        {
+            "grid": [
+                {"path": "strategy_params.lookback_days", "values": [21, 63]},
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="for strategy BUY_AND_HOLD"):
+        build_sweep_plans(
+            base_config=_base_config(),
+            base_run_id=base_run_id,
+            spec=momentum_only,
+            data_snapshot_id="snapshot",
+            seed=42,
+            max_points=10,
+        )
+
+
+def test_sweep_aliases_share_one_canonical_dimension() -> None:
+    spec = ResearchSweepSpecIn.model_validate(
+        {
+            "grid": [
+                {"path": "commission.bps", "values": [0]},
+                {"path": "execution.commission.bps", "values": [5]},
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError, match="canonical path 'commission.bps'"):
+        expand_sweep_grid(
+            spec,
+            max_points=10,
+            base_config=_base_config(),
+        )
+
+
 def test_split_and_walk_forward_windows_use_observed_dates() -> None:
     dates = [date(2024, 1, 2) + timedelta(days=index) for index in range(10)]
     is_window, oos_window = split_evaluation_windows(dates, 0.6)

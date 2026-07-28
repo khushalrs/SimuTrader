@@ -39,7 +39,7 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
         let active = true
         getStrategySchemas().then(res => {
             if (active) {
-                const schemaList = Array.isArray(res) ? res : Object.values(res || {})
+                const schemaList = Array.isArray(res) ? res : []
                 setSchemas(schemaList)
                 setIsLoadingSchemas(false)
             }
@@ -261,10 +261,12 @@ export function StrategyStep({ config, updateConfig, nextStep, prevStep }: any) 
     const renderParamFieldHelp = (key: string, paramSchema?: any) => {
         const helpText = paramSchema?.description || PARAM_HELP[key]
         const rangeText = paramSchema ? getParamRangeText(paramSchema) : ""
-        if (!helpText && !rangeText) return null
+        const unitText = paramSchema?.unit ? `Unit: ${String(paramSchema.unit).replaceAll("_", " ")}` : ""
+        if (!helpText && !rangeText && !unitText) return null
         return (
             <div className="space-y-0.5 mt-1">
                 {helpText && <p className="text-[10px] text-muted-foreground leading-normal">{helpText}</p>}
+                {unitText && <p className="text-[10px] text-muted-foreground/80">{unitText}</p>}
                 {rangeText && <p className="text-[10px] text-primary/80 font-medium font-mono">{rangeText}</p>}
             </div>
         )

@@ -54,18 +54,27 @@ STRATEGY_CAPABILITIES: dict[str, dict[str, Any]] = {
             "target_weights": {
                 "type": "object",
                 "value_type": "number",
-                "description": "The target percentage allocation weight for each asset (must sum to 100% or will be normalized)."
+                "unit": "fraction",
+                "description": (
+                    "Signed target allocation by symbol. Values are fractions of equity "
+                    "(0.25 means 25%); the engine normalizes by total absolute weight."
+                ),
             },
             "rebalance_frequency": {
                 "type": "string",
                 "enum": ["DAILY", "WEEKLY", "MONTHLY", "QUARTERLY"],
-                "description": "How often the strategy portfolio is checked and adjusted to match target allocations."
+                "unit": "cadence",
+                "description": "How often target allocations are evaluated and rebalanced.",
             },
             "drift_threshold": {
                 "type": "number",
                 "min": 0.0,
                 "max": 1.0,
-                "description": "The percentage allocation drift (e.g. 0.05 for 5%) that triggers an out-of-schedule rebalancing of assets."
+                "unit": "fraction",
+                "description": (
+                    "Minimum absolute allocation drift that triggers a rebalance "
+                    "(0.05 means five percentage points)."
+                ),
             },
         },
         "supports_mixed_currency": True,
@@ -91,18 +100,27 @@ STRATEGY_CAPABILITIES: dict[str, dict[str, Any]] = {
             "buy_frequency": {
                 "type": "string",
                 "enum": ["DAILY", "WEEKLY", "MONTHLY", "QUARTERLY"],
-                "description": "How often periodic buy allocations are executed."
+                "unit": "cadence",
+                "description": "How often available contribution cash is invested.",
             },
             "weighting": {
                 "type": "string",
                 "enum": ["EQUAL", "TARGET_WEIGHTS", "INSTRUMENT_WEIGHTS"],
-                "description": "The portfolio weighting methodology (e.g. equal weights, risk-parity, or value-weighted)."
+                "unit": "allocation_mode",
+                "description": (
+                    "How each contribution is allocated: equally, by strategy target "
+                    "weights, or by weights on the configured instruments."
+                ),
             },
             "target_weights": {
                 "type": "object",
                 "value_type": "number",
                 "value_exclusive_min": 0.0,
-                "description": "Custom target weights to use if weighting is set to TARGET_WEIGHTS."
+                "unit": "fraction",
+                "description": (
+                    "Positive allocation fraction by symbol when weighting is "
+                    "TARGET_WEIGHTS."
+                ),
             },
         },
         "supports_mixed_currency": True,
@@ -128,27 +146,36 @@ STRATEGY_CAPABILITIES: dict[str, dict[str, Any]] = {
             "lookback_days": {
                 "type": "integer",
                 "min": 1,
-                "description": "The number of historical trading days used to calculate asset performance (e.g. 252 days for 1 year)."
+                "unit": "trading_days",
+                "description": "Historical trading observations used to measure trailing return.",
             },
             "skip_days": {
                 "type": "integer",
                 "min": 0,
-                "description": "The number of recent trading days to ignore to avoid short-term market noise or mean reversion effects."
+                "unit": "trading_days",
+                "description": (
+                    "Most-recent trading observations excluded from the momentum window."
+                ),
             },
             "top_k": {
                 "type": "integer",
                 "min": 1,
-                "description": "The maximum number of top-performing assets to purchase during each rebalancing cycle."
+                "unit": "instruments",
+                "description": "Maximum number of highest-ranked instruments selected.",
             },
             "rebalance_frequency": {
                 "type": "string",
                 "enum": ["DAILY", "WEEKLY", "MONTHLY", "QUARTERLY"],
-                "description": "How often the strategy portfolio is checked and adjusted to match target allocations."
+                "unit": "cadence",
+                "description": "How often momentum ranks and target allocations are refreshed.",
             },
             "weighting": {
                 "type": "string",
                 "enum": ["EQUAL"],
-                "description": "The portfolio weighting methodology (e.g. equal weights)."
+                "unit": "allocation_mode",
+                "description": (
+                    "Allocation method for selected instruments; currently equal weight."
+                ),
             },
         },
         "supports_mixed_currency": True,
@@ -174,27 +201,36 @@ STRATEGY_CAPABILITIES: dict[str, dict[str, Any]] = {
             "lookback_days": {
                 "type": "integer",
                 "min": 1,
-                "description": "The number of historical trading days used to calculate rolling moving average indicators (e.g., 20 days for 1 month)."
+                "unit": "trading_days",
+                "description": (
+                    "Historical trading observations used for the rolling mean and deviation."
+                ),
             },
             "entry_threshold": {
                 "type": "number",
                 "exclusive_min": 0.0,
-                "description": "The statistical Z-Score threshold at which to trigger a buy order (e.g. 2.0 standard deviations)."
+                "unit": "z_score",
+                "description": (
+                    "Positive z-score magnitude below the rolling mean required to enter."
+                ),
             },
             "exit_threshold": {
                 "type": "number",
                 "min": 0.0,
-                "description": "The statistical Z-Score threshold at which to close an active position (must be less than the entry threshold, e.g. 0.0)."
+                "unit": "z_score",
+                "description": "Absolute z-score at or below which an open position exits.",
             },
             "hold_days": {
                 "type": "integer",
                 "min": 1,
-                "description": "The maximum number of calendar days to hold an active position before auto-exiting."
+                "unit": "evaluation_intervals",
+                "description": "Maximum strategy evaluation intervals held before forced exit.",
             },
             "rebalance_frequency": {
                 "type": "string",
                 "enum": ["DAILY", "WEEKLY"],
-                "description": "How often the strategy portfolio is checked and adjusted to match target allocations."
+                "unit": "cadence",
+                "description": "How often entry and exit conditions are evaluated.",
             },
         },
         "supports_mixed_currency": True,

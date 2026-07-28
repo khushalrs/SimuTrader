@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class StrategyParamTypeOut(BaseModel):
     type: Literal["integer", "number", "string", "object"]
     description: str | None = None
+    unit: str | None = None
     min: float | None = None
     max: float | None = None
     exclusive_min: float | None = None
@@ -29,3 +30,21 @@ class StrategySchemaOut(BaseModel):
     supports_shorting: bool
     supports_margin: bool
     supports_mixed_currency: bool
+
+
+class ConfigPathOut(BaseModel):
+    path: str
+    canonical_path: str
+    aliases: list[str] = Field(default_factory=list)
+    type: str
+    description: str
+    unit: str | None = None
+    strategy: str | None = None
+    sweepable: bool
+    range_supported: bool
+    minimum: float | None = None
+    maximum: float | None = None
+    exclusive_minimum: float | None = None
+    enum: list[Any] | None = None
+    default: Any | None = None
+    format: str | None = None
