@@ -9,23 +9,16 @@ import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
     ConfigPathCapability,
+    ResearchGridDimension,
+    ResearchJobCreate,
+    ResearchJobType,
     RunData,
     createResearchJob,
     getConfigPaths,
     getRuns,
 } from "@/lib/api"
 import { FieldHelp } from "@/components/help/FieldHelp"
-import { FlaskConical, Layers, Plus, Trash2, ArrowRight, Loader2, CheckCircle2, ShieldAlert } from "lucide-react"
-
-export const VALID_SWEEP_PATHS = [
-    { path: "universe.top_n", label: "Top N Assets Selected", example: "5, 10, 20" },
-    { path: "strategy.lookback_days", label: "Lookback Window Days", example: "10, 21, 63, 126" },
-    { path: "strategy.weights.max_position_size", label: "Max Position Weight Cap", example: "0.1, 0.2, 0.5" },
-    { path: "execution.slippage_bps", label: "Slippage Friction (bps)", example: "1, 5, 10, 25" },
-    { path: "execution.commission_bps", label: "Commission Fee (bps)", example: "0, 2, 5" },
-    { path: "execution.borrow_rate_bps", label: "Short Borrow Rate (bps)", example: "10, 50, 100" },
-    { path: "rebalance.frequency_days", label: "Rebalance Period (days)", example: "1, 5, 21" }
-]
+import { FlaskConical, Plus, Trash2, ArrowRight, Loader2, ShieldAlert, RefreshCw } from "lucide-react"
 
 interface GridDimInput {
     id: string
@@ -42,12 +35,18 @@ interface ResearchJobWizardProps {
 }
 
 export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
-    const [jobType, setJobType] = useState<"SWEEP" | "IS_OOS" | "WALK_FORWARD">("SWEEP")
+    const [jobType, setJobType] = useState<ResearchJobType>("SWEEP")
     const [selectedRunId, setSelectedRunId] = useState<string>("")
     const [runs, setRuns] = useState<RunData[]>([])
     const [isLoadingRuns, setIsLoadingRuns] = useState(true)
     const [configPaths, setConfigPaths] = useState<ConfigPathCapability[]>([])
     const [isLoadingPaths, setIsLoadingPaths] = useState(false)
+    const [pathsError, setPathsError] = useState<string | null>(null)
+    const [pathsRequest, setPathsRequest] = useState(0)
+    const [splitPct, setSplitPct] = useState("0.7")
+    const [trainLen, setTrainLen] = useState("252")
+    const [testLen, setTestLen] = useState("63")
+    const [walkForwardMode, setWalkForwardMode] = useState<"anchored" | "rolling">("rolling")
 
     const [gridDims, setGridDims] = useState<GridDimInput[]>([
         {
@@ -86,10 +85,16 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
             : rawStrategy?.type || "BUY_AND_HOLD"
         let active = true
         setIsLoadingPaths(true)
+        setPathsError(null)
         getConfigPaths(strategy, true)
             .then(paths => {
                 if (!active) return
                 const concretePaths = paths.filter(path => !path.path.endsWith(".*"))
+                if (concretePaths.length === 0) {
+                    setConfigPaths([])
+                    setPathsError("No sweepable parameters were returned for this run's strategy.")
+                    return
+                }
                 setConfigPaths(concretePaths)
                 setGridDims(previous => previous.map((dimension, index) => {
                     if (concretePaths.some(path => path.path === dimension.path)) {
@@ -100,24 +105,36 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                     return preferred ? { ...dimension, path: preferred.path } : dimension
                 }))
             })
-            .catch(() => {
-                if (active) setConfigPaths([])
+            .catch((error: unknown) => {
+                if (!active) return
+                setConfigPaths([])
+                setPathsError(error instanceof Error
+                    ? error.message
+                    : "Parameter capabilities are unavailable.")
             })
             .finally(() => {
                 if (active) setIsLoadingPaths(false)
             })
         return () => { active = false }
-    }, [runs, selectedRunId])
+    }, [runs, selectedRunId, pathsRequest])
+
+    const suggestedValues = (capability?: ConfigPathCapability) => {
+        if (!capability) return undefined
+        if (capability.enum?.length) return capability.enum.slice(0, 5).join(", ")
+        const values = [capability.minimum, capability.default, capability.maximum]
+            .filter((value, index, all) => value != null && all.indexOf(value) === index)
+        return values.length ? values.join(", ") : undefined
+    }
 
     const addDimension = () => {
         const usedPaths = new Set(gridDims.map(dimension => dimension.path))
         const nextPath = configPaths.find(path => !usedPaths.has(path.path))
-            || configPaths[0]
+        if (!nextPath) return
         setGridDims(prev => [
             ...prev,
             {
                 id: `dim-${Date.now()}`,
-                path: nextPath?.path || "slippage.bps",
+                path: nextPath.path,
                 mode: "list",
                 listValues: "0, 5, 10",
                 minVal: "0",
@@ -146,15 +163,24 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
         setIsSubmitting(true)
 
         try {
-            const formattedGrid = gridDims.map(dim => {
+            if (pathsError || configPaths.length === 0) {
+                throw new Error("Parameter capabilities must load before a research job can be created.")
+            }
+
+            const formattedGrid: ResearchGridDimension[] = gridDims.map(dim => {
+                if (!configPaths.some(path => path.path === dim.path)) {
+                    throw new Error(`"${dim.path}" is not a supported parameter for the selected run.`)
+                }
                 if (dim.mode === "range") {
+                    const min = Number(dim.minVal)
+                    const max = Number(dim.maxVal)
+                    const step = Number(dim.stepVal)
+                    if (![min, max, step].every(Number.isFinite) || max < min || step <= 0) {
+                        throw new Error(`Dimension "${dim.path}" requires numeric min/max values and a positive step.`)
+                    }
                     return {
                         path: dim.path.trim(),
-                        values: {
-                            min: parseFloat(dim.minVal) || 0,
-                            max: parseFloat(dim.maxVal) || 1,
-                            step: parseFloat(dim.stepVal) || 0.1
-                        }
+                        values: { min, max, step }
                     }
                 } else {
                     const parsedValues = dim.listValues
@@ -165,6 +191,9 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                             const num = Number(v)
                             return isNaN(num) ? v : num
                         })
+                    if (parsedValues.length === 0) {
+                        throw new Error(`Dimension "${dim.path}" needs at least one value.`)
+                    }
 
                     return {
                         path: dim.path.trim(),
@@ -173,12 +202,41 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                 }
             })
 
-            const payload = {
-                type: jobType,
-                job_type: jobType,
-                base_run_id: selectedRunId,
-                grid: formattedGrid,
-                spec: { grid: formattedGrid }
+            let payload: ResearchJobCreate
+            if (jobType === "IS_OOS") {
+                const parsedSplitPct = Number(splitPct)
+                if (!Number.isFinite(parsedSplitPct) || parsedSplitPct <= 0 || parsedSplitPct >= 1) {
+                    throw new Error("IS / OOS split must be greater than 0 and less than 1.")
+                }
+                payload = {
+                    type: "IS_OOS",
+                    base_run_id: selectedRunId,
+                    spec: { split_pct: parsedSplitPct, grid: formattedGrid }
+                }
+            } else if (jobType === "WALK_FORWARD") {
+                const parsedTrainLen = Number(trainLen)
+                const parsedTestLen = Number(testLen)
+                if (!Number.isInteger(parsedTrainLen) || parsedTrainLen <= 0
+                    || !Number.isInteger(parsedTestLen) || parsedTestLen <= 0) {
+                    throw new Error("Walk-forward train and test lengths must be positive whole numbers.")
+                }
+                payload = {
+                    type: "WALK_FORWARD",
+                    base_run_id: selectedRunId,
+                    spec: {
+                        train_len: parsedTrainLen,
+                        test_len: parsedTestLen,
+                        step: parsedTestLen,
+                        mode: walkForwardMode,
+                        grid: formattedGrid
+                    }
+                }
+            } else {
+                payload = {
+                    type: "SWEEP",
+                    base_run_id: selectedRunId,
+                    spec: { grid: formattedGrid }
+                }
             }
 
             const res = await createResearchJob(payload)
@@ -271,28 +329,134 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                     )}
                 </div>
 
+                {jobType === "IS_OOS" && (
+                    <div className="space-y-2">
+                        <Label htmlFor="research-split-pct" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                            3. Configure Validation Split
+                        </Label>
+                        <div className="max-w-xs">
+                            <Label htmlFor="research-split-pct" className="text-[11px] text-muted-foreground">
+                                In-sample fraction (0–1)
+                            </Label>
+                            <Input
+                                id="research-split-pct"
+                                type="number"
+                                min="0.01"
+                                max="0.99"
+                                step="0.01"
+                                value={splitPct}
+                                onChange={event => setSplitPct(event.target.value)}
+                                className="h-8 text-xs font-mono mt-1"
+                            />
+                            <p className="mt-1 text-[10px] text-muted-foreground">
+                                The remaining observations form the out-of-sample validation period.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+                {jobType === "WALK_FORWARD" && (
+                    <div className="space-y-3">
+                        <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                            3. Configure Walk-Forward Windows
+                        </Label>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                                <Label htmlFor="research-train-len" className="text-[11px] text-muted-foreground">Training observations</Label>
+                                <Input
+                                    id="research-train-len"
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    value={trainLen}
+                                    onChange={event => setTrainLen(event.target.value)}
+                                    className="h-8 text-xs font-mono mt-1"
+                                />
+                            </div>
+                            <div>
+                                <Label htmlFor="research-test-len" className="text-[11px] text-muted-foreground">Test observations</Label>
+                                <Input
+                                    id="research-test-len"
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    value={testLen}
+                                    onChange={event => setTestLen(event.target.value)}
+                                    className="h-8 text-xs font-mono mt-1"
+                                />
+                            </div>
+                            <div>
+                                <Label className="text-[11px] text-muted-foreground">Window mode</Label>
+                                <Select
+                                    value={walkForwardMode}
+                                    onValueChange={value => setWalkForwardMode(value as "anchored" | "rolling")}
+                                >
+                                    <SelectTrigger className="h-8 text-xs mt-1">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="rolling" className="text-xs">Rolling</SelectItem>
+                                        <SelectItem value="anchored" className="text-xs">Anchored</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground">
+                            Test windows are contiguous; the submitted step automatically matches the test length.
+                        </p>
+                    </div>
+                )}
+
                 {/* Step 3: Parameter Grid Definition */}
                 <div className="space-y-3">
                     <div className="flex items-center justify-between">
                         <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                            3. Define Parameter Dimensions Grid
+                            {jobType === "SWEEP" ? "3" : "4"}. Define Parameter Dimensions Grid
                         </Label>
                         <Button
                             variant="outline"
                             size="sm"
                             className="h-7 text-xs gap-1"
                             onClick={addDimension}
+                            disabled={isLoadingPaths || configPaths.length === 0 || gridDims.length >= configPaths.length}
                         >
                             <Plus className="w-3.5 h-3.5" /> Add Dimension
                         </Button>
                     </div>
+
+                    {isLoadingPaths && (
+                        <div className="h-16 w-full bg-muted/40 animate-pulse rounded-md" />
+                    )}
+
+                    {pathsError && !isLoadingPaths && (
+                        <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-xs flex items-center gap-2">
+                            <ShieldAlert className="w-4 h-4 shrink-0" />
+                            <span className="flex-1">
+                                Parameter choices could not be loaded: {pathsError} Research job creation is disabled to prevent invalid submissions.
+                            </span>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs gap-1"
+                                onClick={() => setPathsRequest(request => request + 1)}
+                            >
+                                <RefreshCw className="w-3 h-3" /> Retry
+                            </Button>
+                        </div>
+                    )}
 
                     <div className="space-y-3">
                         {gridDims.map((dim, idx) => (
                             <div key={dim.id} className="p-3 bg-muted/20 border border-border/60 rounded-lg space-y-3">
                                 <div className="flex items-center justify-between gap-2">
                                     <span className="text-xs font-bold text-foreground font-mono flex items-center">
-                                        Dimension #{idx + 1} <FieldHelp fieldKey={dim.path} />
+                                        Dimension #{idx + 1} <FieldHelp
+                                            fieldKey={dim.path}
+                                            title={configPaths.find(path => path.path === dim.path)?.path}
+                                            description={configPaths.find(path => path.path === dim.path)?.description}
+                                            example={suggestedValues(configPaths.find(path => path.path === dim.path))}
+                                        />
                                     </span>
                                     <div className="flex items-center gap-2">
                                         <Select
@@ -331,20 +495,27 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                                         <Select
                                             value={dim.path}
                                             onValueChange={pathVal => {
-                                                const match = VALID_SWEEP_PATHS.find(p => p.path === pathVal)
+                                                const capability = configPaths.find(path => path.path === pathVal)
                                                 updateDimension(dim.id, {
                                                     path: pathVal,
-                                                    listValues: match?.example || dim.listValues
+                                                    mode: dim.mode === "range" && !capability?.range_supported ? "list" : dim.mode,
+                                                    listValues: suggestedValues(capability) || dim.listValues
                                                 })
                                             }}
+                                            disabled={isLoadingPaths || configPaths.length === 0}
                                         >
                                             <SelectTrigger className="h-8 text-xs font-mono mt-1">
-                                                <SelectValue />
+                                                <SelectValue placeholder={isLoadingPaths ? "Loading parameters..." : "No parameters available"} />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {VALID_SWEEP_PATHS.map(p => (
-                                                    <SelectItem key={p.path} value={p.path} className="text-xs font-mono">
-                                                        {p.path} ({p.label})
+                                                {configPaths.map(capability => (
+                                                    <SelectItem
+                                                        key={capability.path}
+                                                        value={capability.path}
+                                                        className="text-xs font-mono"
+                                                        disabled={gridDims.some(other => other.id !== dim.id && other.path === capability.path)}
+                                                    >
+                                                        {capability.path}{capability.unit ? ` (${capability.unit})` : ""}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -406,7 +577,7 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
             <CardFooter className="pt-3 border-t border-border/40 flex justify-end">
                 <Button
                     onClick={handleSubmit}
-                    disabled={isSubmitting || !selectedRunId}
+                    disabled={isSubmitting || !selectedRunId || isLoadingPaths || configPaths.length === 0 || Boolean(pathsError)}
                     className="font-bold text-xs gap-1.5"
                 >
                     {isSubmitting ? (

@@ -63,7 +63,7 @@ export function Hero() {
     const strokeColor = activeAsset === "us" ? "#3b82f6" : activeAsset === "india" ? "#f97316" : "#10b981"
 
     return (
-        <section className="relative flex min-h-[80vh] flex-col items-center justify-center overflow-hidden border-b bg-background pt-16">
+        <section className="relative flex min-h-[80vh] flex-col items-center justify-center overflow-hidden border-b bg-background pt-16" data-tour="home-overview">
             <div className="absolute inset-0 z-0 opacity-10">
                 {/* Grid pattern background */}
                 <div className="h-full w-full bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]" />
@@ -170,4 +170,3 @@ export function Hero() {
         </section>
     )
 }
-

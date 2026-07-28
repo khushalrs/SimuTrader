@@ -220,24 +220,52 @@ export const GLOSSARY: GlossaryTerm[] = [
 
 export const FIELDS: FieldHelpContent[] = [
     {
-        fieldKey: "universe.top_n",
-        label: "Top N Assets",
-        description: "Number of top-ranked assets selected from the universe per rebalance.",
-        example: "5",
-        relatedPageSlug: "build_page"
+        fieldKey: "commission.bps",
+        label: "Commission (bps)",
+        description: "Variable commission charged in basis points of each trade's notional value.",
+        example: "0, 2, 5",
+        relatedPageSlug: "research"
     },
     {
-        fieldKey: "rebalance.frequency",
-        label: "Rebalance Frequency",
-        description: "How often position weights are recalculated and rebalanced (DAILY, WEEKLY, MONTHLY).",
-        example: "WEEKLY",
-        relatedPageSlug: "build_page"
-    },
-    {
-        fieldKey: "execution.slippage_bps",
+        fieldKey: "slippage.bps",
         label: "Slippage (bps)",
-        description: "Execution price penalty in basis points.",
-        example: "5 bps",
-        relatedPageSlug: "build_page"
+        description: "Execution price penalty in basis points used to model market impact.",
+        example: "1, 5, 10",
+        relatedPageSlug: "research"
+    },
+    {
+        fieldKey: "commission.min_fee_native",
+        label: "Minimum Commission",
+        description: "Minimum commission charged per fill in the instrument's native currency.",
+        example: "0, 1, 2.5",
+        relatedPageSlug: "research"
+    },
+    {
+        fieldKey: "execution.cash_buffer_pct",
+        label: "Cash Buffer",
+        description: "Fraction of portfolio value reserved as cash instead of being allocated.",
+        example: "0, 0.01, 0.05",
+        relatedPageSlug: "research"
+    },
+    {
+        fieldKey: "financing.margin.max_leverage",
+        label: "Maximum Leverage",
+        description: "Maximum gross exposure permitted relative to portfolio equity.",
+        example: "1, 1.5, 2",
+        relatedPageSlug: "research"
+    },
+    {
+        fieldKey: "financing.margin.daily_interest_bps",
+        label: "Daily Margin Interest",
+        description: "Daily interest charged on borrowed margin, measured in basis points.",
+        example: "0, 1, 2",
+        relatedPageSlug: "research"
+    },
+    {
+        fieldKey: "financing.shorting.borrow_fee_daily_bps",
+        label: "Daily Short Borrow Fee",
+        description: "Daily fee charged for borrowed securities in short positions, measured in basis points.",
+        example: "0, 1, 5",
+        relatedPageSlug: "research"
     }
 ]

@@ -1,11 +1,11 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useState, useEffect, useCallback } from "react"
+import { usePathname, useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Sparkles, ChevronRight, ChevronLeft, X, Play, FlaskConical, Layers, Activity } from "lucide-react"
+import { Sparkles, ChevronRight, ChevronLeft, X, FlaskConical, Layers, Activity } from "lucide-react"
 
 const TOUR_STEPS = [
     {
@@ -13,6 +13,7 @@ const TOUR_STEPS = [
         title: "Welcome to SimuTrader",
         description: "Portfolio-grade quantitative backtesting, market data diagnostics, and execution analytics engine.",
         route: "/",
+        target: '[data-tour="home-overview"]',
         icon: Sparkles,
         highlights: [
             "Explore strategy presets in the Playground",
@@ -25,6 +26,7 @@ const TOUR_STEPS = [
         title: "Strategy Builder & Friction Modeling",
         description: "Design custom factor signals, universe filters, risk engine clamps, and tax lot accounting rules.",
         route: "/build_page",
+        target: '[data-tour="strategy-builder"]',
         icon: Layers,
         highlights: [
             "Step-by-step 4-stage wizard",
@@ -37,6 +39,7 @@ const TOUR_STEPS = [
         title: "Run Inspector & Decision Chain",
         description: "Deep dive into backtest runs with performance curves, monthly heatmaps, and trade trace inspectors.",
         route: "/runs",
+        target: '[data-tour="run-history"]',
         icon: Activity,
         highlights: [
             "Click any fill row to open 'Why This Trade?'",
@@ -49,6 +52,7 @@ const TOUR_STEPS = [
         title: "Research Lab & Robustness Studio",
         description: "Execute 2D parameter grid sweeps, in-sample vs out-of-sample split tests, and Monte Carlo resampling.",
         route: "/research",
+        target: '[data-tour="research-lab"]',
         icon: FlaskConical,
         highlights: [
             "2D parameter heatmaps for plateau identification",
@@ -58,21 +62,63 @@ const TOUR_STEPS = [
     }
 ]
 
+interface SpotlightRect {
+    top: number
+    left: number
+    width: number
+    height: number
+}
+
 export function SpotlightTour() {
     const router = useRouter()
+    const pathname = usePathname()
     const [isOpen, setIsOpen] = useState(false)
     const [currentStepIndex, setCurrentStepIndex] = useState(0)
+    const [targetRect, setTargetRect] = useState<SpotlightRect | null>(null)
 
     useEffect(() => {
         try {
             const completed = localStorage.getItem("simutrader:tour:v1") === "completed"
             if (!completed) {
                 // Short delay before showing tour on first visit
-                const timer = setTimeout(() => setIsOpen(true), 1200)
+                const timer = setTimeout(() => {
+                    setIsOpen(true)
+                    router.push(TOUR_STEPS[0].route)
+                }, 1200)
                 return () => clearTimeout(timer)
             }
         } catch (e) {}
-    }, [])
+    }, [router])
+
+    const measureTarget = useCallback(() => {
+        if (!isOpen) return
+        const target = document.querySelector<HTMLElement>(TOUR_STEPS[currentStepIndex].target)
+        if (!target) {
+            setTargetRect(null)
+            return
+        }
+        const rect = target.getBoundingClientRect()
+        const padding = 8
+        setTargetRect({
+            top: Math.max(8, rect.top - padding),
+            left: Math.max(8, rect.left - padding),
+            width: Math.min(window.innerWidth - 16, rect.width + padding * 2),
+            height: Math.min(window.innerHeight - 16, rect.height + padding * 2),
+        })
+    }, [currentStepIndex, isOpen])
+
+    useEffect(() => {
+        if (!isOpen) return
+        setTargetRect(null)
+        const timers = [50, 200, 500].map(delay => window.setTimeout(measureTarget, delay))
+        window.addEventListener("resize", measureTarget)
+        window.addEventListener("scroll", measureTarget, true)
+        return () => {
+            timers.forEach(window.clearTimeout)
+            window.removeEventListener("resize", measureTarget)
+            window.removeEventListener("scroll", measureTarget, true)
+        }
+    }, [isOpen, pathname, currentStepIndex, measureTarget])
 
     if (!isOpen) return null
 
@@ -104,9 +150,29 @@ export function SpotlightTour() {
         }
     }
 
+    const cardTop = targetRect && targetRect.top + targetRect.height + 390 < window.innerHeight
+        ? targetRect.top + targetRect.height + 16
+        : 24
+
     return (
-        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-300 motion-reduce:animate-none">
-            <Card className="w-full max-w-lg border-2 border-primary/30 shadow-2xl bg-card relative overflow-hidden">
+        <div className="fixed inset-0 z-50 pointer-events-none animate-in fade-in duration-300 motion-reduce:animate-none">
+            {targetRect ? (
+                <div
+                    aria-hidden="true"
+                    className="fixed rounded-xl ring-4 ring-primary shadow-[0_0_0_9999px_hsl(var(--background)/0.82)] transition-all duration-300"
+                    style={targetRect}
+                />
+            ) : (
+                <div className="fixed inset-0 bg-background/85" aria-hidden="true" />
+            )}
+
+            <Card
+                role="dialog"
+                aria-modal="true"
+                aria-label="SimuTrader spotlight tour"
+                className="fixed left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-lg max-h-[calc(100vh-3rem)] border-2 border-primary/30 shadow-2xl bg-card overflow-y-auto pointer-events-auto"
+                style={{ top: cardTop }}
+            >
                 <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-primary via-emerald-500 to-indigo-500" />
                 
                 <CardHeader className="pt-6 pb-3">

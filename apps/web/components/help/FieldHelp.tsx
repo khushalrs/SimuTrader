@@ -38,6 +38,7 @@ export function FieldHelp({
     const displayDesc = customDesc || fieldHelp?.description || glossaryHelp?.definition || ""
     const displayExample = customExample || fieldHelp?.example || ""
     const guideUrl = glossaryHelp ? `/guide#${glossaryHelp.key}` : fieldHelp ? `/${fieldHelp.relatedPageSlug}` : "/guide"
+    const hasHelpContent = Boolean(customDesc || fieldHelp?.description || glossaryHelp?.definition)
 
     // Close popover on outside click or Escape key
     useEffect(() => {
@@ -59,6 +60,9 @@ export function FieldHelp({
             document.removeEventListener("keydown", handleKeyDown)
         }
     }, [isOpen])
+
+    // Unknown keys should not create a help affordance that opens an empty popover.
+    if (!hasHelpContent) return null
 
     return (
         <span className={`inline-flex items-center relative ${className}`} ref={popoverRef}>

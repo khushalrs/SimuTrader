@@ -54,7 +54,7 @@ export default function ResearchPage() {
         <div className="container max-w-7xl py-8 space-y-6 animate-in fade-in duration-500">
             <PageIntro slug="research" />
             {/* Page Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/40 pb-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/40 pb-6" data-tour="research-lab">
                 <div className="space-y-1">
                     <div className="flex items-center gap-2">
                         <div className="p-2 bg-primary/10 text-primary rounded-lg">

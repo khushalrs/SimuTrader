@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 
 class ResearchRangeSpec(BaseModel):
@@ -90,21 +90,48 @@ class ResearchWalkForwardSpecIn(BaseModel):
         return self
 
 
-class ResearchJobCreate(BaseModel):
-    type: Literal["SWEEP", "IS_OOS", "WALK_FORWARD"]
+class ResearchSweepJobCreate(BaseModel):
+    type: Literal["SWEEP"]
     base_run_id: UUID
-    spec: ResearchSweepSpecIn | ResearchIsOosSpecIn | ResearchWalkForwardSpecIn
+    spec: ResearchSweepSpecIn
 
-    @model_validator(mode="after")
-    def validate_spec_for_type(self):
-        expected = {
-            "SWEEP": ResearchSweepSpecIn,
-            "IS_OOS": ResearchIsOosSpecIn,
-            "WALK_FORWARD": ResearchWalkForwardSpecIn,
-        }[self.type]
-        if not isinstance(self.spec, expected):
-            raise ValueError(f"{self.type} requires a matching research spec")
-        return self
+
+class ResearchIsOosJobCreate(BaseModel):
+    type: Literal["IS_OOS"]
+    base_run_id: UUID
+    spec: ResearchIsOosSpecIn
+
+
+class ResearchWalkForwardJobCreate(BaseModel):
+    type: Literal["WALK_FORWARD"]
+    base_run_id: UUID
+    spec: ResearchWalkForwardSpecIn
+
+
+ResearchJobCreateVariant = Annotated[
+    ResearchSweepJobCreate
+    | ResearchIsOosJobCreate
+    | ResearchWalkForwardJobCreate,
+    Field(discriminator="type"),
+]
+
+
+class ResearchJobCreate(RootModel[ResearchJobCreateVariant]):
+    """Create payload selected by the top-level research job type."""
+
+    @property
+    def type(self) -> Literal["SWEEP", "IS_OOS", "WALK_FORWARD"]:
+        return self.root.type
+
+    @property
+    def base_run_id(self) -> UUID:
+        return self.root.base_run_id
+
+    @property
+    def spec(
+        self,
+    ) -> ResearchSweepSpecIn | ResearchIsOosSpecIn | ResearchWalkForwardSpecIn:
+        return self.root.spec
 
 
 class ResearchJobFailureOut(BaseModel):

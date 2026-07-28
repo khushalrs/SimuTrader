@@ -23,7 +23,7 @@ export default async function RunsPage() {
     return (
         <div className="container mx-auto py-10 max-w-6xl space-y-6 animate-in fade-in duration-500">
             <PageIntro slug="runs" />
-            <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4" data-tour="run-history">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight">Run History</h1>
                     <p className="text-muted-foreground mt-1 text-sm">

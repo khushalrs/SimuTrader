@@ -1181,12 +1181,15 @@ export async function getConfigPaths(
             sweepable: sweepable === undefined ? undefined : String(sweepable),
         })
         const res = await runApiFetch(url, { cache: "no-store" })
-        if (!res.ok) return []
+        if (!res.ok) {
+            const message = await extractErrorMessage(res, "Failed to load configurable parameter paths")
+            throw new Error(message)
+        }
         const payload = await res.json()
         return Array.isArray(payload) ? payload : []
     } catch (e) {
         devLog("[API] Error fetching config paths:", e)
-        return []
+        throw e
     }
 }
 
@@ -1437,13 +1440,63 @@ export interface ResearchJobProgressOut {
     }>
 }
 
+export type ResearchJobType = "SWEEP" | "IS_OOS" | "WALK_FORWARD"
+export type ResearchOptimizeMetric =
+    | "sharpe"
+    | "cagr"
+    | "sortino"
+    | "max_drawdown"
+    | "volatility"
+    | "net_return"
+    | "alpha"
+    | "tracking_error"
+    | "information_ratio"
+
+export interface ResearchRangeSpec {
+    min: number
+    max: number
+    step?: number
+    count?: number
+    linspace?: number
+}
+
+export interface ResearchGridDimension {
+    path: string
+    values: unknown[] | ResearchRangeSpec
+}
+
+export interface ResearchSweepSpec {
+    grid: ResearchGridDimension[]
+    optimize_metric?: ResearchOptimizeMetric
+}
+
+export interface ResearchIsOosSpec {
+    split_pct: number
+    grid?: ResearchGridDimension[]
+    optimize_metric?: ResearchOptimizeMetric
+}
+
+export interface ResearchWalkForwardSpec {
+    train_len: number
+    test_len: number
+    step?: number
+    mode?: "anchored" | "rolling"
+    grid: ResearchGridDimension[]
+    optimize_metric?: ResearchOptimizeMetric
+}
+
+export type ResearchJobCreate =
+    | { type: "SWEEP"; base_run_id: string; spec: ResearchSweepSpec }
+    | { type: "IS_OOS"; base_run_id: string; spec: ResearchIsOosSpec }
+    | { type: "WALK_FORWARD"; base_run_id: string; spec: ResearchWalkForwardSpec }
+
 export interface ResearchJobOut {
     job_id: string
-    type: string
+    type: ResearchJobType
     base_run_id: string
     status: string
     stage: string
-    spec: Record<string, any>
+    spec: ResearchSweepSpec | ResearchIsOosSpec | ResearchWalkForwardSpec
     child_run_ids: string[]
     progress: ResearchJobProgressOut
     error_code?: string | null
@@ -1474,7 +1527,7 @@ export interface ResearchSweepResultOut {
     } | null
 }
 
-export async function createResearchJob(payload: any): Promise<ResearchJobOut> {
+export async function createResearchJob(payload: ResearchJobCreate): Promise<ResearchJobOut> {
     const res = await runApiFetch(`${API_BASE_URL}/research/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -13,7 +13,11 @@ from app.api.routes import research as research_routes
 from app.db import engine, get_db
 from app.models.backtests import BacktestRun, RunDailyEquity, RunMetric
 from app.models.research import ResearchJob, ResearchJobRun
-from app.schemas.research import ResearchJobCreate, ResearchSweepSpecIn
+from app.schemas.research import (
+    ResearchIsOosSpecIn,
+    ResearchJobCreate,
+    ResearchSweepSpecIn,
+)
 from app.security import ActorContext, ActorTier, get_current_actor
 from app.services.research import (
     build_sweep_plans,
@@ -247,6 +251,28 @@ def test_research_job_specs_are_type_checked() -> None:
         }
     )
     assert split.type == "IS_OOS"
+    assert isinstance(split.spec, ResearchIsOosSpecIn)
+
+    sweep = ResearchJobCreate.model_validate(
+        {
+            "type": "SWEEP",
+            "base_run_id": str(base_run_id),
+            "spec": {
+                "grid": [{"path": "commission.bps", "values": [0, 5]}],
+            },
+        }
+    )
+    assert isinstance(sweep.spec, ResearchSweepSpecIn)
+
+    with pytest.raises(ValueError, match="Field required"):
+        ResearchJobCreate.model_validate(
+            {
+                "type": "SWEEP",
+                "base_run_id": str(base_run_id),
+                "spec": {"split_pct": 0.6},
+            }
+        )
+
     with pytest.raises(ValueError, match="step must equal test_len"):
         ResearchJobCreate.model_validate(
             {
@@ -260,6 +286,18 @@ def test_research_job_specs_are_type_checked() -> None:
                 },
             }
         )
+
+
+def test_research_job_create_schema_uses_type_discriminator() -> None:
+    schema = ResearchJobCreate.model_json_schema()
+
+    assert schema["discriminator"]["propertyName"] == "type"
+    assert set(schema["discriminator"]["mapping"]) == {
+        "SWEEP",
+        "IS_OOS",
+        "WALK_FORWARD",
+    }
+    assert len(schema["oneOf"]) == 3
 
 
 @pytest.fixture
