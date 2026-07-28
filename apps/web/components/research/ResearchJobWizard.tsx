@@ -7,7 +7,13 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { RunData, getRuns, createResearchJob } from "@/lib/api"
+import {
+    ConfigPathCapability,
+    RunData,
+    createResearchJob,
+    getConfigPaths,
+    getRuns,
+} from "@/lib/api"
 import { FlaskConical, Layers, Plus, Trash2, ArrowRight, Loader2, CheckCircle2, ShieldAlert } from "lucide-react"
 
 interface GridDimInput {
@@ -29,16 +35,18 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
     const [selectedRunId, setSelectedRunId] = useState<string>("")
     const [runs, setRuns] = useState<RunData[]>([])
     const [isLoadingRuns, setIsLoadingRuns] = useState(true)
+    const [configPaths, setConfigPaths] = useState<ConfigPathCapability[]>([])
+    const [isLoadingPaths, setIsLoadingPaths] = useState(false)
 
     const [gridDims, setGridDims] = useState<GridDimInput[]>([
         {
             id: "dim-1",
             path: "commission.bps",
             mode: "list",
-            listValues: "2, 5, 10",
+            listValues: "0, 5, 10",
             minVal: "0",
             maxVal: "10",
-            stepVal: "2"
+            stepVal: "5"
         }
     ])
 
@@ -59,17 +67,51 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
             .finally(() => setIsLoadingRuns(false))
     }, [])
 
+    useEffect(() => {
+        const selectedRun = runs.find(run => run.id === selectedRunId)
+        const rawStrategy = selectedRun?.config_snapshot?.strategy
+        const strategy = typeof rawStrategy === "string"
+            ? rawStrategy
+            : rawStrategy?.type || "BUY_AND_HOLD"
+        let active = true
+        setIsLoadingPaths(true)
+        getConfigPaths(strategy, true)
+            .then(paths => {
+                if (!active) return
+                const concretePaths = paths.filter(path => !path.path.endsWith(".*"))
+                setConfigPaths(concretePaths)
+                setGridDims(previous => previous.map((dimension, index) => {
+                    if (concretePaths.some(path => path.path === dimension.path)) {
+                        return dimension
+                    }
+                    const preferred = concretePaths.find(path => path.path === "commission.bps")
+                        || concretePaths[index % Math.max(concretePaths.length, 1)]
+                    return preferred ? { ...dimension, path: preferred.path } : dimension
+                }))
+            })
+            .catch(() => {
+                if (active) setConfigPaths([])
+            })
+            .finally(() => {
+                if (active) setIsLoadingPaths(false)
+            })
+        return () => { active = false }
+    }, [runs, selectedRunId])
+
     const addDimension = () => {
+        const usedPaths = new Set(gridDims.map(dimension => dimension.path))
+        const nextPath = configPaths.find(path => !usedPaths.has(path.path))
+            || configPaths[0]
         setGridDims(prev => [
             ...prev,
             {
                 id: `dim-${Date.now()}`,
-                path: "slippage.bps",
+                path: nextPath?.path || "slippage.bps",
                 mode: "list",
-                listValues: "1, 3, 5",
+                listValues: "0, 5, 10",
                 minVal: "0",
                 maxVal: "10",
-                stepVal: "2"
+                stepVal: "5"
             }
         ])
     }
@@ -247,7 +289,13 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                                             </SelectTrigger>
                                             <SelectContent>
                                                 <SelectItem value="list" className="text-xs">Explicit List</SelectItem>
-                                                <SelectItem value="range" className="text-xs">Min/Max Range</SelectItem>
+                                                <SelectItem
+                                                    value="range"
+                                                    className="text-xs"
+                                                    disabled={!configPaths.find(item => item.path === dim.path)?.range_supported}
+                                                >
+                                                    Min/Max Range
+                                                </SelectItem>
                                             </SelectContent>
                                         </Select>
                                         <Button
@@ -265,15 +313,51 @@ export function ResearchJobWizard({ onJobCreated }: ResearchJobWizardProps) {
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     <div>
                                         <Label className="text-[11px] text-muted-foreground">Parameter Path</Label>
-                                        <Input
+                                        <Select
                                             value={dim.path}
-                                            onChange={e => updateDimension(dim.id, { path: e.target.value })}
-                                            placeholder="e.g. commission.bps"
-                                            className="h-8 text-xs font-mono mt-1"
-                                        />
-                                        <p className="text-[10px] text-muted-foreground/70 mt-1 font-mono">
-                                            commission.bps · slippage.bps · strategy_params.top_k · strategy_params.lookback_days
-                                        </p>
+                                            disabled={isLoadingPaths || configPaths.length === 0}
+                                            onValueChange={path => {
+                                                const capability = configPaths.find(item => item.path === path)
+                                                const lowerBound = capability?.minimum
+                                                    ?? capability?.exclusive_minimum
+                                                    ?? 0
+                                                updateDimension(dim.id, {
+                                                    path,
+                                                    mode: capability?.range_supported ? dim.mode : "list",
+                                                    listValues: capability?.enum?.length
+                                                        ? capability.enum.join(", ")
+                                                        : dim.listValues,
+                                                    minVal: capability?.range_supported
+                                                        ? String(lowerBound)
+                                                        : dim.minVal,
+                                                    maxVal: capability?.maximum !== undefined
+                                                        && capability.maximum !== null
+                                                        ? String(capability.maximum)
+                                                        : dim.maxVal,
+                                                })
+                                            }}
+                                        >
+                                            <SelectTrigger className="h-8 text-xs font-mono mt-1">
+                                                <SelectValue placeholder={isLoadingPaths ? "Loading paths..." : "Choose a parameter"} />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {configPaths.map(capability => (
+                                                    <SelectItem
+                                                        key={`${capability.strategy || "global"}:${capability.path}`}
+                                                        value={capability.path}
+                                                        className="text-xs font-mono"
+                                                    >
+                                                        {capability.path}
+                                                        {capability.unit ? ` · ${capability.unit.replaceAll("_", " ")}` : ""}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        {configPaths.find(item => item.path === dim.path)?.description && (
+                                            <p className="text-[10px] text-muted-foreground mt-1 leading-normal">
+                                                {configPaths.find(item => item.path === dim.path)?.description}
+                                            </p>
+                                        )}
                                     </div>
 
                                     {dim.mode === "list" ? (

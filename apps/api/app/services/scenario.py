@@ -4,17 +4,8 @@ from copy import deepcopy
 from typing import Any
 from uuid import UUID
 
+from app.services.config_paths import canonicalize_config_path
 from app.services.config_validation import validate_and_resolve_config
-
-
-_CANONICAL_PATCH_PATHS = {
-    "execution.commission.model": "commission.model",
-    "execution.commission.bps": "commission.bps",
-    "execution.commission.min_fee": "commission.min_fee_native",
-    "execution.slippage.model": "slippage.model",
-    "execution.slippage.bps": "slippage.bps",
-    "execution.fill_price": "fill_price_policy",
-}
 
 
 def _strip_inherited_execution_aliases(config: dict[str, Any]) -> None:
@@ -58,7 +49,7 @@ def build_scenario_config(
     _strip_inherited_execution_aliases(config)
     for path, value in patch.items():
         requested_path = str(path)
-        canonical_path = _CANONICAL_PATCH_PATHS.get(requested_path, requested_path)
+        canonical_path = canonicalize_config_path(requested_path)
         _apply_dotted_path(config, canonical_path, value)
     resolved = validate_and_resolve_config(config)
     resolved["_scenario"] = {

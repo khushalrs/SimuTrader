@@ -143,8 +143,9 @@ def test_strategy_schemas_exposes_runtime_parameter_contracts():
         "weighting": "EQUAL",
     }
     assert momentum["param_types"]["lookback_days"]["type"] == "integer"
-    assert momentum["param_types"]["lookback_days"]["min"] == 1
+    assert momentum["param_types"]["lookback_days"]["unit"] == "trading_days"
     assert momentum["param_types"]["lookback_days"]["description"]
+    assert momentum["param_types"]["lookback_days"]["min"] == 1
     assert momentum["param_types"]["top_k"]["min"] == 1
     assert momentum["supported_allocation_modes"] == ["equal"]
     assert momentum["supported_asset_classes"] == ["US_EQUITY", "IN_EQUITY"]
@@ -170,6 +171,52 @@ def test_strategy_schemas_exposes_runtime_parameter_contracts():
     assert response_schema["additionalProperties"]["$ref"].endswith(
         "/StrategySchemaOut"
     )
+
+
+def test_config_paths_exposes_canonical_sweep_contract() -> None:
+    app = FastAPI()
+    app.include_router(capabilities_router)
+    client = TestClient(app)
+
+    res = client.get(
+        "/capabilities/config-paths",
+        params={"strategy": "MOMENTUM", "sweepable": "true"},
+    )
+
+    assert res.status_code == 200
+    paths = {item["path"]: item for item in res.json()}
+    assert paths["commission.bps"]["aliases"] == ["execution.commission.bps"]
+    assert paths["commission.bps"]["unit"] == "basis_points"
+    assert paths["strategy_params.lookback_days"] == {
+        "path": "strategy_params.lookback_days",
+        "canonical_path": "strategy_params.lookback_days",
+        "aliases": [],
+        "type": "integer",
+        "description": (
+            "Historical trading observations used to measure trailing return."
+        ),
+        "unit": "trading_days",
+        "strategy": "MOMENTUM",
+        "sweepable": True,
+        "range_supported": True,
+        "minimum": 1.0,
+    }
+    assert "universe.top_n" not in paths
+    assert "backtest.start_date" not in paths
+
+
+def test_config_paths_rejects_unknown_strategy() -> None:
+    app = FastAPI()
+    app.include_router(capabilities_router)
+    client = TestClient(app)
+
+    res = client.get(
+        "/capabilities/config-paths",
+        params={"strategy": "NOT_A_STRATEGY"},
+    )
+
+    assert res.status_code == 422
+    assert "Unknown strategy" in res.json()["detail"]
 
 
 def test_mixed_us_india_buy_and_hold_preflights_cleanly(tmp_path, monkeypatch):

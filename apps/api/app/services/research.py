@@ -9,6 +9,7 @@ from itertools import product
 from typing import Any
 
 from app.schemas.research import ResearchRangeSpec, ResearchSweepSpecIn
+from app.services.config_paths import validate_sweep_path
 from app.services.scenario import build_scenario_config
 
 
@@ -95,16 +96,36 @@ def expand_sweep_grid(
     spec: ResearchSweepSpecIn,
     *,
     max_points: int,
+    base_config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    strategy: str | None = None
+    if base_config is not None:
+        raw_strategy = base_config.get("strategy")
+        strategy = (
+            str(raw_strategy.get("type"))
+            if isinstance(raw_strategy, dict) and raw_strategy.get("type")
+            else str(raw_strategy or "")
+        ) or "BUY_AND_HOLD"
+
     paths: list[str] = []
+    canonical_paths: list[str] = []
     expanded_values: list[list[Any]] = []
     for dimension in spec.grid:
-        path = dimension.path.strip()
-        if not path or path.startswith("_"):
+        requested_path = dimension.path.strip()
+        if not requested_path or requested_path.startswith("_"):
             raise ValueError(f"Invalid research grid path '{dimension.path}'.")
-        if path in paths:
-            raise ValueError(f"Duplicate research grid path '{path}'.")
-        paths.append(path)
+        canonical_path = (
+            validate_sweep_path(requested_path, strategy=strategy)
+            if base_config is not None
+            else requested_path
+        )
+        if canonical_path in canonical_paths:
+            raise ValueError(
+                f"Duplicate research grid path '{requested_path}' "
+                f"(canonical path '{canonical_path}')."
+            )
+        canonical_paths.append(canonical_path)
+        paths.append(requested_path)
         raw_values = (
             _expand_range(dimension.values)
             if isinstance(dimension.values, ResearchRangeSpec)
@@ -112,7 +133,7 @@ def expand_sweep_grid(
         )
         values = _deduplicate_values(raw_values)
         if not values:
-            raise ValueError(f"Research grid path '{path}' has no values.")
+            raise ValueError(f"Research grid path '{requested_path}' has no values.")
         expanded_values.append(values)
 
     point_count = 1
@@ -137,7 +158,11 @@ def build_sweep_plans(
     seed: int,
     max_points: int,
 ) -> list[SweepPlan]:
-    patches = expand_sweep_grid(spec, max_points=max_points)
+    patches = expand_sweep_grid(
+        spec,
+        max_points=max_points,
+        base_config=base_config,
+    )
     plans: list[SweepPlan] = []
     seen_hashes: set[str] = set()
     for patch in patches:

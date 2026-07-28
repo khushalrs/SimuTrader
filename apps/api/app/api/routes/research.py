@@ -234,6 +234,7 @@ def create_research_job(
                     expand_sweep_grid(
                         ResearchSweepSpecIn(grid=payload.spec.grid),
                         max_points=child_cap - 1,
+                        base_config=base_run.config_snapshot or {},
                     )
                     if payload.spec.grid
                     else [{}]
@@ -307,6 +308,7 @@ def create_research_job(
                 params = expand_sweep_grid(
                     ResearchSweepSpecIn(grid=payload.spec.grid),
                     max_points=max_grid_points,
+                    base_config=base_run.config_snapshot or {},
                 )
                 planned_child_count = len(segments) * (len(params) + 1)
                 if planned_child_count > child_cap:

@@ -1139,9 +1139,53 @@ export async function getStrategySchemas(): Promise<any> {
     try {
         const res = await runApiFetch(`${API_BASE_URL}/strategy-schemas`, { cache: "no-store" })
         if (!res.ok) return []
-        return await res.json()
+        const payload = await res.json()
+        if (Array.isArray(payload)) return payload
+        return Object.entries(payload || {}).map(([type, schema]: [string, any]) => ({
+            ...schema,
+            type,
+            name: schema?.name || type.replaceAll("_", " "),
+            parameters: schema?.parameters || schema?.param_types || {},
+        }))
     } catch (e) {
         devLog("[API] Error fetching strategy schemas:", e)
+        return []
+    }
+}
+
+export interface ConfigPathCapability {
+    path: string
+    canonical_path: string
+    aliases: string[]
+    type: string
+    description: string
+    unit?: string | null
+    strategy?: string | null
+    sweepable: boolean
+    range_supported: boolean
+    minimum?: number | null
+    maximum?: number | null
+    exclusive_minimum?: number | null
+    enum?: any[] | null
+    default?: any
+    format?: string | null
+}
+
+export async function getConfigPaths(
+    strategy?: string,
+    sweepable?: boolean,
+): Promise<ConfigPathCapability[]> {
+    try {
+        const url = buildApiUrl("/capabilities/config-paths", {
+            strategy,
+            sweepable: sweepable === undefined ? undefined : String(sweepable),
+        })
+        const res = await runApiFetch(url, { cache: "no-store" })
+        if (!res.ok) return []
+        const payload = await res.json()
+        return Array.isArray(payload) ? payload : []
+    } catch (e) {
+        devLog("[API] Error fetching config paths:", e)
         return []
     }
 }

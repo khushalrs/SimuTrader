@@ -180,6 +180,76 @@ CONFIG_SCHEMA: Dict[str, Any] = {
         "tax": {
             "type": "object",
             "additionalProperties": True,
+            "properties": {
+                "regime": {
+                    "type": "string",
+                    "enum": ["NONE", "US", "INDIA"],
+                    "description": "Tax rules applied to realized gains.",
+                },
+                "short_term_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Fallback maximum holding period classified as short term."
+                    ),
+                },
+                "short_rate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": (
+                        "Fallback tax fraction applied to short-term realized gains."
+                    ),
+                },
+                "long_rate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": (
+                        "Fallback tax fraction applied to long-term realized gains."
+                    ),
+                },
+                "us": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "short_term_days": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum holding period classified as short term.",
+                        },
+                        "short_rate": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Tax fraction applied to short-term realized gains.",
+                        },
+                        "long_rate": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Tax fraction applied to long-term realized gains.",
+                        },
+                    },
+                },
+                "india": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "short_term_days": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum holding period classified as short term.",
+                        },
+                        "short_rate": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Tax fraction applied to short-term realized gains.",
+                        },
+                        "long_rate": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Tax fraction applied to long-term realized gains.",
+                        },
+                    },
+                },
+            },
             "default": {},
         },
         "universe": {
